@@ -1,10 +1,12 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { Link } from 'wouter';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   Check,
   CircleAlert,
   GripVertical,
   ImagePlus,
+  ArrowRight,
   LockKeyhole,
   Pencil,
   Plus,
@@ -29,7 +31,7 @@ import type {
   WorkspaceTeamDirectoryMemberInput,
 } from '@workspace/api-client-react';
 
-const SECTIONS = ['Leadership', 'Design Team', 'CAD Team', 'Sample Team', 'Buying & Planning'] as const;
+const SECTIONS = ['Leadership', 'Buying', 'Pattern and Sampling', 'CAD', 'Needs team'] as const;
 type SectionName = (typeof SECTIONS)[number];
 type Draft = Pick<WorkspaceTeamDirectoryMember, 'name' | 'description'> & { birthday: string };
 
@@ -80,10 +82,13 @@ function MemberPhoto({
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const src = photoUrl(member);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => setFailed(false), [src]);
+  const showPhoto = Boolean(src) && !failed;
   return (
     <div className="team-member-photo">
-      {src ? (
-        <img src={src} alt={member.name ? `${member.name}, ${member.roleTitle}` : member.roleTitle} data-testid={`img-team-member-${member.id}`} />
+      {showPhoto ? (
+        <img src={src} alt="" onError={() => setFailed(true)} data-testid={`img-team-member-${member.id}`} />
       ) : (
         <div className="team-initials" data-testid={`avatar-team-member-${member.id}`} aria-label="Initials placeholder">
           {memberInitials(member.name, member.roleTitle)}
@@ -138,6 +143,23 @@ function MemberCard({
   onDragStart: () => void;
   onDrop: () => void;
 }) {
+  const trimmedName = member.name.trim();
+  const needsFullName = trimmedName.length > 0 && trimmedName.split(/\s+/).length < 2;
+  const needsTeam = !member.team && member.department.toLowerCase() !== 'leadership';
+  const capacityName: Record<string, string> = {
+    'Alex Wanjohi': 'Wanjohi',
+    Mercy: 'Mercy',
+    'Victoria Orlando': 'Victoria',
+    'Florence Bwibo': 'Florence',
+    Abigail: 'Abigail',
+  };
+  const workloadName = capacityName[trimmedName];
+  const profileLink = workloadName
+    ? `/product-workspace/style-development?view=capacity&patternMaker=${encodeURIComponent(workloadName)}`
+    : trimmedName === 'Mary Nyambura'
+      ? '/product-workspace/style-development?view=approvals'
+      : '';
+  const profileLinkLabel = workloadName ? 'View current workload' : 'Open approvals queue';
   return (
     <article
       className={`team-member-card ${editing ? 'is-editable' : ''}`}
@@ -184,7 +206,11 @@ function MemberCard({
         ) : (
           <>
             <h3 className={`team-member-name ${member.name ? '' : 'is-blank'}`} data-testid={`text-team-name-${member.id}`}>{member.name || 'Name to be added'}</h3>
-            <p className="team-member-description" data-testid={`text-team-description-${member.id}`}>{member.description || 'The story behind this role is still being written.'}</p>
+            <p className="team-member-meta">{member.department || 'Department not set'}{member.team ? ` · ${member.team}` : ''}</p>
+            {needsFullName && <span className={`team-data-warning ${trimmedName === 'Re' ? 'is-urgent' : ''}`} data-testid={`warning-team-name-${member.id}`}>{trimmedName === 'Re' ? 'Possible truncated name' : 'Needs full name'}</span>}
+            {needsTeam && <span className="team-data-warning is-urgent" data-testid={`warning-team-team-${member.id}`}>Needs team</span>}
+            {member.description && <p className="team-member-description" data-testid={`text-team-description-${member.id}`}>{member.description}</p>}
+            {profileLink && <Link href={profileLink} className="team-profile-link" data-testid={`link-team-work-${member.id}`}>{profileLinkLabel} <ArrowRight size={13} /></Link>}
           </>
         )}
         {!editing && member.birthday && formatBirthday(member.birthday) && (
@@ -219,10 +245,10 @@ export default function TeamDirectoryPage() {
     const map = new Map<SectionName, WorkspaceTeamDirectoryMember[]>();
     SECTIONS.forEach((section) => map.set(section, []));
     members.forEach((member) => {
-      const section = SECTIONS.includes(member.teamSection as SectionName) ? member.teamSection as SectionName : 'Leadership';
+      const section = SECTIONS.includes(member.teamSection as SectionName) ? member.teamSection as SectionName : 'Needs team';
       map.get(section)?.push(member);
     });
-    map.forEach((items) => items.sort((a, b) => a.displayOrder - b.displayOrder || a.id - b.id));
+    map.forEach((items) => items.sort((a, b) => Number(b.isLma) - Number(a.isLma) || a.displayOrder - b.displayOrder || a.id - b.id));
     return map;
   }, [members]);
   const dirtyMembers = useMemo(
@@ -420,16 +446,16 @@ export default function TeamDirectoryPage() {
 
       <div className="team-intro">
         <div className="team-intro-card"><span className="eyebrow gold-eyebrow">The product room</span><h2>The most successful teams are the ones that learn how to <em>solve hard problems together.</em></h2></div>
-        <div className="team-intro-copy"><p>Every handoff carries a point of view. This is the Product Department behind Vivo’s range — the makers, thinkers, and careful finishers who keep the edit moving.</p><div className="team-intro-stat"><strong>{members.length}</strong><span>people and role slots</span></div></div>
+        <div className="team-intro-copy"><p>This directory reads from the same team list as Settings. Additions, removals, names, roles and team changes stay in sync automatically.</p><div className="team-intro-stat"><strong>{members.length}</strong><span>people</span></div></div>
       </div>
 
-      {SECTIONS.map((section) => {
+      {SECTIONS.filter((section) => section !== 'Needs team' || (bySection.get(section)?.length ?? 0) > 0).map((section) => {
         const sectionMembers = bySection.get(section) || [];
         return (
           <section className="team-section" key={section} aria-labelledby={`team-section-${section.replaceAll(' ', '-').toLowerCase()}`}>
             <div className="team-section-header">
               <div className="team-section-title"><h2 id={`team-section-${section.replaceAll(' ', '-').toLowerCase()}`}>{section}</h2><span className="team-section-count">{String(sectionMembers.length).padStart(2, '0')} {sectionMembers.length === 1 ? 'member' : 'members'}</span></div>
-              {editing && isAdmin && <button className="team-section-action" onClick={() => openAddMember(section)} disabled={createMember.isPending} data-testid={`button-add-team-member-${section.replaceAll(' ', '-').toLowerCase()}`}><Plus size={14} /> Add member</button>}
+              {editing && isAdmin && section !== 'Needs team' && <button className="team-section-action" onClick={() => openAddMember(section)} disabled={createMember.isPending} data-testid={`button-add-team-member-${section.replaceAll(' ', '-').toLowerCase()}`}><Plus size={14} /> Add member</button>}
             </div>
             {sectionMembers.length ? (
               <div className="team-member-grid">
@@ -466,7 +492,7 @@ export default function TeamDirectoryPage() {
             <div className="team-add-member-fields">
               <label><span>NAME</span><input autoFocus value={newMemberDraft.name} onChange={(event) => setNewMemberDraft((current) => ({ ...current, name: event.target.value }))} placeholder="Full name" data-testid="input-new-team-name" /></label>
               <label><span>ROLE</span><input value={newMemberDraft.roleTitle} onChange={(event) => setNewMemberDraft((current) => ({ ...current, roleTitle: event.target.value }))} placeholder="Role title" data-testid="input-new-team-role" /></label>
-              <label><span>TEAM</span><select value={newMemberSection} onChange={(event) => setNewMemberSection(event.target.value as SectionName)} data-testid="select-new-team-section">{SECTIONS.map((option) => <option key={option}>{option}</option>)}</select></label>
+               <label><span>TEAM</span><select value={newMemberSection} onChange={(event) => setNewMemberSection(event.target.value as SectionName)} data-testid="select-new-team-section">{SECTIONS.filter((option) => option !== 'Needs team').map((option) => <option key={option}>{option}</option>)}</select></label>
               <label><span>BIRTHDAY</span><input type="date" value={newMemberDraft.birthday} onChange={(event) => setNewMemberDraft((current) => ({ ...current, birthday: event.target.value }))} aria-describedby="team-birthday-help" data-testid="input-new-team-birthday" /><small id="team-birthday-help">Used for birthday celebrations; only the day and month are shown publicly.</small></label>
             </div>
             <button className="button button-dark button-wide" onClick={saveNewMember} disabled={createMember.isPending || !newMemberDraft.roleTitle.trim()} data-testid="button-save-new-member"><Save size={15} /> {createMember.isPending ? 'Saving…' : 'Save member'}</button>

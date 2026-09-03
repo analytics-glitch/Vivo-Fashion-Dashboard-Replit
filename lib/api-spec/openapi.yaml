@@ -1961,12 +1961,14 @@ components:
         dateOfBirth: { type: ["string", "null"], format: date }
     WorkspaceTeamDirectoryMember:
       type: object
-      required: [id, name, roleTitle, teamSection, description, isLma, displayOrder]
+      required: [id, name, roleTitle, teamSection, department, team, description, isLma, displayOrder]
       properties:
         id: { type: integer }
         name: { type: string }
         roleTitle: { type: string }
         teamSection: { type: string }
+        department: { type: string }
+        team: { type: string }
         description: { type: string }
         birthday: { type: ["string", "null"], format: date }
         photoUrl: { type: ["string", "null"] }
@@ -2421,8 +2423,8 @@ components:
          styleClassification: { type: string, nullable: true, enum: [Core, Fashion, Seasonal, Test] }
          rangeTier: { type: string, nullable: true, enum: ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] }
          season: { type: string, nullable: true, enum: ["Q3 2026", "Q4 2026"] }
-        designer: { type: string }
-        patternMaker: { type: string }
+        designUserId: { type: ["integer", "null"] }
+        patternUserId: { type: ["integer", "null"] }
         targetDate: { type: string }
     StyleUpdate:
       type: object
@@ -2430,8 +2432,6 @@ components:
         status: { type: string }
         stage: { type: string }
         owner: { type: string }
-        designer: { type: string }
-        patternMaker: { type: string }
         subCategory: { type: string }
         theme: { type: string }
         orderType: { type: string }
@@ -2588,7 +2588,7 @@ components:
         modifiedFromStyleNumber: { type: string }
         status: { type: string }
         version: { type: string }
-        owner: { type: string }
+        ownerUserId: { type: ["integer", "null"], description: Settings workspace user ID }
     FitSessionInput:
       type: object
       required: [sessionDate, sample, modelName, outcome]
@@ -2603,15 +2603,17 @@ components:
       type: object
       properties:
         sizeRange: { type: string }
-        cadTeamMember: { type: string }
+        cadTeamMemberUserId: { type: ["integer", "null"], description: Settings workspace user ID }
         status: { type: string, enum: ["Pending", "In Progress", "Complete"] }
     SampleDevelopmentInput:
       type: object
-      required: [purpose, patternMaker, unitsOrdered, status]
+      required: [purpose, patternMakerUserId, unitsOrdered, status]
       properties:
         purpose: { type: string }
-        patternMaker: { type: string }
-        sampleMakers: { type: string }
+        patternMakerUserId: { type: ["integer", "null"], description: Settings workspace user ID }
+        sampleMakerUserIds:
+          type: array
+          items: { type: integer }
         unitsOrdered: { type: integer }
         dateCut: { type: string }
         dateFinished: { type: string }

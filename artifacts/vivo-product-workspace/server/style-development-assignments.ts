@@ -32,4 +32,4 @@ export const STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENTS = {
 } as const;
 
 export const STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENT_IMPORT_KEY =
-  "q3-2026-pattern-maker-assignments-v1";
+  "q3-2026-pattern-maker-assignment-refs-v2";

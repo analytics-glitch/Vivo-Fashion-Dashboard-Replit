@@ -1,6 +1,6 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users, ArrowLeft } from 'lucide-react';
+import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users, ArrowLeft, SlidersHorizontal } from 'lucide-react';
 
 type TrackerStyle = {
   id: number;
@@ -10,6 +10,7 @@ type TrackerStyle = {
   styleName: string;
   type: 'NEW' | 'RR';
   tier: 'Tier 3' | 'Tier 4';
+  sourceStatus: string;
   status: string;
   category: string;
   subCategory: string;
@@ -17,6 +18,11 @@ type TrackerStyle = {
   brand: string;
   fabric: string;
   patternMaker: string | null;
+  patternAssignmentKey: string;
+  patternMakerUserId: number | null;
+  patternRouteId: number | null;
+  patternRouteKind: 'team' | 'supplier' | null;
+  isLegacyCadPatternAssignment: boolean;
   adoptionDate: string | null;
   targetOrderWeek: string | null;
   targetLaunchWeek: string | null;
@@ -27,6 +33,8 @@ type TrackerStyle = {
   stage: string | null;
   stageStartedAt: string | null;
   workingDaysAtStage: number;
+  statusStartedAt: string | null;
+  workingDaysInStatus: number;
   standardDays: number | null;
   overStandard: boolean;
   sampleRounds: number;
@@ -36,6 +44,11 @@ type TrackerStyle = {
   rejectedMoreThanOnce: boolean;
   waitingDecision: 'sample' | 'set_sample' | 'order' | null;
   historyCount: number;
+  reassignmentCount: number;
+  styleRelatedReassignmentCount: number;
+  passedAround: boolean;
+  reassignmentReasonCode?: string;
+  reassignmentNote?: string;
   imageUrl: string | null;
 
   sampleFabricProductId?: number | null;
@@ -47,6 +60,7 @@ type TrackerStyle = {
   intendedSellingPriceKes?: number | null;
   indicativeCogsKes?: number | null;
   indicativeCogsPct?: number | null;
+  patternEffortDays?: number | null;
   categoryMetresPerGarment?: number | null;
   adoptionReadiness?: { ready: boolean; missing: string[]; warnings: string[] };
   exitStatus?: string | null;
@@ -70,26 +84,73 @@ type HistoryEntry = {
   occurredAt: string;
   recordedAt: string;
   recordedBy: string;
+  reassignmentBatchId?: string | null;
+  reassignmentReasonCode?: string | null;
+  reassignmentReasonLabel?: string | null;
+  reassignmentReasonCategory?: 'operational' | 'style' | null;
 };
 
 type TrackerDetailPayload = TrackerStyle & { history: HistoryEntry[] };
+
+type CardFieldKey = 'targetOrderWeek' | 'stageDays' | 'patternMaker' | 'type' | 'tier' | 'status';
+type CardFieldVisibility = Record<CardFieldKey, boolean>;
+type AssignmentOption = {
+  assignmentKey: string;
+  name: string;
+  kind: 'person' | 'team' | 'supplier' | 'unassigned';
+};
+
+const DEFAULT_CARD_FIELDS: CardFieldVisibility = {
+  targetOrderWeek: true,
+  stageDays: true,
+  patternMaker: true,
+  type: true,
+  tier: true,
+  status: true,
+};
+
+const CARD_FIELD_OPTIONS: { key: CardFieldKey; label: string }[] = [
+  { key: 'targetOrderWeek', label: 'Target order week' },
+  { key: 'stageDays', label: 'Days at current stage' },
+  { key: 'patternMaker', label: 'Pattern maker' },
+  { key: 'type', label: 'Type' },
+  { key: 'tier', label: 'Tier' },
+  { key: 'status', label: 'Status' },
+];
 
 type PatternMakerOption = {
   id: number;
   name: string;
   kind: 'person' | 'team' | 'supplier';
+  assignmentKey: string;
+  workspaceUserId: number | null;
+  role?: string | null;
+  team?: string | null;
   effectiveCapacity: number | null;
+  assignable: boolean;
+  isLegacyCad: boolean;
   active: boolean;
   displayOrder: number;
   load: number;
   patternStageCount: number;
 };
 
+type ReassignmentReason = {
+  id: number;
+  code: string;
+  label: string;
+  category: 'operational' | 'style';
+  active: boolean;
+  displayOrder: number;
+};
+
 type TrackerPayload = {
   items: TrackerStyle[];
   stages: string[];
+  statuses: string[];
   stageStandards: Record<string, number>;
   patternMakers: PatternMakerOption[];
+  reassignmentReasons: ReassignmentReason[];
   facets: {
     targetOrderWeek: string[];
     subCategory: string[];
@@ -114,6 +175,38 @@ type FabricOptionsResponse = {
       costPerMetre: number;
     }[];
   }[];
+};
+
+type CapacityStyle = {
+  id: number;
+  styleName: string;
+  styleNumber: string | null;
+  stage: string;
+  sourceStatus?: string;
+  category: string;
+  workingDaysWaiting: number;
+  effortDays: number;
+};
+
+type CapacityAssignment = {
+  assignmentKey: string;
+  patternMaker: string;
+  kind: 'person' | 'team' | 'supplier' | 'unassigned';
+  isLegacyCad: boolean;
+  assignable: boolean;
+  effectiveCapacity: number | null;
+  unavailableNow: boolean;
+  totalStylesHeld: number;
+  queueStyleCount: number;
+  patternAwaitingCount: number;
+  transferToCadCount: number;
+  queueEffortDays: number;
+  queueWeeks: number | null;
+  oldestWaitingWorkingDays: number;
+  oldestStyleName: string | null;
+  categoryMix: { category: string; count: number; effortDays: number }[];
+  styles: CapacityStyle[];
+  queueStyles: CapacityStyle[];
 };
 
 type ReportingPayload = {
@@ -141,6 +234,7 @@ type ReportingPayload = {
   cancellationsByReason: Record<string, number>;
   cancellationsByStage: Record<string, number>;
   capacity: {
+    baseMakers: number;
     makers: number;
     daysPerPattern: number;
     weeklyCapacity: number;
@@ -148,20 +242,65 @@ type ReportingPayload = {
     queueDepth: number;
     readyToStart: number;
     activePatternWork: number;
-    weeksCover: number;
-    patternsPerMaker: number;
+    weeksCover: number | null;
+    patternsPerMaker: number | null;
     adoptedPerWeek: number;
     targetAdoptionsPerWeek: number;
     monthlyGap: number;
-    byPatternMaker: {
-      patternMaker: string;
-      load: number;
-      patternStageCount: number;
-      patternWorkDays: number;
-      weeksOfPatternWork: number;
-      kind: 'person' | 'team' | 'supplier' | 'unassigned';
+    byPatternMaker: (CapacityAssignment & {
       isTeamLead: boolean;
-      effectiveCapacity: number | null;
+      nextUnavailable: { id: number; unavailableFrom: string; unavailableTo: string; note: string } | null;
+      balanceStatus: 'overloaded' | 'balanced' | 'light';
+    })[];
+    routedWork: CapacityAssignment[];
+    legacyCad: CapacityAssignment | null;
+    nonCapacityPeople: CapacityAssignment[];
+    supplierWork: CapacityAssignment[];
+    unassignedWork: CapacityAssignment | null;
+    balance: {
+      averageQueueWeeks: number;
+      spreadWeeks: number;
+      overloadedCount: number;
+    };
+    rebalanceSuggestions: {
+      styleId: number;
+      styleName: string;
+      styleNumber: string | null;
+      category: string;
+      stage: string;
+      effortDays: number;
+      fromPatternMaker: string;
+      toPatternMaker: string;
+      fromAssignmentKey: string;
+      toAssignmentKey: string;
+      fromWeeksBefore: number;
+      fromWeeksAfter: number;
+      toWeeksBefore: number;
+      toWeeksAfter: number;
+    }[];
+    availabilitySchedule: {
+      id: number;
+      patternMakerId: number;
+      patternMaker: string;
+      unavailableFrom: string;
+      unavailableTo: string;
+      note: string;
+      recordedBy: string;
+      makersDuring: number;
+      weeklyCapacityDuring: number;
+    }[];
+    redistributions: {
+      id: string;
+      reasonCode: string;
+      reasonLabel: string;
+      note: string;
+      changedCount: number;
+      beforeLoads: Record<string, number>;
+      afterLoads: Record<string, number>;
+      beforePatternLoads: Record<string, number>;
+      afterPatternLoads: Record<string, number>;
+      recordedAt: string;
+      recordedBy: string;
     }[];
   };
 };
@@ -180,8 +319,30 @@ function targetWeekNumber(value: string | null): number | null {
 export default function StyleDevelopmentTrackerPage() {
   const queryClient = useQueryClient();
   const tracker = useQuery({ queryKey: ['workspace', 'style-development-tracker'], queryFn: loadTracker });
-  const [view, setView] = useState<'board' | 'list' | 'approvals' | 'standards' | 'capacity'>('board');
+  const requestedView = new URLSearchParams(window.location.search).get('view');
+  const initialView = ['board', 'list', 'approvals', 'standards', 'capacity'].includes(requestedView || '')
+    ? requestedView as 'board' | 'list' | 'approvals' | 'standards' | 'capacity'
+    : 'board';
+  const focusedPatternMaker = new URLSearchParams(window.location.search).get('patternMaker') || '';
+  const [view, setView] = useState<'board' | 'list' | 'approvals' | 'standards' | 'capacity'>(initialView);
   const [search, setSearch] = useState('');
+  const [cardFields, setCardFields] = useState<CardFieldVisibility>(() => {
+    try {
+      const stored = window.localStorage.getItem('vivo-style-development-card-fields');
+      return stored ? { ...DEFAULT_CARD_FIELDS, ...JSON.parse(stored) } : DEFAULT_CARD_FIELDS;
+    } catch {
+      return DEFAULT_CARD_FIELDS;
+    }
+  });
+  const [customizeCardsOpen, setCustomizeCardsOpen] = useState(false);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('vivo-style-development-card-fields', JSON.stringify(cardFields));
+    } catch {
+      // Preferences are optional; the board remains usable when storage is unavailable.
+    }
+  }, [cardFields]);
 
   const [filters, setFilters] = useState({
     stage: 'All',
@@ -203,26 +364,29 @@ export default function StyleDevelopmentTrackerPage() {
   const [detailId, setDetailId] = useState<number | null>(null);
   const [selectedIds, setSelectedIds] = useState<number[]>([]);
   const [bulkPatternMaker, setBulkPatternMaker] = useState('');
+  const [pendingReassignment, setPendingReassignment] = useState<{ styleIds: number[]; assignmentKey: string; displayName: string } | null>(null);
 
   const items = tracker.data?.items ?? [];
   const stages = tracker.data?.stages ?? [];
+  const statuses = tracker.data?.statuses ?? [];
   const patternMakers = tracker.data?.patternMakers ?? [];
+  const reassignmentReasons = tracker.data?.reassignmentReasons ?? [];
   const assignmentLoads = useMemo(() => {
     const loads = new Map<string, number>([['', 0]]);
-    for (const option of patternMakers) loads.set(option.name, 0);
+    for (const option of patternMakers) loads.set(option.assignmentKey, 0);
     for (const style of items) {
-      const key = style.patternMaker || '';
+      const key = style.patternAssignmentKey || '';
       loads.set(key, (loads.get(key) ?? 0) + 1);
     }
     return loads;
   }, [items, patternMakers]);
   const reassignMutation = useMutation({
-    mutationFn: async ({ styleIds, patternMaker }: { styleIds: number[]; patternMaker: string }) => {
+    mutationFn: async ({ styleIds, assignmentKey, reasonCode, note }: { styleIds: number[]; assignmentKey: string; displayName: string; reasonCode: string; note: string }) => {
       const res = await fetch('/api/workspace/style-development-tracker/bulk-pattern-maker', {
         method: 'POST',
         credentials: 'include',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ styleIds, patternMaker }),
+        body: JSON.stringify({ styleIds, assignmentKey, reasonCode, note }),
       });
       if (!res.ok) {
         const error = await res.json().catch(() => ({}));
@@ -234,7 +398,11 @@ export default function StyleDevelopmentTrackerPage() {
       queryClient.setQueryData<TrackerPayload>(['workspace', 'style-development-tracker'], current => current ? ({
         ...current,
         items: current.items.map(item => variables.styleIds.includes(item.id)
-          ? { ...item, patternMaker: variables.patternMaker || null }
+          ? {
+              ...item,
+              patternMaker: variables.displayName === 'Unassigned' ? null : variables.displayName,
+              patternAssignmentKey: variables.assignmentKey,
+            }
           : item),
       }) : current);
       queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'reporting'] });
@@ -242,13 +410,18 @@ export default function StyleDevelopmentTrackerPage() {
         queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', id] });
       }
       setSelectedIds([]);
+      setPendingReassignment(null);
     },
   });
-  const assignmentOptions = [{ name: '', label: 'Unassigned' }, ...patternMakers.map(option => ({ name: option.name, label: option.name }))];
-  const projectedLabel = (name: string, styles: TrackerStyle[]) => {
-    const currentLoad = assignmentLoads.get(name) ?? 0;
-    const incoming = styles.filter(style => (style.patternMaker || '') !== name).length;
-    const display = name || 'Unassigned';
+  const assignmentOptions: AssignmentOption[] = [
+    { assignmentKey: '', name: 'Unassigned', kind: 'unassigned' as const },
+    ...patternMakers
+      .filter(option => option.assignable)
+      .map(option => ({ assignmentKey: option.assignmentKey, name: option.name, kind: option.kind })),
+  ];
+  const projectedLabel = (assignmentKey: string, display: string, styles: TrackerStyle[]) => {
+    const currentLoad = assignmentLoads.get(assignmentKey) ?? 0;
+    const incoming = styles.filter(style => style.patternAssignmentKey !== assignmentKey).length;
     return `${display} · ${currentLoad}${incoming ? ` → ${currentLoad + incoming}` : ''}`;
   };
 
@@ -286,10 +459,9 @@ export default function StyleDevelopmentTrackerPage() {
   const grouped = useMemo(() => {
     const values = new Map<string, TrackerStyle[]>();
 
-    if (groupBy === 'stage') {
-      for (const stage of stages) {
-        values.set(stage, []);
-      }
+    if (groupBy === 'stage' || groupBy === 'status') {
+      const orderedValues = groupBy === 'stage' ? stages : statuses;
+      for (const value of orderedValues) values.set(value, []);
     }
 
     for (const style of filtered) {
@@ -298,10 +470,11 @@ export default function StyleDevelopmentTrackerPage() {
     }
     const entries = Array.from(values.entries());
 
-    if (groupBy === 'stage') {
+    if (groupBy === 'stage' || groupBy === 'status') {
+       const orderedValues = groupBy === 'stage' ? stages : statuses;
        entries.sort(([a], [b]) => {
-          const ia = stages.indexOf(a);
-          const ib = stages.indexOf(b);
+          const ia = orderedValues.indexOf(a);
+          const ib = orderedValues.indexOf(b);
           if (ia !== -1 && ib !== -1) return ia - ib;
           if (ia !== -1) return -1;
           if (ib !== -1) return 1;
@@ -318,7 +491,7 @@ export default function StyleDevelopmentTrackerPage() {
        entries.sort(([a], [b]) => a.localeCompare(b));
     }
     return entries;
-  }, [filtered, groupBy, stages]);
+  }, [filtered, groupBy, stages, statuses]);
 
   const sortedForList = useMemo(() => {
     return [...filtered].sort((a, b) => {
@@ -492,58 +665,65 @@ export default function StyleDevelopmentTrackerPage() {
       )}
 
       {view === 'board' && (
-        <div className="tracker-board">
+        <div className="tracker-board-toolbar">
+          <span className="tracker-board-toolbar-note">Design view · larger cards keep the garment visible</span>
+          <div className="tracker-card-customize">
+            <button
+              type="button"
+              className="tracker-customize-button"
+              aria-expanded={customizeCardsOpen}
+              aria-controls="style-card-fields"
+              onClick={() => setCustomizeCardsOpen(open => !open)}
+            >
+              <SlidersHorizontal size={15} /> Customize cards
+            </button>
+            {customizeCardsOpen && (
+              <div className="tracker-card-customize-popover" id="style-card-fields">
+                <div className="tracker-card-customize-heading">
+                  <strong>Card fields</strong>
+                  <button type="button" onClick={() => setCardFields(DEFAULT_CARD_FIELDS)}>Reset</button>
+                </div>
+                <p>Choose the supporting details shown below each style.</p>
+                {CARD_FIELD_OPTIONS.map(option => (
+                  <label key={option.key}>
+                    <input
+                      type="checkbox"
+                      checked={cardFields[option.key]}
+                      onChange={event => setCardFields(current => ({ ...current, [option.key]: event.target.checked }))}
+                    />
+                    {option.label}
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {view === 'board' && (
+        <div className={`tracker-board ${groupBy === 'stage' ? 'is-stage-board' : ''}`}>
           {grouped.length === 0 && <div className="tracker-empty-state" style={{ width: '100%' }}>No styles match filters.</div>}
           {grouped.map(([label, styles]) => (
-            <div key={label} className={`tracker-col ${label === 'Waiting for Fabric' ? 'is-waiting-fabric' : ''}`}>
+            <div key={label} className={`tracker-col ${groupBy === 'status' && label === 'Blocked' ? 'is-waiting-fabric' : ''}`}>
               <div className="tracker-col-header">
                 <h3>{label}</h3>
                 <span className="tracker-col-count">{styles.length}</span>
               </div>
               <div className="tracker-col-cards">
                 {styles.map(s => (
-                  <article key={s.id} className="tracker-card-compact">
-                    <button className="tracker-card-compact-open" onClick={() => setDetailId(s.id)}>
-                     <div className="tracker-card-compact-head">
-                       <div className="tracker-card-compact-img placeholder">
-                          <ImageIcon size={14} />
-                          {s.imageUrl && (
-                            <img
-                              src={s.imageUrl}
-                              alt=""
-                              onError={(e) => {
-                                e.currentTarget.style.display = 'none';
-                              }}
-                            />
-                          )}
-                       </div>
-                       <div className="tracker-card-compact-info">
-                          <div className="tracker-card-compact-title">{s.styleName}</div>
-                          <div className="tracker-card-compact-meta">
-                             {s.styleNumber || 'No #'} · {s.targetOrderWeek || 'No WK'} · {s.workingDaysAtStage}d
-                          </div>
-                       </div>
-                    </div>
-                     <div className="tracker-card-compact-badges">
-                       {s.patternMaker && <span className="compact-badge pm">{s.patternMaker}</span>}
-                       {(s.type || s.tier) && <span className="compact-badge ty">{[s.type, s.tier].filter(Boolean).join('/')}</span>}
-                       {s.waitingDecision && <span className="compact-badge ac">Action</span>}
-                       {s.blocked && <span className="compact-badge bl">Blocked</span>}
-                       {s.overStandard && <span className="compact-badge wa">Over Std</span>}
-                     </div>
-                    </button>
-                    <label className="tracker-card-assignment">
-                      <span>Assign</span>
-                      <select
-                        aria-label={`Assign ${s.styleName}`}
-                        value={s.patternMaker || ''}
-                        disabled={reassignMutation.isPending}
-                        onChange={event => reassignMutation.mutate({ styleIds: [s.id], patternMaker: event.target.value })}
-                      >
-                        {assignmentOptions.map(option => <option key={option.name || 'unassigned'} value={option.name}>{projectedLabel(option.name, [s])}</option>)}
-                      </select>
-                    </label>
-                  </article>
+                  <StyleDevelopmentBoardCard
+                    key={s.id}
+                    item={s}
+                    cardFields={cardFields}
+                    assignmentOptions={assignmentOptions}
+                    reassignPending={reassignMutation.isPending}
+                    onOpen={() => setDetailId(s.id)}
+                    onAssignmentChange={(assignmentKey, displayName) => {
+                      if (s.patternAssignmentKey !== assignmentKey) {
+                        setPendingReassignment({ styleIds: [s.id], assignmentKey, displayName });
+                      }
+                    }}
+                  />
                 ))}
               </div>
             </div>
@@ -559,10 +739,13 @@ export default function StyleDevelopmentTrackerPage() {
               <select value={bulkPatternMaker} onChange={event => setBulkPatternMaker(event.target.value)}>
                 {assignmentOptions.map(option => {
                   const selected = items.filter(item => selectedIds.includes(item.id));
-                  return <option key={option.name || 'unassigned'} value={option.name}>{projectedLabel(option.name, selected)}</option>;
+                   return <option key={option.assignmentKey || 'unassigned'} value={option.assignmentKey}>{projectedLabel(option.assignmentKey, option.name, selected)}</option>;
                 })}
               </select>
-              <button className="button button-dark" disabled={reassignMutation.isPending} onClick={() => reassignMutation.mutate({ styleIds: selectedIds, patternMaker: bulkPatternMaker })}>
+               <button className="button button-dark" disabled={reassignMutation.isPending} onClick={() => {
+                 const option = assignmentOptions.find(value => value.assignmentKey === bulkPatternMaker) ?? assignmentOptions[0];
+                 setPendingReassignment({ styleIds: selectedIds, assignmentKey: option.assignmentKey, displayName: option.name });
+               }}>
                 Reassign {selectedIds.length} styles
               </button>
               <button className="text-button" onClick={() => setSelectedIds([])}>Clear</button>
@@ -619,7 +802,7 @@ export default function StyleDevelopmentTrackerPage() {
                     <td>{s.stage || 'Not started'}</td>
                     <td>{s.targetOrderWeek || 'Unscheduled'}</td>
                     <td>{s.category}</td>
-                    <td>{s.status}</td>
+                    <td><span className={`compact-badge status ${s.status.toLowerCase().replaceAll(' ', '-')}`}>{s.status} · {s.workingDaysInStatus}d</span></td>
                     <td>{s.patternMaker || <span className="tracker-fabric-missing">Unassigned</span>}</td>
                   </tr>
                 ))}
@@ -640,11 +823,131 @@ export default function StyleDevelopmentTrackerPage() {
       )}
 
       {view === 'capacity' && (
-        <TrackerCapacity />
+        <TrackerCapacity reassignmentReasons={reassignmentReasons} focusedPatternMaker={focusedPatternMaker} />
       )}
 
-      {detailId && <TrackerDetailDrawer id={detailId} patternMakers={patternMakers} onClose={() => setDetailId(null)} />}
+      {detailId && <TrackerDetailDrawer id={detailId} patternMakers={patternMakers} reassignmentReasons={reassignmentReasons} onClose={() => setDetailId(null)} />}
+      {pendingReassignment && (
+        <ReassignmentDialog
+          count={pendingReassignment.styleIds.length}
+           destination={pendingReassignment.displayName}
+          reasons={reassignmentReasons}
+          pending={reassignMutation.isPending}
+          error={reassignMutation.error instanceof Error ? reassignMutation.error.message : null}
+          onCancel={() => setPendingReassignment(null)}
+          onSubmit={(reasonCode, note) => reassignMutation.mutate({ ...pendingReassignment, reasonCode, note })}
+        />
+      )}
     </section>
+  );
+}
+
+function TrackerCardImage({ imageUrl }: { imageUrl: string | null }) {
+  const [imageFailed, setImageFailed] = useState(!imageUrl);
+
+  useEffect(() => {
+    setImageFailed(!imageUrl);
+  }, [imageUrl]);
+
+  return (
+    <div className="tracker-card-image" aria-hidden="true">
+      {imageUrl && !imageFailed && (
+        <img
+          src={imageUrl}
+          alt=""
+          loading="lazy"
+          decoding="async"
+          onError={() => setImageFailed(true)}
+        />
+      )}
+    </div>
+  );
+}
+
+function StyleDevelopmentBoardCard({
+  item,
+  cardFields,
+  assignmentOptions,
+  reassignPending,
+  onOpen,
+  onAssignmentChange,
+}: {
+  item: TrackerStyle;
+  cardFields: CardFieldVisibility;
+  assignmentOptions: AssignmentOption[];
+  reassignPending: boolean;
+  onOpen: () => void;
+  onAssignmentChange: (assignmentKey: string, displayName: string) => void;
+}) {
+  const markerLabels = [
+    item.overStandard ? `Over standard: ${item.workingDaysAtStage} days at ${item.stage}` : '',
+    item.blocked ? `Blocked${item.blockerReason ? `: ${item.blockerReason}` : ''}` : '',
+  ].filter(Boolean);
+
+  return (
+    <article className="tracker-card">
+      <button className="tracker-card-open" onClick={onOpen} aria-label={`Open ${item.styleName}`}>
+        <TrackerCardImage imageUrl={item.imageUrl} />
+        <div className="tracker-card-content">
+          <div className="tracker-board-card-title" title={item.styleName}>{item.styleName}</div>
+          <div className="tracker-card-number">
+            <span>Style No.</span>
+            <strong>{item.styleNumber || 'Number pending'}</strong>
+          </div>
+          {(cardFields.targetOrderWeek || cardFields.stageDays) && (
+            <div className="tracker-card-meta-line">
+              {cardFields.targetOrderWeek && <span><b>Target</b> {item.targetOrderWeek || '—'}</span>}
+              {cardFields.stageDays && <span><b>Stage</b> {item.workingDaysAtStage}d</span>}
+            </div>
+          )}
+        </div>
+      </button>
+      <div className="tracker-card-supporting">
+        <div className="tracker-card-fields">
+          {cardFields.patternMaker && (
+            <select
+              className="tracker-card-chip tracker-card-chip-pm"
+              aria-label={`Pattern maker for ${item.styleName}`}
+              title={item.patternMaker || 'Unassigned'}
+              value={item.patternAssignmentKey || ''}
+              disabled={reassignPending}
+              onChange={event => {
+                const option = assignmentOptions.find(value => value.assignmentKey === event.target.value);
+                if (option) onAssignmentChange(option.assignmentKey, option.name);
+              }}
+            >
+              {assignmentOptions.map(option => (
+                <option key={option.assignmentKey || 'unassigned'} value={option.assignmentKey}>{option.name}</option>
+              ))}
+            </select>
+          )}
+          {cardFields.type && <span className="tracker-card-chip tracker-card-chip-type">{item.type}</span>}
+          {cardFields.tier && <span className="tracker-card-chip tracker-card-chip-tier">{item.tier}</span>}
+        </div>
+        {(cardFields.status || markerLabels.length > 0) && (
+          <div className="tracker-card-status-row">
+            {cardFields.status && (
+              <span
+                className={`tracker-card-status ${item.status.toLowerCase().replaceAll(' ', '-')}`}
+                title={`${item.status} for ${item.workingDaysInStatus} working days`}
+              >
+                {item.status}
+              </span>
+            )}
+            {markerLabels.length > 0 && (
+              <span
+                className="tracker-card-status-markers"
+                title={markerLabels.join(' · ')}
+                aria-label={markerLabels.join(', ')}
+              >
+                {item.overStandard && <AlertTriangle className="card-status-icon over" size={14} aria-hidden="true" />}
+                {item.blocked && <Ban className="card-status-icon blocked" size={14} aria-hidden="true" />}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+    </article>
   );
 }
 
@@ -727,7 +1030,66 @@ function TrackerStandards() {
   );
 }
 
-function TrackerCapacity() {
+function ReassignmentDialog({ count, destination, reasons, pending, error, defaultReasonCode, onCancel, onSubmit }: {
+  count: number;
+  destination: string;
+  reasons: ReassignmentReason[];
+  pending: boolean;
+  error: string | null;
+  defaultReasonCode?: string;
+  onCancel: () => void;
+  onSubmit: (reasonCode: string, note: string) => void;
+}) {
+  const [reasonCode, setReasonCode] = useState(
+    reasons.find(reason => reason.code === defaultReasonCode)?.code ?? reasons[0]?.code ?? '',
+  );
+  const [note, setNote] = useState('');
+  const chosen = reasons.find(reason => reason.code === reasonCode);
+  return (
+    <div className="reassignment-modal-backdrop" role="presentation" onMouseDown={onCancel}>
+      <form className="reassignment-modal" onMouseDown={event => event.stopPropagation()} onSubmit={event => {
+        event.preventDefault();
+        if (reasonCode) onSubmit(reasonCode, note);
+      }}>
+        <span className="tracker-kicker">Assignment context</span>
+        <h2>Reassign {count} {count === 1 ? 'style' : 'styles'} to {destination || 'Unassigned'}</h2>
+        <p>The reason determines whether this is a resourcing event or a style-related handoff.</p>
+        <label className="tracker-input-wrap">
+          <span>Reason</span>
+          <select value={reasonCode} onChange={event => setReasonCode(event.target.value)} required>
+            <optgroup label="Resourcing reasons">
+              {reasons.filter(reason => reason.category === 'operational').map(reason => <option key={reason.id} value={reason.code}>{reason.label}</option>)}
+            </optgroup>
+            <optgroup label="Style-related reasons">
+              {reasons.filter(reason => reason.category === 'style').map(reason => <option key={reason.id} value={reason.code}>{reason.label}</option>)}
+            </optgroup>
+          </select>
+        </label>
+        {chosen && <div className={`reassignment-classification ${chosen.category}`}>
+          {chosen.category === 'operational'
+            ? 'Resourcing signal — Capacity will show the impact, but the styles will not be flagged.'
+            : 'Style signal — the affected styles will show a style handoff flag.'}
+        </div>}
+        <label className="tracker-input-wrap">
+          <span>Note (optional)</span>
+          <textarea value={note} onChange={event => setNote(event.target.value)} maxLength={500} placeholder="Add useful context for the team…" />
+        </label>
+        {error && <div className="tracker-assignment-error">{error}</div>}
+        <div className="form-actions">
+          <button type="button" className="button" onClick={onCancel}>Cancel</button>
+          <button type="submit" className="button button-dark" disabled={!reasonCode || pending}>{pending ? 'Reassigning…' : 'Confirm reassignment'}</button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+function TrackerCapacity({ reassignmentReasons, focusedPatternMaker }: { reassignmentReasons: ReassignmentReason[]; focusedPatternMaker: string }) {
+  const queryClient = useQueryClient();
+  const [pendingSuggestion, setPendingSuggestion] = useState<ReportingPayload['capacity']['rebalanceSuggestions'][number] | null>(null);
+  const [selectedLegacyCadIds, setSelectedLegacyCadIds] = useState<number[]>([]);
+  const [legacyCadDestination, setLegacyCadDestination] = useState('');
+  const [legacyCadReviewOpen, setLegacyCadReviewOpen] = useState(false);
   const query = useQuery({
     queryKey: ['workspace', 'style-development-tracker', 'reporting'],
     queryFn: async () => {
@@ -736,64 +1098,422 @@ function TrackerCapacity() {
       return res.json() as Promise<ReportingPayload>;
     }
   });
+  useEffect(() => {
+    if (!focusedPatternMaker || query.isLoading) return;
+    const timer = window.setTimeout(() => {
+      document.getElementById(`capacity-person-${focusedPatternMaker.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 120);
+    return () => window.clearTimeout(timer);
+  }, [focusedPatternMaker, query.isLoading]);
+
+  const reassignMutation = useMutation({
+    mutationFn: async ({ styleIds, assignmentKey, reasonCode, note }: { styleIds: number[]; assignmentKey: string; reasonCode: string; note: string }) => {
+      const res = await fetch('/api/workspace/style-development-tracker/bulk-pattern-maker', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ styleIds, assignmentKey, reasonCode, note }),
+      });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || 'Could not reassign styles');
+      }
+      return res.json() as Promise<{ updated: number }>;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'reporting'] });
+      setPendingSuggestion(null);
+      setLegacyCadReviewOpen(false);
+    },
+  });
+  const legacyCadIdKey = (query.data?.capacity.legacyCad?.styles ?? []).map(style => style.id).join(',');
+  useEffect(() => {
+    const legacyStyles = query.data?.capacity.legacyCad?.styles;
+    setSelectedLegacyCadIds(legacyStyles?.map(style => style.id) ?? []);
+  }, [legacyCadIdKey]);
+  useEffect(() => {
+    const makers = query.data?.capacity.byPatternMaker ?? [];
+    if (!makers.length || makers.some(maker => maker.assignmentKey === legacyCadDestination)) return;
+    const lightest = [...makers].sort((a, b) => Number(a.queueWeeks ?? 0) - Number(b.queueWeeks ?? 0))[0];
+    setLegacyCadDestination(lightest?.assignmentKey ?? '');
+  }, [query.data?.capacity.byPatternMaker, legacyCadDestination]);
 
   if (query.isLoading) return <div className="tracker-empty-state">Loading capacity...</div>;
   if (query.isError) return <div className="tracker-empty-state"><AlertTriangle size={24} color="var(--coral)"/><h3>Capacity Unavailable</h3><p>{query.error instanceof Error ? query.error.message : 'Could not load data'}</p></div>;
 
   const data = query.data?.capacity;
   if (!data) return null;
+  const legacyCad = data.legacyCad;
+  const selectedLegacyCadStyles = legacyCad?.styles.filter(style => selectedLegacyCadIds.includes(style.id)) ?? [];
+  const selectedLegacyCadEffort = selectedLegacyCadStyles.reduce((sum, style) => sum + style.effortDays, 0);
+  const legacyDestination = data.byPatternMaker.find(maker => maker.assignmentKey === legacyCadDestination);
+  const legacyImpact = data.byPatternMaker.map(maker => {
+    const receives = maker.assignmentKey === legacyCadDestination;
+    return {
+      ...maker,
+      projectedTotal: maker.totalStylesHeld + (receives ? selectedLegacyCadStyles.length : 0),
+      projectedWeeks: maker.queueWeeks === null ? null : maker.queueWeeks
+        + (receives ? selectedLegacyCadEffort / (5 * Number(maker.effectiveCapacity || 1)) : 0),
+    };
+  });
 
   return (
     <div className="tracker-capacity">
       <div className="cap-kpi-row">
-         <div className="cap-kpi"><span>Pattern Makers</span><strong>{data.makers}</strong></div>
-         <div className="cap-kpi"><span>Weekly Capacity</span><strong>{data.weeklyCapacity} styles</strong></div>
-         <div className="cap-kpi"><span>Monthly Capacity</span><strong>{data.monthlyCapacity} styles</strong></div>
-         <div className="cap-kpi"><span>Target Adoptions</span><strong>{data.targetAdoptionsPerWeek} / wk</strong></div>
-      </div>
-      <div className="cap-kpi-row alternate">
-         <div className="cap-kpi"><span>Queue Depth</span><strong>{data.queueDepth} styles</strong></div>
-         <div className="cap-kpi"><span>Weeks Cover</span><strong>{Number(data.weeksCover).toFixed(1)} wks</strong></div>
-         <div className="cap-kpi"><span>Actual Adoptions</span><strong>{Number(data.adoptedPerWeek).toFixed(1)} / wk</strong></div>
-         <div className="cap-kpi"><span>Monthly Gap</span><strong className={data.monthlyGap < 0 ? 'negative' : 'positive'}>{data.monthlyGap > 0 ? '+' : ''}{Number(data.monthlyGap).toFixed(1)} styles</strong></div>
+         <div className="cap-kpi"><span>Available Now</span><strong>{Number(data.makers).toFixed(1)} <small>/ {Number(data.baseMakers).toFixed(1)}</small></strong></div>
+         <div className="cap-kpi"><span>Average Queue</span><strong>{Number(data.balance.averageQueueWeeks).toFixed(1)} wks</strong></div>
+         <div className="cap-kpi"><span>Queue Spread</span><strong>{Number(data.balance.spreadWeeks).toFixed(1)} wks</strong></div>
+         <div className="cap-kpi"><span>Overloaded Makers</span><strong className={data.balance.overloadedCount > 0 ? "negative" : "positive"}>{data.balance.overloadedCount}</strong></div>
       </div>
 
-      <div className="tracker-rep-card" style={{ marginTop: 24 }}>
-         <h3>Load by Pattern Maker</h3>
-          <p className="tracker-capacity-note">Pattern work is planned at two working days per pattern. Florence is shown at 0.5 effective capacity because team leadership and quality checks take half of her working time. CAD and Ken Knit are routed work, not personal pattern-maker capacity.</p>
-         <table className="tracker-rep-table">
-            <thead><tr><th>Owner / route</th><th>All assigned</th><th>At Pattern</th><th>Pattern work</th><th>Capacity treatment</th></tr></thead>
-           <tbody>
-              {data.byPatternMaker?.map((pm, i) => (
-                 <tr key={i} className={pm.isTeamLead ? 'capacity-team-lead' : ''}>
-                   <td>
-                     <strong>{pm.patternMaker}</strong>
-                     {pm.isTeamLead && <span className="capacity-route-badge lead">Team lead</span>}
-                     {pm.kind === 'team' && <span className="capacity-route-badge">CAD team</span>}
-                     {pm.kind === 'supplier' && <span className="capacity-route-badge">External supplier</span>}
-                   </td>
-                   <td>{pm.load} styles</td>
-                   <td><strong>{pm.patternStageCount}</strong></td>
-                   <td>{Number(pm.weeksOfPatternWork).toFixed(1)} weeks <span className="capacity-work-days">({pm.patternWorkDays} days)</span></td>
-                   <td>
-                     {pm.isTeamLead
-                       ? '0.5 effective maker'
-                       : pm.kind === 'team'
-                         ? 'Routed to team'
-                         : pm.kind === 'supplier'
-                           ? 'External capacity'
-                           : pm.kind === 'unassigned'
-                             ? 'Needs assignment'
-                             : pm.effectiveCapacity === 1
-                               ? '1.0 effective maker'
-                               : 'Tracked separately'}
+      {legacyCad && (
+        <div className="tracker-rep-card" style={{ marginTop: 24, padding: 0, overflow: 'hidden', borderColor: '#c77b30' }}>
+          <div style={{ padding: '20px 24px', borderBottom: '1px solid #e0c39f', background: '#fff8ed', display: 'flex', justifyContent: 'space-between', gap: 20 }}>
+            <div>
+              <span className="tracker-kicker" style={{ color: '#9a5b1b' }}>Team route · separate capacity</span>
+              <h3 style={{ margin: '4px 0 6px', fontSize: 17 }}>CAD pattern work</h3>
+              <p className="tracker-capacity-note" style={{ margin: 0 }}>CAD remains available as a selectable team route while the phase-out progresses gradually. This workload is tracked separately from individual pattern-maker capacity.</p>
+            </div>
+            <div style={{ textAlign: 'right', minWidth: 120 }}>
+              <strong style={{ display: 'block', fontSize: 28 }}>{legacyCad.totalStylesHeld}</strong>
+              <span className="capacity-work-days">active styles currently assigned</span>
+            </div>
+          </div>
+          <div className="legacy-cad-capacity-grid">
+            <div>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, fontSize: 13, fontWeight: 600 }}>
+                <input
+                  type="checkbox"
+                  checked={selectedLegacyCadIds.length === legacyCad.styles.length}
+                  onChange={event => setSelectedLegacyCadIds(event.target.checked ? legacyCad.styles.map(style => style.id) : [])}
+                />
+                Select all {legacyCad.styles.length} CAD styles
+              </label>
+              <div style={{ maxHeight: 330, overflowY: 'auto', border: '1px solid #e2d8c9', borderRadius: 8 }}>
+                {legacyCad.styles.map(style => (
+                  <label key={style.id} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', padding: '10px 12px', borderBottom: '1px solid #eee5d8', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={selectedLegacyCadIds.includes(style.id)}
+                      onChange={event => setSelectedLegacyCadIds(current => event.target.checked
+                        ? [...current, style.id]
+                        : current.filter(id => id !== style.id))}
+                    />
+                    <span>
+                      <strong style={{ display: 'block', fontSize: 12 }}>{style.styleNumber || 'Number pending'}</strong>
+                      <span className="capacity-work-days">{style.styleName} · {style.stage}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="tracker-input-wrap">
+                <span>Reassign selected styles to</span>
+                <select value={legacyCadDestination} onChange={event => setLegacyCadDestination(event.target.value)}>
+                  {data.byPatternMaker.map(maker => <option key={maker.assignmentKey} value={maker.assignmentKey}>{maker.patternMaker}</option>)}
+                </select>
+              </label>
+              <p className="tracker-capacity-note" style={{ margin: '10px 0' }}>
+                Impact preview includes all {Number(data.baseMakers).toFixed(1)} effective makers. Queue weeks assume the selected CAD work still needs pattern completion.
+              </p>
+              <table className="tracker-rep-table balance-table">
+                <thead><tr><th>Pattern maker</th><th>All assigned</th><th>Queue weeks</th></tr></thead>
+                <tbody>
+                  {legacyImpact.map(maker => (
+                    <tr key={maker.assignmentKey} style={maker.assignmentKey === legacyCadDestination ? { background: '#fff1de' } : undefined}>
+                      <td><strong>{maker.patternMaker}</strong><div className="capacity-work-days">{Number(maker.effectiveCapacity).toFixed(1)} capacity</div></td>
+                      <td>{maker.totalStylesHeld} → <strong>{maker.projectedTotal}</strong></td>
+                      <td>{maker.queueWeeks === null ? '—' : `${maker.queueWeeks.toFixed(1)} → ${maker.projectedWeeks?.toFixed(1)}`}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button
+                type="button"
+                className="button button-dark"
+                style={{ marginTop: 14, width: '100%' }}
+                disabled={!selectedLegacyCadStyles.length || !legacyDestination}
+                onClick={() => setLegacyCadReviewOpen(true)}
+              >
+                Review reassignment of {selectedLegacyCadStyles.length} CAD style{selectedLegacyCadStyles.length === 1 ? '' : 's'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="tracker-rep-card capacity-balancing" style={{ marginTop: 24, padding: 0, overflow: 'hidden' }}>
+        <div style={{ padding: '20px 24px', borderBottom: '1px solid #d8d0c2', background: '#fbfaf8' }}>
+          <h3 style={{ margin: 0, fontSize: 16 }}>Personal Workloads</h3>
+          <p className="tracker-capacity-note" style={{ marginTop: 6 }}>Queue in weeks relative to each maker's effective capacity (Florence at 0.5).</p>
+        </div>
+        <table className="tracker-rep-table balance-table">
+          <thead>
+            <tr>
+              <th>Pattern Maker</th>
+              <th>Status</th>
+              <th>Queue Time</th>
+              <th>Total Backlog</th>
+              <th>Category Mix</th>
+              <th>Oldest Waiting</th>
+            </tr>
+          </thead>
+          <tbody>
+            {data.byPatternMaker?.filter(pm => pm.kind === 'person').map((pm, i) => (
+              <tr
+                key={i}
+                id={`capacity-person-${pm.patternMaker.toLowerCase().replace(/[^a-z0-9]+/g, '-')}`}
+                className={`${pm.isTeamLead ? 'capacity-team-lead' : ''} ${pm.patternMaker.toLowerCase() === focusedPatternMaker.toLowerCase() ? 'capacity-person-focus' : ''}`.trim()}
+              >
+                <td>
+                  <strong>{pm.patternMaker}</strong>
+                  {pm.isTeamLead && <span className="capacity-route-badge lead">Team lead</span>}
+                  {pm.unavailableNow && <span className="capacity-route-badge unavailable">Unavailable</span>}
+                  {pm.nextUnavailable && (
+                    <div style={{ fontSize: 10, color: '#8c8375', marginTop: 4, fontFamily: 'var(--app-font-mono)' }}>
+                      Away from {new Date(`${pm.nextUnavailable.unavailableFrom}T00:00:00`).toLocaleDateString('en-GB')}
+                    </div>
+                  )}
+                </td>
+                <td>
+                  <span className={`balance-status-badge ${pm.balanceStatus}`}>
+                    {pm.balanceStatus === 'overloaded' ? 'Overloaded' : pm.balanceStatus === 'light' ? 'Light' : 'Balanced'}
+                  </span>
+                </td>
+                <td>
+                  <strong className={pm.balanceStatus === 'overloaded' ? 'cap-negative' : ''}>{Number(pm.queueWeeks).toFixed(1)} wks</strong>
+                  <div className="capacity-work-days">{pm.queueEffortDays} days effort</div>
+                </td>
+                <td>
+                  <strong>{pm.queueStyleCount} styles</strong>
+                  <div className="capacity-work-days">of {pm.totalStylesHeld} total held</div>
+                  <div className="capacity-work-days">{pm.patternAwaitingCount} Pattern · {pm.transferToCadCount} Transfer</div>
+                </td>
+                <td>
+                  <div className="category-mix-mini">
+                    {pm.categoryMix?.slice(0, 3).map((mix, j) => (
+                      <span key={j} title={`${mix.effortDays} days effort`}>{mix.category}: {mix.count}</span>
+                    ))}
+                    {(pm.categoryMix?.length ?? 0) > 3 && <span>+{(pm.categoryMix?.length ?? 0) - 3}</span>}
+                  </div>
+                </td>
+                <td>
+                  {pm.oldestStyleName ? (
+                    <>
+                      <strong className={pm.oldestWaitingWorkingDays > 10 ? 'cap-negative' : ''}>{pm.oldestWaitingWorkingDays} days</strong>
+                      <div className="capacity-work-days truncate" style={{ maxWidth: 140 }} title={pm.oldestStyleName}>{pm.oldestStyleName}</div>
+                    </>
+                  ) : (
+                    <span className="capacity-work-days">None waiting</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {data.rebalanceSuggestions && data.rebalanceSuggestions.length > 0 && (
+        <div className="tracker-rep-card capacity-suggestions" style={{ marginTop: 24, padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '20px 24px', borderBottom: '1px solid #d8d0c2', background: '#fffaf0' }}>
+            <h3 style={{ margin: 0, fontSize: 16, color: '#8a6d38' }}>Advisory Style Moves</h3>
+            <p className="tracker-capacity-note" style={{ marginTop: 6, color: '#7a6336' }}>Suggested reassignments to balance queues across the team.</p>
+          </div>
+          <table className="tracker-rep-table balance-table">
+            <thead>
+              <tr>
+                <th>Style</th>
+                <th>Category</th>
+                <th>From</th>
+                <th>To</th>
+                <th>Impact</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.rebalanceSuggestions.map((sug, i) => (
+                <tr key={i}>
+                  <td>
+                    <strong>{sug.styleNumber || 'No #'}</strong>
+                    <div className="capacity-work-days truncate" style={{ maxWidth: 160 }} title={sug.styleName}>{sug.styleName}</div>
+                  </td>
+                  <td>{sug.category} <div className="capacity-work-days">{sug.effortDays}d effort</div></td>
+                  <td>
+                    <div className="move-participant">
+                      <span>{sug.fromPatternMaker}</span>
+                      <small>{Number(sug.fromWeeksBefore).toFixed(1)}w → <strong>{Number(sug.fromWeeksAfter).toFixed(1)}w</strong></small>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="move-participant">
+                      <span>{sug.toPatternMaker}</span>
+                      <small>{Number(sug.toWeeksBefore).toFixed(1)}w → <strong>{Number(sug.toWeeksAfter).toFixed(1)}w</strong></small>
+                    </div>
+                  </td>
+                  <td>
+                    <div className="move-impact-badge">
+                      Spread -{Number(Math.abs((sug.fromWeeksBefore - sug.toWeeksBefore) - (sug.fromWeeksAfter - sug.toWeeksAfter))).toFixed(1)}w
+                    </div>
+                  </td>
+                  <td>
+                    <button
+                      className="button button-dark button-sm"
+                      disabled={reassignMutation.isPending}
+                      onClick={() => setPendingSuggestion(sug)}
+                    >
+                      Review move
+                    </button>
                   </td>
                 </tr>
               ))}
-           </tbody>
-         </table>
-      </div>
-       <PatternMakerDirectory />
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {data.routedWork && data.routedWork.length > 0 && (
+        <div className="tracker-rep-card capacity-balancing" style={{ marginTop: 24, padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '20px 24px', borderBottom: '1px solid #d8d0c2' }}>
+            <h3 style={{ margin: 0, fontSize: 15 }}>Ken Knit & Unassigned Work</h3>
+            <p className="tracker-capacity-note" style={{ marginTop: 6 }}>External supplier and unassigned styles remain separate from personal capacity and the legacy CAD phase-out.</p>
+          </div>
+          <table className="tracker-rep-table balance-table">
+            <thead>
+              <tr>
+                <th>Route</th>
+                <th>Type</th>
+                <th>Total Backlog</th>
+                <th>Queue</th>
+                <th>Category Mix</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.routedWork.map((rw, i) => (
+                <tr key={i}>
+                  <td><strong>{rw.patternMaker || 'Unassigned'}</strong></td>
+                  <td><span className="capacity-route-badge">{rw.kind}</span></td>
+                  <td>{rw.totalStylesHeld} styles</td>
+                  <td>{rw.queueStyleCount} styles</td>
+                  <td>
+                    <div className="category-mix-mini">
+                      {rw.categoryMix?.slice(0, 4).map((mix, j) => (
+                        <span key={j}>{mix.category}: {mix.count}</span>
+                      ))}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {data.nonCapacityPeople && data.nonCapacityPeople.length > 0 && (
+        <div className="tracker-rep-card capacity-balancing" style={{ marginTop: 24, padding: 0, overflow: 'hidden' }}>
+          <div style={{ padding: '20px 24px', borderBottom: '1px solid #d8d0c2' }}>
+            <h3 style={{ margin: 0, fontSize: 15 }}>Assigned Outside Capacity</h3>
+            <p className="tracker-capacity-note" style={{ marginTop: 6 }}>People can hold assigned work without contributing to the 3.5 effective pattern-maker capacity.</p>
+          </div>
+          <table className="tracker-rep-table balance-table">
+            <thead><tr><th>Person</th><th>Styles held</th><th>Pattern queue</th><th>Capacity contribution</th></tr></thead>
+            <tbody>
+              {data.nonCapacityPeople.map(person => (
+                <tr key={person.assignmentKey}>
+                  <td><strong>{person.patternMaker}</strong></td>
+                  <td>{person.totalStylesHeld}</td>
+                  <td>{person.queueStyleCount}</td>
+                  <td>0.0</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {data.availabilitySchedule && data.availabilitySchedule.length > 0 && (
+        <div className="tracker-rep-card capacity-availability" style={{ marginTop: 24 }}>
+          <h3>Planned Availability</h3>
+          <p className="tracker-capacity-note">Forecast capacity reflects dated leave or sickness. Overlapping absences are combined.</p>
+          <div className="capacity-event-grid">
+            {data.availabilitySchedule.map(period => (
+              <article key={period.id}>
+                <div><strong>{period.patternMaker}</strong><span>{new Date(`${period.unavailableFrom}T00:00:00`).toLocaleDateString('en-GB')} – {new Date(`${period.unavailableTo}T00:00:00`).toLocaleDateString('en-GB')}</span></div>
+                <div className="capacity-impact-number"><strong>{Number(period.weeklyCapacityDuring).toFixed(2)}</strong><span>patterns / week</span></div>
+                <p>{Number(period.makersDuring).toFixed(1)} effective makers during this period{period.note ? ` · ${period.note}` : ''}</p>
+              </article>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {data.redistributions && data.redistributions.length > 0 && (
+        <div className="tracker-rep-card capacity-redistributions" style={{ marginTop: 24 }}>
+          <h3>Queue Redistributions</h3>
+          <p className="tracker-capacity-note">Operational moves explain changes in waiting time without flagging the styles as troubled.</p>
+          <div className="redistribution-list">
+            {data.redistributions.map(event => {
+              const names = Array.from(new Set([...Object.keys(event.beforeLoads || {}), ...Object.keys(event.afterLoads || {})]));
+              const deltas = names.map(name => ({ name, delta: (event.afterLoads[name] ?? 0) - (event.beforeLoads[name] ?? 0) })).filter(item => item.delta !== 0);
+              const patternNames = Array.from(new Set([...Object.keys(event.beforePatternLoads || {}), ...Object.keys(event.afterPatternLoads || {})]));
+              const patternDeltas = patternNames.map(name => ({ name, delta: (event.afterPatternLoads[name] ?? 0) - (event.beforePatternLoads[name] ?? 0) })).filter(item => item.delta !== 0);
+              return (
+                <article key={event.id}>
+                  <header><div><strong>{event.reasonLabel}</strong><span>{event.changedCount} {event.changedCount === 1 ? 'style' : 'styles'} · {new Date(event.recordedAt).toLocaleDateString('en-GB')} · {event.recordedBy}</span></div></header>
+                  <div className="redistribution-deltas">
+                    {deltas.map(item => <span key={item.name} className={item.delta > 0 ? 'increase' : 'decrease'}>{item.name} {item.delta > 0 ? '+' : ''}{item.delta}</span>)}
+                  </div>
+                  <div className="redistribution-pattern-impact">
+                    <strong>Pattern-stage queue:</strong>{' '}
+                    {patternDeltas.length
+                      ? patternDeltas.map(item => `${item.name} ${item.delta > 0 ? '+' : ''}${item.delta}`).join(' · ')
+                      : 'No immediate change — moved styles are outside Pattern stage.'}
+                  </div>
+                  {event.note && <p>{event.note}</p>}
+                </article>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {pendingSuggestion && (
+        <ReassignmentDialog
+          count={1}
+          destination={pendingSuggestion.toPatternMaker}
+          reasons={reassignmentReasons}
+          defaultReasonCode="rebalancing"
+          pending={reassignMutation.isPending}
+          error={reassignMutation.error instanceof Error ? reassignMutation.error.message : null}
+          onCancel={() => setPendingSuggestion(null)}
+          onSubmit={(reasonCode, note) => reassignMutation.mutate({
+            styleIds: [pendingSuggestion.styleId],
+             assignmentKey: pendingSuggestion.toAssignmentKey,
+            reasonCode,
+            note,
+          })}
+        />
+      )}
+      {legacyCadReviewOpen && legacyCad && legacyDestination && (
+        <ReassignmentDialog
+          count={selectedLegacyCadStyles.length}
+          destination={`${legacyDestination.patternMaker} (${legacyDestination.totalStylesHeld} → ${legacyDestination.totalStylesHeld + selectedLegacyCadStyles.length} assigned; ${legacyDestination.queueWeeks?.toFixed(1) ?? '—'} → ${legacyImpact.find(row => row.assignmentKey === legacyDestination.assignmentKey)?.projectedWeeks?.toFixed(1) ?? '—'} queue weeks)`}
+          reasons={reassignmentReasons}
+          defaultReasonCode="rebalancing"
+          pending={reassignMutation.isPending}
+          error={reassignMutation.error instanceof Error ? reassignMutation.error.message : null}
+          onCancel={() => setLegacyCadReviewOpen(false)}
+          onSubmit={(reasonCode, note) => reassignMutation.mutate({
+            styleIds: selectedLegacyCadStyles.map(style => style.id),
+            assignmentKey: legacyDestination.assignmentKey,
+            reasonCode,
+            note,
+          })}
+        />
+      )}
+      <PatternMakerDirectory />
+      <ReassignmentReasonDirectory />
     </div>
   );
 }
@@ -801,13 +1521,20 @@ function TrackerCapacity() {
 function PatternMakerDirectory() {
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
-  const [kind, setKind] = useState<PatternMakerOption['kind']>('person');
+  const [kind, setKind] = useState<'team' | 'supplier'>('team');
+  const [unavailableMakerId, setUnavailableMakerId] = useState('');
+  const [unavailableFrom, setUnavailableFrom] = useState('');
+  const [unavailableTo, setUnavailableTo] = useState('');
+  const [unavailableNote, setUnavailableNote] = useState('');
   const query = useQuery({
     queryKey: ['workspace', 'style-development-tracker', 'pattern-makers'],
     queryFn: async () => {
       const res = await fetch('/api/workspace/style-development-tracker/pattern-makers', { credentials: 'include' });
       if (!res.ok) throw new Error('Could not load assignment options');
-      return res.json() as Promise<{ items: PatternMakerOption[] }>;
+      return res.json() as Promise<{
+        items: PatternMakerOption[];
+        unavailability: { id: number; patternMakerId: number; patternMaker: string; unavailableFrom: string; unavailableTo: string; note: string; recordedBy: string }[];
+      }>;
     },
   });
   const refresh = () => {
@@ -837,16 +1564,44 @@ function PatternMakerDirectory() {
     },
     onSuccess: refresh,
   });
+  const availabilityMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch(`/api/workspace/style-development-tracker/pattern-makers/${unavailableMakerId}/unavailability`, {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ unavailableFrom, unavailableTo, note: unavailableNote }),
+      });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || 'Could not save unavailable period');
+      }
+    },
+    onSuccess: () => {
+      setUnavailableFrom(''); setUnavailableTo(''); setUnavailableNote('');
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'reporting'] });
+      refresh();
+    },
+  });
+  const removeAvailabilityMutation = useMutation({
+    mutationFn: async (id: number) => {
+      const res = await fetch(`/api/workspace/style-development-tracker/pattern-maker-unavailability/${id}`, {
+        method: 'DELETE', credentials: 'include',
+      });
+      if (!res.ok) throw new Error('Could not remove unavailable period');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'reporting'] });
+      refresh();
+    },
+  });
   return (
     <div className="tracker-rep-card pattern-maker-directory" style={{ marginTop: 24 }}>
       <div>
         <h3>Assignment options</h3>
-        <p className="tracker-capacity-note">Add or remove names here as the team changes. Removing an option does not erase existing style history.</p>
+        <p className="tracker-capacity-note">People come from Settings automatically. Add only controlled internal-team or external-supplier routes here.</p>
       </div>
       <form className="pattern-maker-add" onSubmit={event => { event.preventDefault(); if (name.trim()) addMutation.mutate(); }}>
-        <input value={name} onChange={event => setName(event.target.value)} placeholder="Name or routing team" />
-        <select value={kind} onChange={event => setKind(event.target.value as PatternMakerOption['kind'])}>
-          <option value="person">Pattern maker</option>
+        <input value={name} onChange={event => setName(event.target.value)} placeholder="Routing team or supplier" />
+        <select value={kind} onChange={event => setKind(event.target.value as 'team' | 'supplier')}>
           <option value="team">Internal team</option>
           <option value="supplier">External supplier</option>
         </select>
@@ -855,21 +1610,106 @@ function PatternMakerDirectory() {
       <div className="pattern-maker-option-list">
         {query.data?.items.map(option => (
           <div key={option.id} className={!option.active ? 'inactive' : ''}>
-            <span><strong>{option.name}</strong><small>{option.kind} · {option.load} assigned</small></span>
-            <button className="text-button" disabled={toggleMutation.isPending} onClick={() => toggleMutation.mutate({ id: option.id, active: !option.active })}>
-              {option.active ? 'Remove from choices' : 'Restore'}
-            </button>
+            <span><strong>{option.name}</strong><small>{option.kind === 'person' ? `${option.team || 'Settings team member'} · ${option.role || 'Team member'}` : option.kind} · {option.load} assigned</small></span>
+            {option.kind === 'person'
+              ? <span className="capacity-work-days">Managed in Settings</span>
+              : <button className="text-button" disabled={toggleMutation.isPending} onClick={() => toggleMutation.mutate({ id: option.id, active: !option.active })}>
+                  {option.active ? 'Remove from choices' : 'Restore'}
+                </button>}
           </div>
         ))}
       </div>
-      {(query.isError || addMutation.isError || toggleMutation.isError) && <div className="tracker-assignment-error">Assignment options could not be updated.</div>}
+      <div className="pattern-maker-availability-editor">
+        <h4>Mark unavailable</h4>
+        <form className="availability-form" onSubmit={event => { event.preventDefault(); availabilityMutation.mutate(); }}>
+          <select value={unavailableMakerId} onChange={event => setUnavailableMakerId(event.target.value)} required>
+            <option value="">Pattern maker…</option>
+            {query.data?.items.filter(option => option.active && option.kind === 'person').map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
+          </select>
+          <label><span>From</span><input type="date" value={unavailableFrom} onChange={event => setUnavailableFrom(event.target.value)} required /></label>
+          <label><span>To</span><input type="date" min={unavailableFrom} value={unavailableTo} onChange={event => setUnavailableTo(event.target.value)} required /></label>
+          <input value={unavailableNote} onChange={event => setUnavailableNote(event.target.value)} maxLength={500} placeholder="Leave, sickness, or other context…" />
+          <button className="button button-dark" disabled={availabilityMutation.isPending}>Save period</button>
+        </form>
+        {query.data?.unavailability && query.data.unavailability.length > 0 && (
+          <div className="availability-list">
+            {query.data.unavailability.map(period => (
+              <div key={period.id}>
+                <span><strong>{period.patternMaker}</strong><small>{String(period.unavailableFrom).slice(0, 10)} → {String(period.unavailableTo).slice(0, 10)}{period.note ? ` · ${period.note}` : ''}</small></span>
+                <button className="text-button" onClick={() => removeAvailabilityMutation.mutate(period.id)}>Remove</button>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {(query.isError || addMutation.isError || toggleMutation.isError || availabilityMutation.isError || removeAvailabilityMutation.isError) && <div className="tracker-assignment-error">Pattern-maker settings could not be updated.</div>}
+    </div>
+  );
+}
+
+function ReassignmentReasonDirectory() {
+  const queryClient = useQueryClient();
+  const [label, setLabel] = useState('');
+  const [category, setCategory] = useState<ReassignmentReason['category']>('operational');
+  const query = useQuery({
+    queryKey: ['workspace', 'style-development-tracker', 'reassignment-reasons'],
+    queryFn: async () => {
+      const res = await fetch('/api/workspace/style-development-tracker/reassignment-reasons', { credentials: 'include' });
+      if (!res.ok) throw new Error('Could not load reassignment reasons');
+      return res.json() as Promise<{ items: ReassignmentReason[] }>;
+    },
+  });
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker'] });
+    queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'reassignment-reasons'] });
+  };
+  const addMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/workspace/style-development-tracker/reassignment-reasons', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, category }),
+      });
+      if (!res.ok) throw new Error('Could not add reassignment reason');
+    },
+    onSuccess: () => { setLabel(''); refresh(); },
+  });
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, active }: { id: number; active: boolean }) => {
+      const res = await fetch(`/api/workspace/style-development-tracker/reassignment-reasons/${id}`, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active }),
+      });
+      if (!res.ok) throw new Error('Could not update reassignment reason');
+    },
+    onSuccess: refresh,
+  });
+  return (
+    <div className="tracker-rep-card pattern-maker-directory" style={{ marginTop: 24 }}>
+      <div><h3>Reassignment reasons</h3><p className="tracker-capacity-note">Operational reasons affect resourcing reports. Style-related reasons flag the style for attention.</p></div>
+      <form className="pattern-maker-add" onSubmit={event => { event.preventDefault(); if (label.trim()) addMutation.mutate(); }}>
+        <input value={label} onChange={event => setLabel(event.target.value)} placeholder="Reason label" />
+        <select value={category} onChange={event => setCategory(event.target.value as ReassignmentReason['category'])}>
+          <option value="operational">Resourcing reason</option>
+          <option value="style">Style-related reason</option>
+        </select>
+        <button className="button button-dark" disabled={!label.trim() || addMutation.isPending}>Add reason</button>
+      </form>
+      <div className="pattern-maker-option-list">
+        {query.data?.items.map(reason => (
+          <div key={reason.id} className={!reason.active ? 'inactive' : ''}>
+            <span><strong>{reason.label}</strong><small>{reason.category === 'operational' ? 'Resourcing signal' : 'Style signal'}</small></span>
+            <button className="text-button" disabled={toggleMutation.isPending} onClick={() => toggleMutation.mutate({ id: reason.id, active: !reason.active })}>{reason.active ? 'Remove from choices' : 'Restore'}</button>
+          </div>
+        ))}
+      </div>
+      {(query.isError || addMutation.isError || toggleMutation.isError) && <div className="tracker-assignment-error">Reassignment reasons could not be updated.</div>}
     </div>
   );
 }
 
 function TrackerApprovals({ items, onOpenDetail }: { items: TrackerStyle[], onOpenDetail: (id: number) => void }) {
   const pending = items.filter(i => i.waitingDecision !== null)
-    .sort((a, b) => new Date(a.stageStartedAt || 0).getTime() - new Date(b.stageStartedAt || 0).getTime());
+    .sort((a, b) => new Date(a.statusStartedAt || 0).getTime() - new Date(b.statusStartedAt || 0).getTime());
 
   if (pending.length === 0) return (
      <div className="tracker-empty-state">
@@ -931,7 +1771,7 @@ function ApprovalRow({ item, onOpenDetail }: { item: TrackerStyle, onOpenDetail:
             <div className="tracker-card-subtitle">{item.styleNumber || 'No number'} · {item.targetOrderWeek || 'No week'}</div>
             <div className="tracker-card-title" style={{ fontSize: 16 }}>{item.styleName}</div>
             <div className="tracker-approval-meta">
-               Pending: <strong>{item.waitingDecision?.replace('_', ' ').toUpperCase()}</strong> · Waiting {item.workingDaysAtStage} days
+               Pending: <strong>{item.waitingDecision?.replace('_', ' ').toUpperCase()}</strong> · Waiting {item.workingDaysInStatus} days
             </div>
         </div>
         <div className="tracker-approval-actions">
@@ -981,6 +1821,7 @@ function TrackerFabricSelection({ item }: { item: TrackerDetailPayload }) {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', item.id] });
       queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker'] });
+         queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'reporting'] });
     }
   });
 
@@ -1070,7 +1911,12 @@ function TrackerFabricSelection({ item }: { item: TrackerDetailPayload }) {
   );
 }
 
-function TrackerDetailDrawer({ id, patternMakers, onClose }: { id: number, patternMakers: PatternMakerOption[], onClose: () => void }) {
+function TrackerDetailDrawer({ id, patternMakers, reassignmentReasons, onClose }: {
+  id: number;
+  patternMakers: PatternMakerOption[];
+  reassignmentReasons: ReassignmentReason[];
+  onClose: () => void;
+}) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['workspace', 'style-development-tracker', id],
     queryFn: async () => {
@@ -1126,6 +1972,11 @@ function TrackerDetailDrawer({ id, patternMakers, onClose }: { id: number, patte
                            {data.standardDays !== null && <div className="fact-sub">Standard: {data.standardDays} days</div>}
                         </div>
                         <div className="fact-box">
+                           <div className="fact-label">Current Status</div>
+                           <div className="fact-val">{data.status}</div>
+                           <div className="fact-sub">{data.workingDaysInStatus} working days{data.statusStartedAt ? ` · since ${new Date(data.statusStartedAt).toLocaleDateString('en-GB')}` : ''}</div>
+                        </div>
+                        <div className="fact-box">
                            <div className="fact-label">End to End Time</div>
                            <div className="fact-val">{data.actualElapsedWorkingDays ?? 0} days</div>
                            <div className="fact-sub">Standard: {data.standardEndToEndDays ?? 13} days</div>
@@ -1170,7 +2021,7 @@ function TrackerDetailDrawer({ id, patternMakers, onClose }: { id: number, patte
 
                  <div className="tracker-drawer-section">
                      <h3>Master Details</h3>
-                     <TrackerMasterForm item={data} patternMakers={patternMakers} />
+                     <TrackerMasterForm item={data} patternMakers={patternMakers} reassignmentReasons={reassignmentReasons} />
                  </div>
 
                  <div className="tracker-drawer-section">
@@ -1306,8 +2157,15 @@ function TrackerEventForm({ item }: { item: TrackerDetailPayload }) {
   );
 }
 
-function TrackerMasterForm({ item, patternMakers }: { item: TrackerDetailPayload, patternMakers: PatternMakerOption[] }) {
+function TrackerMasterForm({ item, patternMakers, reassignmentReasons }: {
+  item: TrackerDetailPayload;
+  patternMakers: PatternMakerOption[];
+  reassignmentReasons: ReassignmentReason[];
+}) {
   const queryClient = useQueryClient();
+  const assignmentChoices = patternMakers.filter(option =>
+    option.assignable || (item.isLegacyCadPatternAssignment && option.assignmentKey === item.patternAssignmentKey)
+  );
   const mutation = useMutation({
      mutationFn: async (data: Partial<TrackerDetailPayload>) => {
         const res = await fetch(`/api/workspace/style-development-tracker/${item.id}`, {
@@ -1337,7 +2195,7 @@ function TrackerMasterForm({ item, patternMakers }: { item: TrackerDetailPayload
      subCategory: item.subCategory || '',
       brand: item.brand || '',
       fabric: item.fabric || '',
-      patternMaker: item.patternMaker || '',
+      patternAssignmentKey: item.patternAssignmentKey || '',
       adoptionDate: item.adoptionDate || '',
       targetOrderWeek: item.targetOrderWeek || '',
       targetLaunchWeek: item.targetLaunchWeek || '',
@@ -1346,8 +2204,11 @@ function TrackerMasterForm({ item, patternMakers }: { item: TrackerDetailPayload
       blockerReason: item.blockerReason || '',
      season: item.season || '',
      intendedSellingPriceKes: item.intendedSellingPriceKes || '',
+      patternEffortDays: item.patternEffortDays ?? '',
      exitStatus: item.exitStatus || '',
      exitReason: item.exitReason || '',
+     reassignmentReasonCode: reassignmentReasons[0]?.code || '',
+     reassignmentNote: '',
   });
 
   const submit = (e: React.FormEvent) => {
@@ -1361,7 +2222,7 @@ function TrackerMasterForm({ item, patternMakers }: { item: TrackerDetailPayload
        subCategory: form.subCategory,
         brand: form.brand,
         fabric: form.fabric,
-        patternMaker: form.patternMaker,
+        patternAssignmentKey: form.patternAssignmentKey,
         adoptionDate: form.adoptionDate || null,
         targetOrderWeek: form.targetOrderWeek || null,
         targetLaunchWeek: form.targetLaunchWeek || null,
@@ -1370,8 +2231,11 @@ function TrackerMasterForm({ item, patternMakers }: { item: TrackerDetailPayload
         blockerReason: form.blocked ? form.blockerReason : '',
        season: form.season,
        intendedSellingPriceKes: form.intendedSellingPriceKes ? Number(form.intendedSellingPriceKes) : null,
+        patternEffortDays: form.patternEffortDays ? Number(form.patternEffortDays) : null,
        exitStatus: form.exitStatus,
        exitReason: form.exitReason,
+       reassignmentReasonCode: form.reassignmentReasonCode,
+       reassignmentNote: form.reassignmentNote,
     });
   };
 
@@ -1423,11 +2287,42 @@ function TrackerMasterForm({ item, patternMakers }: { item: TrackerDetailPayload
             </label>
             <label className="tracker-input-wrap">
                <span>Pattern Maker</span>
-                <select value={form.patternMaker} onChange={e => setForm({...form, patternMaker: e.target.value})}>
+                <select value={form.patternAssignmentKey} onChange={e => setForm({...form, patternAssignmentKey: e.target.value})}>
                   <option value="">Unassigned</option>
-                  {patternMakers.map(option => <option key={option.id} value={option.name}>{option.name} · {option.load}{option.name !== form.patternMaker ? ` → ${option.load + 1}` : ''}</option>)}
+                  {assignmentChoices.map(option => <option key={option.assignmentKey} value={option.assignmentKey}>{option.name} · {option.load}{option.assignmentKey !== form.patternAssignmentKey ? ` → ${option.load + 1}` : ''}</option>)}
                 </select>
             </label>
+             <label className="tracker-input-wrap">
+                <span>Estimated Pattern Effort (days)</span>
+                <input
+                  type="number"
+                  min="0.5"
+                  max="20"
+                  step="0.5"
+                  value={form.patternEffortDays}
+                  onChange={e => setForm({...form, patternEffortDays: e.target.value})}
+                  placeholder="2 day standard"
+                />
+             </label>
+            {form.patternAssignmentKey !== (item.patternAssignmentKey || '') && (
+              <>
+                <label className="tracker-input-wrap">
+                  <span>Reassignment Reason</span>
+                  <select value={form.reassignmentReasonCode} onChange={e => setForm({...form, reassignmentReasonCode: e.target.value})} required>
+                    <optgroup label="Resourcing reasons">
+                      {reassignmentReasons.filter(reason => reason.category === 'operational').map(reason => <option key={reason.id} value={reason.code}>{reason.label}</option>)}
+                    </optgroup>
+                    <optgroup label="Style-related reasons">
+                      {reassignmentReasons.filter(reason => reason.category === 'style').map(reason => <option key={reason.id} value={reason.code}>{reason.label}</option>)}
+                    </optgroup>
+                  </select>
+                </label>
+                <label className="tracker-input-wrap tracker-field-wide">
+                  <span>Reassignment Note (optional)</span>
+                  <input value={form.reassignmentNote} onChange={e => setForm({...form, reassignmentNote: e.target.value})} maxLength={500} placeholder="Add context for this handoff…" />
+                </label>
+              </>
+            )}
            <label className="tracker-input-wrap">
               <span>Season</span>
               <select value={form.season} onChange={e => setForm({...form, season: e.target.value})}>
@@ -1552,7 +2447,12 @@ function TrackerHistory({ history }: { history: HistoryEntry[] }) {
                  {h.entryType === 'event' && <div>Recorded <strong>{h.eventType?.replace('_', ' ').toUpperCase()}</strong></div>}
                   {h.entryType === 'event' && h.outcome && <div className="note-text">Stage: {h.outcome}</div>}
                   {h.entryType === 'update' && <div>Updated <span className="tracker-history-change">{h.oldValue} → {h.newValue}</span></div>}
-                  {h.entryType === 'pattern_maker_changed' && <div>Reassigned pattern maker <span className="tracker-history-change">{h.oldValue || 'Unassigned'} → {h.newValue || 'Unassigned'}</span></div>}
+                  {h.entryType === 'pattern_maker_changed' && (
+                    <div>
+                      Reassigned pattern maker <span className="tracker-history-change">{h.oldValue || 'Unassigned'} → {h.newValue || 'Unassigned'}</span>
+                      {h.reassignmentReasonLabel && <span className={`history-reassignment-reason ${h.reassignmentReasonCategory || ''}`}>{h.reassignmentReasonLabel}</span>}
+                    </div>
+                  )}
                  {h.reason && <div className="note-text">Reason: {h.reason}</div>}
                  {h.note && <div className="note-text">{h.note}</div>}
               </div>

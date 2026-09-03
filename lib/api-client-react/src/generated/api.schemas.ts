@@ -129,6 +129,8 @@ export interface WorkspaceTeamDirectoryMember {
   name: string;
   roleTitle: string;
   teamSection: string;
+  department: string;
+  team: string;
   description: string;
   /** @nullable */
   birthday?: string | null;
@@ -586,8 +588,10 @@ export interface StyleCreate {
   launchRoute?: 'DTC' | 'Wholesale' | 'Marketplace' | 'Omnichannel' | null;
   styleClassification?: 'Core' | 'Fashion' | 'Seasonal' | 'Test' | null;
   rangeTier?: 'Tier 1' | 'Tier 2' | 'Tier 3' | 'Tier 4' | null;
-  designer?: string;
-  patternMaker?: string;
+  /** @nullable */
+  designUserId?: number | null;
+  /** @nullable */
+  patternUserId?: number | null;
   targetDate: string;
 }
 
@@ -595,8 +599,6 @@ export interface StyleUpdate {
   status?: string;
   stage?: string;
   owner?: string;
-  designer?: string;
-  patternMaker?: string;
   subCategory?: string;
   theme?: string;
   orderType?: string;
@@ -655,7 +657,8 @@ export interface TechPackUpdate {
   modifiedFromStyleNumber?: string;
   status?: string;
   version?: string;
-  owner?: string;
+  /** @nullable */
+  ownerUserId?: number | null;
 }
 
 export type FitSessionInputOutcome = typeof FitSessionInputOutcome[keyof typeof FitSessionInputOutcome];
@@ -686,14 +689,16 @@ export const GradingUpdateStatus = {
 
 export interface GradingUpdate {
   sizeRange?: string;
-  cadTeamMember?: string;
+  /** @nullable */
+  cadTeamMemberUserId?: number | null;
   status?: GradingUpdateStatus;
 }
 
 export interface SampleDevelopmentInput {
   purpose: string;
-  patternMaker: string;
-  sampleMakers?: string;
+  /** @nullable */
+  patternMakerUserId: number | null;
+  sampleMakerUserIds?: number[];
   unitsOrdered: number;
   dateCut?: string;
   dateFinished?: string;

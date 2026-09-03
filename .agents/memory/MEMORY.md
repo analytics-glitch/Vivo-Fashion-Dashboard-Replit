@@ -150,5 +150,7 @@
 - [Style Development tracker imports](style-development-tracker-imports.md) — Q3 batch imports use a dedicated tracker model; preserve exact status/source text and explicit style-number quality flags.
 - [Style Development stage history](style-development-stage-history.md) — stages derive from append-only events; blockers overlay rather than replace stage, and target-week edits retain old/new values.
 - [Style Development operating model](style-development-operating-model.md) — live fabric readiness, working-day interval evidence, exact exit reasons, and dynamic pattern capacity govern the tracker.
+- [Style Development board cards](style-development-board-cards.md) — image-first 4:5 cards with left-aligned hierarchy, separate chips, neutral image fallbacks, and user-selectable supporting fields.
 - [Production API compile gate](production-api-compile-gate.md) — watchdog compiles every backend Python file, including tests; one malformed test prevents port 8080 from opening and makes all live /api routes return 500.
 - [Store stock movement and colour opportunities](store-stock-movement-opportunities.md) — transfer routes are destination-aware; unseen colour suggestions require sold-style evidence and no prior store holding.
+- [Stock to sales planning evidence](stock-sales-planning-evidence.md) — archive frozen monthly reports separately from live BI; attach one snapshot to the monthly plan it informed.

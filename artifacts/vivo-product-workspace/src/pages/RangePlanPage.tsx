@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { AlertTriangle, Download, RefreshCw, Save, Target, TrendingDown, TrendingUp } from 'lucide-react';
+import { AlertTriangle, CalendarDays, Download, ExternalLink, FileSpreadsheet, Pencil, RefreshCw, Save, Target, TrendingDown, TrendingUp } from 'lucide-react';
 import {
   Bar,
   BarChart,
@@ -30,6 +30,15 @@ type RangePlanSeason = {
   newnessFloorPct: number;
   status: string;
   cadence: 'quarterly' | 'monthly';
+  stockSalesReport: StockSalesReport | null;
+};
+type StockSalesReport = {
+  id: number;
+  reportMonth: string;
+  pulledAt: string;
+  reportUrl: string;
+  informedPlanId: number | null;
+  informedPlanName: string | null;
 };
 type RangePlanRow = {
   id: number;
@@ -170,6 +179,14 @@ function monthLabel(value: string) {
   const date = new Date(`${value.slice(0, 10)}T00:00:00`);
   return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
 }
+function fullMonthLabel(value: string) {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('en-GB', { month: 'long', year: 'numeric' });
+}
+function fullDateLabel(value: string) {
+  const date = new Date(`${value.slice(0, 10)}T00:00:00`);
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' });
+}
 async function getRangePlan(seasonId?: number) {
   const params = new URLSearchParams();
   if (seasonId) params.set('seasonId', String(seasonId));
@@ -249,6 +266,17 @@ function RangePlanPage() {
   const [activeTab, setActiveTab] = useState<'matrix' | 'quarter' | 'health'>('matrix');
   const [selectedSeasonId, setSelectedSeasonId] = useState<number | undefined>();
   const [tierFilter, setTierFilter] = useState('All tiers');
+  const [snapshotEditorOpen, setSnapshotEditorOpen] = useState(false);
+  const [snapshotDraft, setSnapshotDraft] = useState({ reportMonth: '', pulledAt: '', reportUrl: '' });
+  const session = useQuery<{ user: { role?: string } | null }>({
+    queryKey: ['workspace', 'session'],
+    queryFn: async () => {
+      const response = await fetch('/api/workspace/session', { credentials: 'include' });
+      if (!response.ok) throw new Error('Session unavailable');
+      return response.json();
+    },
+    staleTime: 60_000,
+  });
   const rangePlan = useQuery({
     queryKey: ['workspace', 'range-plan', selectedSeasonId],
     queryFn: () => getRangePlan(selectedSeasonId),
@@ -280,6 +308,26 @@ function RangePlanPage() {
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] }),
   });
+  const saveStockSalesReport = useMutation({
+    mutationFn: async ({ seasonId, data }: { seasonId: number; data: { reportMonth: string; pulledAt: string; reportUrl: string } }) => {
+      const response = await fetch(`/api/workspace/range-plan/seasons/${seasonId}/stock-sales-report`, {
+        method: 'PUT',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        throw new Error(String(body.error || `Could not save report reference (${response.status})`));
+      }
+      return response.json() as Promise<StockSalesReport>;
+    },
+    onSuccess: () => {
+      setSnapshotEditorOpen(false);
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'stock-sales-reports'] });
+    },
+  });
 
   const payload = rangePlan.data;
   const season = payload?.season;
@@ -287,9 +335,19 @@ function RangePlanPage() {
   const planningDisclosure = payload?.planningDisclosure ?? null;
   const pipelineComparison = payload?.pipelineComparison ?? null;
   const orderTracking = payload?.orderTracking ?? null;
+  const isAdmin = session.data?.user?.role === 'Admin' || localStorage.getItem('workspace_user_role') === 'Admin';
   useEffect(() => {
     if (season?.cadence === 'monthly' && activeTab === 'quarter') setActiveTab('matrix');
   }, [activeTab, season?.cadence]);
+  useEffect(() => {
+    const report = season?.stockSalesReport;
+    setSnapshotDraft({
+      reportMonth: report?.reportMonth?.slice(0, 7) ?? '',
+      pulledAt: report?.pulledAt?.slice(0, 10) ?? '',
+      reportUrl: report?.reportUrl ?? '',
+    });
+    setSnapshotEditorOpen(false);
+  }, [season?.id, season?.stockSalesReport?.id, season?.stockSalesReport?.reportMonth, season?.stockSalesReport?.pulledAt, season?.stockSalesReport?.reportUrl]);
   const isActualPlusPlan = planningDisclosure !== null;
   const visibleRows = useMemo(() => rows.map((row) => {
     if (tierFilter === 'All tiers') return { ...row, styleCountTarget: row.newStyleCount + row.reorderStyleCount + row.replenishmentStyleCount };
@@ -394,6 +452,44 @@ function RangePlanPage() {
           </div>
         </div>
       </div>
+      {season.cadence === 'monthly' && (
+        <aside className="range-snapshot-reference" aria-label="Stock to sales report reference">
+          <div className="range-snapshot-icon"><FileSpreadsheet size={22} /></div>
+          <div className="range-snapshot-copy">
+            <span className="range-eyebrow">Planning evidence · point-in-time snapshot</span>
+            <h2>Stock to sales report</h2>
+            <p>This frozen report records the stock and sales position used when this plan was made. It is a reference, not a live view.</p>
+          </div>
+          {!snapshotEditorOpen && season.stockSalesReport && (
+            <div className="range-snapshot-details">
+              <strong>{fullMonthLabel(season.stockSalesReport.reportMonth)}</strong>
+              <span><CalendarDays size={13} /> Pulled {fullDateLabel(season.stockSalesReport.pulledAt)}</span>
+              <span>Informed {season.seasonName}</span>
+            </div>
+          )}
+          {!snapshotEditorOpen && !season.stockSalesReport && (
+            <div className="range-snapshot-empty"><strong>No snapshot attached</strong><span>Add the monthly report that informed this plan.</span></div>
+          )}
+          {!snapshotEditorOpen && (
+            <div className="range-snapshot-actions">
+              {season.stockSalesReport && <a className="button button-gold" href={season.stockSalesReport.reportUrl} target="_blank" rel="noreferrer"><ExternalLink size={14} /> Open report</a>}
+              {isAdmin && <button className="button button-quiet" type="button" onClick={() => setSnapshotEditorOpen(true)}><Pencil size={14} /> {season.stockSalesReport ? 'Edit reference' : 'Attach report'}</button>}
+            </div>
+          )}
+          {snapshotEditorOpen && (
+            <form className="range-snapshot-form" onSubmit={(event) => {
+              event.preventDefault();
+              saveStockSalesReport.mutate({ seasonId: season.id, data: snapshotDraft });
+            }}>
+              <label>Report month<input type="month" value={snapshotDraft.reportMonth} onChange={(event) => setSnapshotDraft((current) => ({ ...current, reportMonth: event.target.value }))} required /></label>
+              <label>Date pulled<input type="date" value={snapshotDraft.pulledAt} onChange={(event) => setSnapshotDraft((current) => ({ ...current, pulledAt: event.target.value }))} required /></label>
+              <label>Google Sheets link<input type="url" value={snapshotDraft.reportUrl} onChange={(event) => setSnapshotDraft((current) => ({ ...current, reportUrl: event.target.value }))} placeholder="https://docs.google.com/spreadsheets/…" required /></label>
+              {saveStockSalesReport.isError && <p className="range-snapshot-error">{saveStockSalesReport.error instanceof Error ? saveStockSalesReport.error.message : 'Could not save the report reference.'}</p>}
+              <div className="range-snapshot-form-actions"><button className="button button-quiet" type="button" onClick={() => setSnapshotEditorOpen(false)}>Cancel</button><button className="button button-dark" type="submit" disabled={saveStockSalesReport.isPending}>{saveStockSalesReport.isPending ? 'Saving…' : 'Save reference'}</button></div>
+            </form>
+          )}
+        </aside>
+      )}
       {!biTrusted && <div className="range-trust-blocked" role="alert" data-testid="status-range-plan-reconciliation-failure"><AlertTriangle size={19} /><div><strong>Not trusted — BI reconciliation failed</strong><span>{reconciliationFailures.map((item) => item.name ?? item.metric ?? item.label ?? item.error ?? item.message ?? 'Unspecified reconciliation').join(' · ')}</span></div></div>}
       <aside className="range-trust-panel" data-testid="panel-range-definitions">
         <div><span className="range-eyebrow">Definitions &amp; reconciliation</span><strong>{biTrusted ? 'BI-owned metrics verified' : 'BI-owned metrics blocked'}</strong><small>{biTrusted ? 'Shared metric definitions and formulae are governed by BI. Style Development remains the product-development exception.' : 'Do not use BI-owned headline figures until the failed reconciliation is resolved.'}</small></div>
