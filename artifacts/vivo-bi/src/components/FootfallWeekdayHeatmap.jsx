@@ -31,12 +31,14 @@ const HOT_CONVERSION = [245, 158, 11]; // amber — different story, different w
 const HOT_SHARE = [90, 58, 176];       // indigo — share-of-week is its own story
 const HOT_TURNIN = [185, 28, 28];      // crimson — turn-in is a "miss" intensity
 const HOT_OUTSIDE = [14, 116, 144];    // teal — outside traffic is its own dimension
+const HOT_REVENUE = [5, 150, 105];     // emerald — net revenue intensity
 
 const hotForMode = (mode) =>
   mode === "conversion" ? HOT_CONVERSION
   : mode === "share" ? HOT_SHARE
   : mode === "turnin" ? HOT_TURNIN
   : mode === "outside" ? HOT_OUTSIDE
+  : mode === "revenue" ? HOT_REVENUE
   : HOT_FOOTFALL;
 
 const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel, absoluteFootfall, hasOutside }) => {
@@ -72,18 +74,21 @@ const Cell = ({ value, maxValue, mode, days, loc, weekdayLabel, absoluteFootfall
     mode === "share"      ? `${(value * 100).toFixed(1)}% of week (${fmtNum(absoluteFootfall)} avg)` :
     mode === "turnin"     ? `${value.toFixed(1)}%` :
     mode === "outside"    ? `${fmtNum(value)} pedestrians/day` :
+    mode === "revenue"    ? `KES ${fmtNum(value)} net revenue/day` :
                             fmtNum(value);
   const cellLabel =
     mode === "conversion" ? `${value.toFixed(1)}%` :
     mode === "share"      ? `${Math.round(value * 100)}%` :
     mode === "turnin"     ? `${value.toFixed(1)}%` :
     mode === "outside"    ? (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : Math.round(value)) :
+    mode === "revenue"    ? (value >= 1000000 ? `${(value / 1000000).toFixed(1)}M` : value >= 1000 ? `${Math.round(value / 1000)}k` : Math.round(value)) :
                             (value >= 1000 ? `${(value / 1000).toFixed(1)}k` : Math.round(value));
   const modeLabel =
     mode === "conversion" ? "CR" :
     mode === "share"      ? "Share" :
     mode === "turnin"     ? "Turn-in" :
     mode === "outside"    ? "Outside" :
+    mode === "revenue"    ? "Revenue" :
                             "Footfall";
   return (
     <div
@@ -150,6 +155,7 @@ const FootfallWeekdayHeatmap = () => {
       mode === "conversion" ? "avg_conversion_rate" :
       mode === "turnin"     ? "avg_turn_in_rate" :
       mode === "outside"    ? "avg_outside_traffic" :
+      mode === "revenue"    ? "avg_revenue" :
                               "avg_footfall";
     let m = 0;
     top.forEach((r) => r.by_weekday.forEach((w) => {
@@ -225,6 +231,7 @@ const FootfallWeekdayHeatmap = () => {
             ["conversion", "Conversion"],
             ["outside", "Outside"],
             ["turnin", "Turn-in"],
+            ["revenue", "Revenue"],
           ].map(([k, lbl]) => (
             <button
               key={k}
@@ -263,6 +270,7 @@ const FootfallWeekdayHeatmap = () => {
                     mode === "share"      ? ((w.avg_footfall || 0) / weekTotal) :
                     mode === "turnin"     ? (w.avg_turn_in_rate || 0) :
                     mode === "outside"    ? (w.avg_outside_traffic || 0) :
+                    mode === "revenue"    ? (w.avg_revenue || 0) :
                                             (w.avg_footfall || 0);
                   return (
                     <Cell
@@ -289,6 +297,7 @@ const FootfallWeekdayHeatmap = () => {
           mode === "share"      ? "Low share" :
           mode === "turnin"     ? "Low turn-in" :
           mode === "outside"    ? "Quiet pavement" :
+          mode === "revenue"    ? "Low revenue" :
                                   "Quiet day"
         }</span>
         <div
@@ -302,6 +311,7 @@ const FootfallWeekdayHeatmap = () => {
           mode === "share"      ? "High share" :
           mode === "turnin"     ? "High turn-in" :
           mode === "outside"    ? "Busy pavement" :
+          mode === "revenue"    ? "High revenue" :
                                   "Peak day"
         }</span>
         <span className="ml-auto">Dashed cell = no data</span>

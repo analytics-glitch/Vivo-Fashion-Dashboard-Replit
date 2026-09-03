@@ -216,6 +216,89 @@ function StoreBucketSummary({ onSelectStore }) {
   );
 }
 
+function StoreProfileStorePicker({ stores, selected, onChange, loading }) {
+  const [open, setOpen] = useState(false);
+  const allStores = selected?.length === 0;
+  const selectedLabel = allStores
+    ? "All Stores · Whole Business"
+    : selected?.length === 1
+      ? selected[0]
+      : `${selected?.length || 0} stores selected`;
+
+  const toggleStore = (name) => {
+    if (allStores) {
+      onChange([name]);
+      return;
+    }
+    if (selected.includes(name)) {
+      onChange(selected.length === 1 ? [] : selected.filter((s) => s !== name));
+    } else {
+      onChange([...selected, name]);
+    }
+  };
+
+  return (
+    <div style={{ position: "relative", minWidth: 280 }}>
+      {loading ? (
+        <div style={{ width: 280, height: 44, background: "#374151", borderRadius: 8 }} />
+      ) : (
+        <>
+          <button
+            type="button"
+            onClick={() => setOpen((v) => !v)}
+            aria-expanded={open}
+            data-testid="store-profile-picker"
+            style={{ width: "100%", border: "1px solid #4b5563", borderRadius: 8, padding: "9px 16px", fontSize: 20, fontWeight: 800, color: "#fff", minWidth: 280, background: "#1f2937", cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 8 }}
+          >
+            <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{selectedLabel}</span>
+            <span style={{ fontSize: 12, color: "#9ca3af" }}>{open ? "▲" : "▼"}</span>
+          </button>
+          {open && (
+            <div
+              role="group"
+              aria-label="Store filter"
+              data-testid="store-profile-picker-menu"
+              style={{ position: "absolute", zIndex: 20, top: "calc(100% + 6px)", left: 0, width: 330, maxWidth: "calc(100vw - 32px)", maxHeight: 360, overflowY: "auto", padding: 8, border: "1px solid #d1d5db", borderRadius: 10, background: "#fff", boxShadow: "0 12px 28px rgba(17,24,39,.22)" }}
+            >
+              <button
+                type="button"
+                onClick={() => onChange([])}
+                data-testid="store-profile-option-all"
+                style={{ width: "100%", border: "none", borderRadius: 7, background: allStores ? "#eff6ff" : "#fff", color: "#111827", padding: "9px 10px", cursor: "pointer", textAlign: "left", fontWeight: 800, fontSize: 13 }}
+              >
+                <span style={{ display: "inline-block", width: 18 }}>{allStores ? "✓" : ""}</span>
+                All Stores · Whole Business
+              </button>
+              <div style={{ height: 1, background: "#e5e7eb", margin: "6px 2px" }} />
+              {stores.map((s) => {
+                const checked = !allStores && selected.includes(s.store);
+                return (
+                  <label
+                    key={s.store}
+                    style={{ display: "flex", alignItems: "center", gap: 9, padding: "8px 10px", borderRadius: 7, cursor: "pointer", background: checked ? "#f0fdf4" : "#fff", color: "#111827", fontSize: 13 }}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleStore(s.store)}
+                      data-testid={`store-profile-option-${s.store}`}
+                    />
+                    <span style={{ flex: 1 }}>{s.store}</span>
+                    <span style={{ fontSize: 10, color: "#6b7280" }}>{s.country}</span>
+                  </label>
+                );
+              })}
+              <div style={{ borderTop: "1px solid #e5e7eb", marginTop: 6, padding: "8px 10px 2px", fontSize: 11, color: "#6b7280" }}>
+                Select one or more stores to combine their scorecard. Choose All Stores to include the whole business.
+              </div>
+            </div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Primitives ───────────────────────────────────────────────────────────────
 function Skeleton({ rows = 5 }) {
   return (
@@ -1111,18 +1194,41 @@ export default function StoreProfiling() {
   const { data: locsData, isLoading: locsLoading } = useApi("store-profile/locations");
   const stores = locsData?.stores || [];
 
-  const [store, setStore] = useState(() => {
-    try { return localStorage.getItem(LS_KEY) || null; } catch { return null; }
+  const [selectedStores, setSelectedStores] = useState(() => {
+    try {
+      const saved = localStorage.getItem(LS_KEY);
+      if (!saved) return null;
+      if (saved.trim().startsWith("[")) {
+        const parsed = JSON.parse(saved);
+        return Array.isArray(parsed) ? parsed : null;
+      }
+      if ((saved || "").trim().toLowerCase() === "all stores") return [];
+      return saved.split(",").map((s) => s.trim()).filter(Boolean);
+    } catch { return null; }
   });
-  useEffect(() => { if (!store && stores.length) setStore(stores[0].store); }, [store, stores]);
-  useEffect(() => { if (store) { try { localStorage.setItem(LS_KEY, store); } catch {} } }, [store]);
+  useEffect(() => {
+    if (selectedStores === null && stores.length) setSelectedStores([stores[0].store]);
+  }, [selectedStores, stores]);
+  const store = selectedStores === null
+    ? null
+    : selectedStores.length === 0
+      ? "All Stores"
+      : selectedStores.join(",");
+  useEffect(() => {
+    if (selectedStores !== null) {
+      try { localStorage.setItem(LS_KEY, store); } catch {}
+    }
+  }, [selectedStores, store]);
 
   const { data: trendData, isLoading: trendLoading } = useApi("store-profile/kpi-trend", { store }, { enabled: !!store });
   const { data: rpt, isLoading: rptLoading, error: rptError } = useApi(
     "store-profile/performance-report", { store }, { enabled: !!store, staleTime: 5 * 60_000 }
   );
 
-  const storeCountry = useMemo(() => stores.find(s => s.store === store)?.country || "", [stores, store]);
+  const storeCountry = useMemo(
+    () => selectedStores?.length === 1 ? stores.find(s => s.store === selectedStores[0])?.country || "" : "",
+    [stores, selectedStores]
+  );
   const COUNTRY_C = { Kenya: { bg: "#f0fdf4", fg: "#15803d" }, Uganda: { bg: "#fffbeb", fg: "#b45309" }, Rwanda: { bg: "#f0fdfa", fg: "#0f766e" } };
   const cc = COUNTRY_C[storeCountry] || { bg: "#f3f4f6", fg: "#6b7280" };
 
@@ -1138,7 +1244,7 @@ export default function StoreProfiling() {
     : woc > 30 ? { c: C.warn, label: "Heavy cover — overstock risk" }
     : { c: C.good, label: "Healthy cover" };
 
-  const handleSelectStore = useCallback((s) => setStore(s), []);
+  const handleSelectStore = useCallback((s) => setSelectedStores([s]), []);
 
   return (
     <div style={{ maxWidth: 1340, margin: "0 auto", padding: "20px 16px" }}>
@@ -1150,13 +1256,12 @@ export default function StoreProfiling() {
         <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
           <div style={{ flex: 1, minWidth: 260 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "#9ca3af", letterSpacing: "0.1em", marginBottom: 6 }}>STORE SCORECARD</div>
-            {locsLoading ? <div style={{ width: 260, height: 44, background: "#374151", borderRadius: 8 }} /> : (
-              <select value={store || ""} onChange={e => setStore(e.target.value)}
-                style={{ border: "1px solid #4b5563", borderRadius: 8, padding: "9px 16px", fontSize: 20, fontWeight: 800, color: "#fff", minWidth: 280, background: "#1f2937", cursor: "pointer" }}>
-                <option value="All Stores">All Stores · Whole Business</option>
-                {stores.map(s => <option key={s.store} value={s.store}>{s.store}</option>)}
-              </select>
-            )}
+            <StoreProfileStorePicker
+              stores={stores}
+              selected={selectedStores}
+              onChange={setSelectedStores}
+              loading={locsLoading || selectedStores === null}
+            />
             <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               {storeCountry && <span style={{ padding: "3px 10px", borderRadius: 5, fontSize: 12, fontWeight: 700, background: cc.bg, color: cc.fg }}>{storeCountry}</span>}
               <span style={{ fontSize: 13, color: "#d1d5db" }}>August {new Date().getFullYear()} · Day {days_done} of {days_in_month} · {days_remaining} days left</span>

@@ -332,6 +332,16 @@ export default function CommunityWebView() {
         if (!mounted) return;
         setSecureToken(token);
         if (initialUrl) setSourceUrl(deepLinkToWebUrl(initialUrl));
+        if (token) {
+          // Restored tokens sign the hosted app in before it can emit a new
+          // auth-token bridge message. Evaluate the native first-run gate on
+          // this startup path too, or the session jumps straight to Home.
+          void readNotificationState().then((state) => {
+            if (mounted && !state.osPermission && !state.dismissed) {
+              setNotificationPrompt('initial');
+            }
+          });
+        }
       })
       .catch(() => {
         if (mounted) setSecureToken(null);
@@ -385,6 +395,18 @@ export default function CommunityWebView() {
     if (!state.osPermission && !state.dismissed) {
       setNotificationPrompt('initial');
     }
+  }, []);
+
+  const resetNotificationFlowForDevelopment = useCallback(async () => {
+    if (!__DEV__) return;
+    await AsyncStorage.multiRemove([
+      NOTIF_PROMPT_DISMISSED_KEY,
+      NOTIF_OS_PERMISSION_KEY,
+    ]);
+    setNotificationBusy(false);
+    // Show immediately so testers can repeat the explanatory screen even
+    // when the hosted app is already authenticated and sitting on Home.
+    setNotificationPrompt('initial');
   }, []);
 
   const showContextualNotificationPrompt = useCallback(async () => {
@@ -607,6 +629,18 @@ export default function CommunityWebView() {
             onOpenSettings={() => void openNotificationSettings()}
           />
         )}
+        {__DEV__ && (
+          <Pressable
+            testID="dev-reset-notification-prompt"
+            onPress={() => void resetNotificationFlowForDevelopment()}
+            style={({ pressed }) => [
+              styles.devResetButton,
+              pressed && styles.notificationButtonPressed,
+            ]}
+          >
+            <Text style={styles.devResetText}>DEV · Reset notification prompt</Text>
+          </Pressable>
+        )}
       </View>
     </SafeAreaView>
   );
@@ -771,5 +805,22 @@ const styles = StyleSheet.create({
   },
   notificationButtonPressed: {
     opacity: 0.72,
+  },
+  devResetButton: {
+    position: 'absolute',
+    right: 10,
+    bottom: 10,
+    zIndex: 100,
+    borderWidth: 1,
+    borderColor: colors.light.border,
+    borderRadius: colors.radius,
+    backgroundColor: colors.light.card,
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+  },
+  devResetText: {
+    color: colors.light.mutedForeground,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 10,
   },
 });

@@ -7584,19 +7584,33 @@ def get_footfall_weekday(
         ),
         sa AS (
             SELECT s.pos_location_name AS location, s.sale_date::date AS d,
-                COUNT(DISTINCT s.order_id) AS orders
+                COUNT(DISTINCT s.order_id) FILTER (
+                    WHERE s.sale_kind IN ('sale','order')
+                ) AS orders,
+                SUM(
+                    CASE WHEN s.sale_kind IN ('sale','order')
+                         THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes,0)::numeric)
+                              / (CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)
+                         WHEN s.sale_kind = 'return'
+                         THEN -s.returns_kes::numeric
+                              / (CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)
+                         ELSE 0 END
+                ) AS revenue
             FROM all_sales s
             WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-              AND s.sale_kind IN ('sale','order') AND """ + BASE_FILTERS + sa_extra + """
+              AND s.sale_kind IN ('sale','order','return') AND """ + BASE_FILTERS + sa_extra + """
             GROUP BY s.pos_location_name, s.sale_date::date
         ),
         joined AS (
-            SELECT ff.location, ff.wd, ff.footfall, ff.outside, COALESCE(sa.orders, 0) AS orders
+            SELECT ff.location, ff.wd, ff.footfall, ff.outside,
+                   COALESCE(sa.orders, 0) AS orders,
+                   COALESCE(sa.revenue, 0) AS revenue
             FROM ff LEFT JOIN sa ON sa.location = ff.location AND sa.d = ff.d
         )
         SELECT location, wd AS weekday,
             ROUND(AVG(footfall), 0) AS avg_footfall,
             ROUND(AVG(outside), 0) AS avg_outside_traffic,
+            ROUND(AVG(revenue), 0) AS avg_revenue,
             ROUND(AVG(CASE WHEN footfall > 0 THEN orders * 100.0 / footfall END)::numeric, 1) AS avg_conversion_rate,
             ROUND(AVG(CASE WHEN outside > 0 THEN footfall * 100.0 / outside END)::numeric, 1) AS avg_turn_in_rate,
             COUNT(*) AS days,
@@ -7621,6 +7635,7 @@ def get_footfall_weekday(
             "weekday": int(r["weekday"]),
             "avg_footfall": int(r["avg_footfall"] or 0),
             "avg_outside_traffic": int(r["avg_outside_traffic"] or 0),
+            "avg_revenue": float(r["avg_revenue"] or 0),
             "avg_conversion_rate": float(r["avg_conversion_rate"]) if r["avg_conversion_rate"] is not None else None,
             "avg_turn_in_rate": float(r["avg_turn_in_rate"]) if r["avg_turn_in_rate"] is not None else None,
             "days": int(r["days"] or 0),
@@ -7632,6 +7647,7 @@ def get_footfall_weekday(
         for wd in range(7):
             by_weekday.append(slot["_cells"].get(wd, {
                 "weekday": wd, "avg_footfall": 0, "avg_outside_traffic": 0,
+                "avg_revenue": 0,
                 "avg_conversion_rate": None, "avg_turn_in_rate": None, "days": 0,
             }))
         rows.append({
@@ -7648,6 +7664,8 @@ def get_footfall_weekday(
                    if c["weekday"] == wd and c["days"] > 0]
         ot_vals = [c["avg_outside_traffic"] for r in rows for c in r["by_weekday"]
                    if c["weekday"] == wd and c["days"] > 0]
+        rev_vals = [c["avg_revenue"] for r in rows for c in r["by_weekday"]
+                    if c["weekday"] == wd and c["days"] > 0]
         cr_vals = [c["avg_conversion_rate"] for r in rows for c in r["by_weekday"]
                    if c["weekday"] == wd and c["avg_conversion_rate"] is not None]
         ti_vals = [c["avg_turn_in_rate"] for r in rows for c in r["by_weekday"]
@@ -7656,6 +7674,7 @@ def get_footfall_weekday(
             "weekday": wd,
             "avg_footfall": round(sum(ff_vals) / len(ff_vals)) if ff_vals else 0,
             "avg_outside_traffic": round(sum(ot_vals) / len(ot_vals)) if ot_vals else 0,
+            "avg_revenue": round(sum(rev_vals) / len(rev_vals)) if rev_vals else 0,
             "avg_conversion_rate": round(sum(cr_vals) / len(cr_vals), 1) if cr_vals else None,
             "avg_turn_in_rate": round(sum(ti_vals) / len(ti_vals), 1) if ti_vals else None,
         })
@@ -45915,6 +45934,30 @@ for _l10_path, _l10_endpoint, _l10_methods in _L10_FABRIC_ROUTES:
 def _sp_all_stores(store: str) -> bool:
     return (store or "").strip().lower() in ("all stores", "__all__")
 
+def _sp_store_values(store: str):
+    """Return the selected physical store names, preserving All Stores as [].
+
+    Store Profile uses a comma-separated query value for a multi-select. Store
+    names themselves do not contain commas, and csv_to_sql escapes the values
+    before they are interpolated into the read-only reporting SQL.
+    """
+    if _sp_all_stores(store):
+        return []
+    return [v.strip() for v in (store or "").split(",") if v.strip()]
+
+def _sp_scope_sql(store: str, column: str, all_pred: str = "TRUE") -> str:
+    """Build a Store Profile scope for one store, many stores, or all stores."""
+    if _sp_all_stores(store):
+        return all_pred
+    values = _sp_store_values(store)
+    if not values:
+        return "FALSE"
+    return f"{column} IN ({csv_to_sql(','.join(values))})"
+
+def _sp_is_aggregate(store: str) -> bool:
+    """Whether footfall row-count quality gates must use total observed rows."""
+    return _sp_all_stores(store) or len(_sp_store_values(store)) > 1
+
 # Shelf stock across every store (excludes warehouse/holding/transit locations).
 _SP_ALL_INV_PRED = (
     "i.pos_location_name NOT ILIKE '%%warehouse%%' "
@@ -46091,9 +46134,10 @@ def store_profile_kpi_trend(store: str = Query(...)):
     """6 trailing full calendar months of per-store KPIs."""
     store_s = _sql_str(store)
     all_mode = _sp_all_stores(store)
-    sp_sales = "TRUE" if all_mode else f"s.pos_location_name = '{store_s}'"
-    sp_ff    = "TRUE" if all_mode else f"{ff_canon_sql()} = '{store_s}'"
-    sp_inv   = (_SP_ALL_INV_PRED if all_mode else f"i.pos_location_name = '{store_s}'")
+    aggregate_mode = _sp_is_aggregate(store)
+    sp_sales = _sp_scope_sql(store, "s.pos_location_name")
+    sp_ff    = _sp_scope_sql(store, ff_canon_sql())
+    sp_inv   = _sp_scope_sql(store, "i.pos_location_name", _SP_ALL_INV_PRED)
     ck = f"store_profile:kpi_trend:{store_s}"
     cv, cf = cache_get_swr(ck)
     if cv is not None:
@@ -46230,7 +46274,7 @@ def store_profile_kpi_trend(store: str = Query(...)):
         tot_d    = int(ff.get("total_days")  or 0)
         # All-stores mode: total_days is days × stores — scale the gap
         # threshold to the row count, not calendar days.
-        ff_ok    = tot_d > 0 and (zero_d <= 0.25 * tot_d if all_mode
+        ff_ok    = tot_d > 0 and (zero_d <= 0.25 * tot_d if aggregate_mode
                                   else zero_d <= 0.25 * days_in_m)
 
         asp     = round(revenue / units, 0)   if units > 0 else None
@@ -46279,9 +46323,8 @@ def store_profile_category_mix(
 ):
     """Items sold % contribution and ASP, by category and sub-category."""
     store_s = _sql_str(store)
-    all_mode = _sp_all_stores(store)
-    sp_sales = "TRUE" if all_mode else f"s.pos_location_name = '{store_s}'"
-    sp_inv   = (_SP_ALL_INV_PRED if all_mode else f"i.pos_location_name = '{store_s}'")
+    sp_sales = _sp_scope_sql(store, "s.pos_location_name")
+    sp_inv   = _sp_scope_sql(store, "i.pos_location_name", _SP_ALL_INV_PRED)
     ck = f"store_profile:cat_mix2:{store_s}:{month or 'all'}:{_sql_str(category or '')}"
     cv, cf = cache_get_swr(ck)
     if cv is not None:
@@ -46421,9 +46464,9 @@ def store_profile_weekday_weekend(store: str = Query(...)):
     """Weekend (Sat/Sun) vs weekday per-day KPI averages over the last 8 full
     weeks — shows which metrics actually behave differently on weekends."""
     store_s = _sql_str(store)
-    all_mode = _sp_all_stores(store)
-    sp_sales = "TRUE" if all_mode else f"s.pos_location_name = '{store_s}'"
-    sp_ff    = "TRUE" if all_mode else f"{ff_canon_sql()} = '{store_s}'"
+    aggregate_mode = _sp_is_aggregate(store)
+    sp_sales = _sp_scope_sql(store, "s.pos_location_name")
+    sp_ff    = _sp_scope_sql(store, ff_canon_sql())
     ck = f"store_profile:wknd:{store_s}"
     cv, cf = cache_get_swr(ck)
     if cv is not None:
@@ -46487,7 +46530,7 @@ def store_profile_weekday_weekend(store: str = Query(...)):
         ff_raw = int(ff.get("footfall") or 0)
         zero_d = int(ff.get("zero_days") or 0)
         tot_d  = int(ff.get("total_days") or 0)
-        ff_ok  = tot_d > 0 and zero_d <= 0.25 * tot_d
+        ff_ok  = tot_d > 0 and zero_d <= 0.25 * (tot_d if aggregate_mode else n_days)
         ffd = round(ff_raw / n_days) if ff_ok else None
         txd = round(txns / n_days, 1)
         return {
@@ -46588,6 +46631,9 @@ def store_profile_weekday_weekend(store: str = Query(...)):
 def store_profile_targets(store: str = Query(...)):
     """Current-month target vs MTD actuals + projection + rule-based suggestions."""
     store_s = _sql_str(store)
+    all_mode = _sp_all_stores(store)
+    selected_names = _sp_store_values(store)
+    sp_sales = _sp_scope_sql(store, "s.pos_location_name")
     ck = f"store_profile:targets:{store_s}"
     cv, cf = cache_get_swr(ck)
     if cv is not None:
@@ -46603,12 +46649,23 @@ def store_profile_targets(store: str = Query(...)):
     vat       = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 
     # Revenue target from targets_monthly (manual wins over budget)
-    tgt_rows = run_query(
-        f"SELECT target_kes::numeric AS tgt, source FROM targets_monthly "
-        f"WHERE scope='store' AND name='{store_s}' AND month='{mstart}' "
-        f"ORDER BY CASE WHEN source='manual' THEN 0 ELSE 1 END LIMIT 1"
-    )
-    tgt = float(tgt_rows[0]["tgt"]) if tgt_rows else None
+    if all_mode or len(selected_names) > 1:
+        name_filter = "" if all_mode else f" AND name IN ({csv_to_sql(','.join(selected_names))})"
+        tgt_rows = run_query(
+            f"SELECT SUM(tgt) AS tgt FROM ("
+            f"  SELECT DISTINCT ON (name) target_kes::numeric AS tgt FROM targets_monthly "
+            f"  WHERE scope='store' AND month='{mstart}'{name_filter} "
+            f"  ORDER BY name, CASE WHEN source='manual' THEN 0 ELSE 1 END"
+            f") t"
+        )
+        tgt = float(tgt_rows[0]["tgt"]) if tgt_rows and tgt_rows[0].get("tgt") is not None else None
+    else:
+        tgt_rows = run_query(
+            f"SELECT target_kes::numeric AS tgt, source FROM targets_monthly "
+            f"WHERE scope='store' AND name='{store_s}' AND month='{mstart}' "
+            f"ORDER BY CASE WHEN source='manual' THEN 0 ELSE 1 END LIMIT 1"
+        )
+        tgt = float(tgt_rows[0]["tgt"]) if tgt_rows else None
 
     # MTD actuals. New/Returning come from first-EVER purchase (canonical
     # rollup) — stored customer_type reads 'registered' on current-month rows
@@ -46656,7 +46713,7 @@ def store_profile_targets(store: str = Query(...)):
         LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
         WHERE s.sale_date::date >= '{mstart}'
           AND s.sale_date::date <= '{today}'
-          AND s.pos_location_name = '{store_s}'
+          AND {sp_sales}
           AND s.sale_kind IN ('sale','order','return')
           AND {BASE_FILTERS}
     """)
@@ -46881,10 +46938,12 @@ def store_profile_performance_report(store: str = Query(...)):
     """
     store_s = _sql_str(store)
     all_mode = _sp_all_stores(store)
+    aggregate_mode = _sp_is_aggregate(store)
     # "All Stores" = whole business: every sales channel, all store shelves.
-    sp_sales = "TRUE" if all_mode else f"s.pos_location_name = '{store_s}'"
-    sp_ff    = "TRUE" if all_mode else f"{ff_canon_sql()} = '{store_s}'"
-    sp_inv   = (_SP_ALL_INV_PRED if all_mode else f"i.pos_location_name = '{store_s}'")
+    # A comma-separated value scopes the same report to several named stores.
+    sp_sales = _sp_scope_sql(store, "s.pos_location_name")
+    sp_ff    = _sp_scope_sql(store, ff_canon_sql())
+    sp_inv   = _sp_scope_sql(store, "i.pos_location_name", _SP_ALL_INV_PRED)
     ck = f"store_profile:perf_report:{store_s}"
     cv, cf = cache_get_swr(ck)
     if cv is not None:
@@ -46910,11 +46969,22 @@ def store_profile_performance_report(store: str = Query(...)):
     py_mend   = py_mstart.replace(day=calendar.monthrange(py_mstart.year, py_mstart.month)[1])
 
     # Revenue target (All Stores = sum of every store's target, manual wins per store)
+    selected_names = _sp_store_values(store)
     if all_mode:
         tgt_rows = run_query(
             f"SELECT SUM(tgt) AS tgt FROM ("
             f"  SELECT DISTINCT ON (name) target_kes::numeric AS tgt FROM targets_monthly"
             f"  WHERE scope='store' AND month='{cur_mstart}'"
+            f"  ORDER BY name, CASE WHEN source='manual' THEN 0 ELSE 1 END"
+            f") t"
+        )
+        target_revenue = float(tgt_rows[0]["tgt"]) if tgt_rows and tgt_rows[0].get("tgt") is not None else None
+    elif len(selected_names) > 1:
+        target_names = csv_to_sql(",".join(selected_names))
+        tgt_rows = run_query(
+            f"SELECT SUM(tgt) AS tgt FROM ("
+            f"  SELECT DISTINCT ON (name) target_kes::numeric AS tgt FROM targets_monthly "
+            f"  WHERE scope='store' AND name IN ({target_names}) AND month='{cur_mstart}' "
             f"  ORDER BY name, CASE WHEN source='manual' THEN 0 ELSE 1 END"
             f") t"
         )
@@ -47060,7 +47130,7 @@ def store_profile_performance_report(store: str = Query(...)):
         ref_days = days_in_period or max(tot_d, 1)
         # All-stores mode: total_days is days × stores, so scale the gap
         # threshold to the row count instead of the calendar days.
-        ff_ok    = tot_d > 0 and (zero_d <= 0.25 * tot_d if all_mode
+        ff_ok    = tot_d > 0 and (zero_d <= 0.25 * tot_d if aggregate_mode
                                   else zero_d <= 0.25 * ref_days)
         footfall = ff_raw if ff_ok else None
         asp      = round(revenue / units,    0) if units  > 0 else None

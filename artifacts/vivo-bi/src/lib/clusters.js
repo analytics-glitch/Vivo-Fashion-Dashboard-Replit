@@ -41,6 +41,7 @@ export const CLUSTERS = {
       "Vivo Nakuru",
       "Vivo Eldoret",
       "Vivo Kisumu",
+      "Vivo Meru",
       "Vivo Signature Mall",
       "Zoya Sarit", // "Sarit Outlet"
       "Vivo MSA Digo Road",
