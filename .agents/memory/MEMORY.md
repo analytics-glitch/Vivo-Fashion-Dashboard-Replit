@@ -150,3 +150,4 @@
 - [Style Development stage history](style-development-stage-history.md) — stages derive from append-only events; blockers overlay rather than replace stage, and target-week edits retain old/new values.
 - [Style Development operating model](style-development-operating-model.md) — live fabric readiness, working-day interval evidence, exact exit reasons, and dynamic pattern capacity govern the tracker.
 - [Production API compile gate](production-api-compile-gate.md) — watchdog compiles every backend Python file, including tests; one malformed test prevents port 8080 from opening and makes all live /api routes return 500.
+- [Store stock movement and colour opportunities](store-stock-movement-opportunities.md) — transfer routes are destination-aware; unseen colour suggestions require sold-style evidence and no prior store holding.

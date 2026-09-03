@@ -3426,11 +3426,22 @@ SKU_STYLE_MAP = (
     "ORDER BY sku, (active IS TRUE) DESC, style_number)"
 )
 
-# Warehouse-origin codes for the Store Flow "Units Transferred" column.
-# Only pickings FROM these locations count as a warehouse→store replenishment.
+# Store Flow's daily transfer rule is destination-aware:
+#   • Acacia, Kigali Heights, and Oasis retain the existing warehouse-origin
+#     treatment (including WHREC/FGPRD/HWHFN).
+#   • Every other store is counted only on the warehouse dispatch leg, identified
+#     by a warehouse origin + warehouse_to_store.  This is the Warehouse → Store In
+#     Transit movement, rather than the subsequent transit → store leg.
 # Store-to-store, shopping-bag restocks, returns, and Sewing WIP are excluded.
+_STORE_FLOW_LEGACY_ROUTE_STORES = (
+    "'vivo acacia','vivo kigali heights','the oasis mall'"
+)
 _WAREHOUSE_ORIGIN_FILTER = (
-    "t.from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock') "
+    "((LOWER(BTRIM(t.to_store_name)) IN (" + _STORE_FLOW_LEGACY_ROUTE_STORES + ") "
+    "AND t.from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock')) "
+    "OR (LOWER(BTRIM(t.to_store_name)) NOT IN (" + _STORE_FLOW_LEGACY_ROUTE_STORES + ") "
+    "AND t.from_location_name IN ('HWHFN/Stock','FGPRD/Stock','WHFIN/Stock','WHREC/Stock') "
+    "AND t.transfer_type = 'warehouse_to_store')) "
     "AND t.sku NOT LIKE 'VB001%%'"
 )
 
@@ -17415,7 +17426,27 @@ async def store_stock_request_catalog(request: Request, date_from: str, date_to:
                   AND pos_location_name NOT ILIKE '%%wholesale%%'
                   AND pos_location_name NOT ILIKE '%%non-sellable%%'
                   AND pos_location_name NOT ILIKE '%%holding%%'
-                  AND pos_location_name NOT ILIKE '%%retired%%' GROUP BY sku),
+                   AND pos_location_name NOT ILIKE '%%retired%%' GROUP BY sku),
+        store_style_sales AS (
+           SELECT p.style_name, SUM(s.net_quantity)::int style_units_sold
+           FROM all_sales s JOIN all_products_clean p ON p.sku=s.variant_sku
+           WHERE s.pos_location_name=%s AND s.sale_kind IN ('sale','order')
+             AND s.sale_date >= %s AND s.sale_date <= %s
+           GROUP BY p.style_name
+        ),
+        held_colours AS (
+           SELECT DISTINCT p.style_name, LOWER(BTRIM(COALESCE(p.color_print,''))) colour_key
+           FROM all_sales s JOIN all_products_clean p ON p.sku=s.variant_sku
+           WHERE s.pos_location_name=%s AND s.sale_kind IN ('sale','order')
+           UNION
+           SELECT DISTINCT p.style_name, LOWER(BTRIM(COALESCE(p.color_print,''))) colour_key
+           FROM all_inventory i JOIN all_products_clean p ON p.sku=i.sku
+           WHERE i.pos_location_name=%s AND COALESCE(i.available,0)>0
+           UNION
+           SELECT DISTINCT p.style_name, LOWER(BTRIM(COALESCE(p.color_print,''))) colour_key
+           FROM stock_transfers t JOIN all_products_clean p ON p.sku=t.sku
+           WHERE t.to_store_name=%s AND t.state='done'
+        ),
         active_requests AS (SELECT l.sku,{_ssr_capacity_units_sql('l')}::int q
                  FROM store_stock_request_line l JOIN store_stock_request h ON h.id=l.request_id
                  WHERE l.status IN ('OPEN','PICKING','FULFILLED') AND l.expires_at>now()
@@ -17437,13 +17468,21 @@ async def store_stock_request_catalog(request: Request, date_from: str, date_to:
                 GROUP BY sku)
         SELECT p.sku,p.barcode,COALESCE(NULLIF(p.product_name,''),p.style_name) product_name,
           p.style_name,p.category,p.product_type,p.brand,p.size,p.color_print,
-          COALESCE(wb.bin,'') bin,COALESCE(sold.units_sold,0) units_sold,
+           COALESCE(wb.bin,'') bin,COALESCE(sold.units_sold,0) units_sold,
+           COALESCE(store_style_sales.style_units_sold,0) style_units_sold,
+           CASE WHEN COALESCE(store_style_sales.style_units_sold,0)>0
+                  AND NULLIF(BTRIM(COALESCE(p.color_print,'')),'') IS NOT NULL
+                  AND held_colours.style_name IS NULL
+                THEN TRUE ELSE FALSE END colour_opportunity,
           COALESCE(ss.soh_store,0) soh_store,COALESCE(wh.soh_warehouse,0) soh_warehouse,
           COALESCE(active_requests.q,0) reserved_store_requests,COALESCE(ibt.q,0) reserved_ibt,
           GREATEST(COALESCE(wh.soh_warehouse,0)-COALESCE(active_requests.q,0)-COALESCE(ibt.q,0),0) available_to_request,
           mine.line_id existing_open_line_id,COALESCE(mine.q,0) existing_open_qty
         FROM all_products_clean p
         LEFT JOIN sold ON sold.sku=p.sku LEFT JOIN ss ON ss.sku=p.sku LEFT JOIN wh ON wh.sku=p.sku
+        LEFT JOIN store_style_sales ON store_style_sales.style_name=p.style_name
+        LEFT JOIN held_colours ON held_colours.style_name=p.style_name
+          AND held_colours.colour_key=LOWER(BTRIM(COALESCE(p.color_print,'')))
         LEFT JOIN active_requests ON active_requests.sku=p.sku LEFT JOIN mine ON mine.sku=p.sku LEFT JOIN ibt ON ibt.sku=p.sku
         LEFT JOIN warehouse_bins wb ON wb.barcode=p.barcode
         WHERE p.sku IS NOT NULL AND p.sku<>'' AND COALESCE(wh.soh_warehouse,0)>0 AND
@@ -17451,12 +17490,56 @@ async def store_stock_request_catalog(request: Request, date_from: str, date_to:
            OR p.style_name ILIKE '%%'||%s||'%%' OR p.product_name ILIKE '%%'||%s||'%%'
            OR p.category ILIKE '%%'||%s||'%%' OR p.product_type ILIKE '%%'||%s||'%%'
            OR p.brand ILIKE '%%'||%s||'%%' OR p.size ILIKE '%%'||%s||'%%' OR p.color_print ILIKE '%%'||%s||'%%')
-        ORDER BY units_sold DESC,p.sku LIMIT 1000""",
-        (scoped, str(df), str(dt), scoped, scoped, q, q, q, q, q, q, q, q, q, q), fetch=True) or []
+         ORDER BY CASE WHEN COALESCE(sold.units_sold,0)>0 THEN 0
+                       WHEN COALESCE(store_style_sales.style_units_sold,0)>0
+                            AND held_colours.style_name IS NULL THEN 1
+                       ELSE 2 END,
+                  units_sold DESC,style_units_sold DESC,p.sku
+         LIMIT 2000""",
+        (scoped, str(df), str(dt), scoped,
+         scoped, str(df), str(dt),
+         scoped, scoped, scoped, scoped,
+         q, q, q, q, q, q, q, q, q, q), fetch=True) or []
+    opportunities = {}
+    for row in rows:
+        if not row.get("colour_opportunity") or int(row.get("available_to_request") or 0) <= 0:
+            continue
+        style = (row.get("style_name") or "").strip()
+        colour = (row.get("color_print") or "").strip()
+        key = (style.casefold(), colour.casefold())
+        group = opportunities.setdefault(key, {
+            "style_name": style or row.get("product_name") or row.get("sku"),
+            "brand": row.get("brand"),
+            "category": row.get("category"),
+            "product_type": row.get("product_type"),
+            "color_print": colour or "Colour not labelled",
+            "style_units_sold": int(row.get("style_units_sold") or 0),
+            "available_to_request": 0,
+            "variants": [],
+        })
+        available = int(row.get("available_to_request") or 0)
+        group["available_to_request"] += available
+        group["variants"].append({
+            "sku": row.get("sku"),
+            "barcode": row.get("barcode"),
+            "product_name": row.get("product_name"),
+            "size": row.get("size"),
+            "bin": row.get("bin"),
+            "available_to_request": available,
+        })
+    colour_opportunities = sorted(
+        opportunities.values(),
+        key=lambda x: (-x["style_units_sold"], -x["available_to_request"],
+                       x["style_name"] or "", x["color_print"] or ""),
+    )
+    for group in colour_opportunities:
+        group["variants"].sort(key=lambda x: (-(x["available_to_request"] or 0), x.get("size") or ""))
+        group["variant_count"] = len(group["variants"])
     return {"store": scoped, "date_from": str(df), "date_to": str(dt),
             "hold_hours": STORE_STOCK_REQUEST_HOLD_HOURS,
             "can_request": role in ("store_manager", "warehouse", "admin"),
-            "can_manage": role in ("warehouse", "admin"), "rows": rows}
+            "can_manage": role in ("warehouse", "admin"), "rows": rows,
+            "colour_opportunities": colour_opportunities[:100]}
 
 
 @app.get("/api/store-stock-requests/requests")

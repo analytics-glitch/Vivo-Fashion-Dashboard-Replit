@@ -550,7 +550,7 @@ function GiveBack({ onOpenPage }) {
           <h3 className="font-serif text-lg text-foreground">Give your Vivo a second life</h3>
         </div>
         <p className="text-[13px] text-muted-foreground leading-relaxed max-w-2xl">
-          Pieces you've outgrown can lift another woman up — bring them to any Vivo store.
+          Pieces you've outgrown can lift another woman up. In partnership with [X Home], your gently-used Vivo pieces go directly to women rebuilding their lives.
         </p>
         <button data-testid="givingback-open" onClick={() => onOpenPage?.("givingback")}
                 className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">

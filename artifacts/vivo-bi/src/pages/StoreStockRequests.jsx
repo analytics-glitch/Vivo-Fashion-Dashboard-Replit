@@ -6,7 +6,7 @@ import { Loading, ErrorBox, Empty, SectionTitle } from "@/components/common";
 import { useTableSort, SortableTh } from "@/lib/useTableSort";
 import {
   MagnifyingGlass, Storefront, X as XIcon, Clock,
-  ListDashes, Plus, WarningCircle, FileText, DownloadSimple
+  ListDashes, Plus, WarningCircle, FileText, DownloadSimple, Sparkle
 } from "@phosphor-icons/react";
 
 const fmtDateInput = (d) => {
@@ -173,6 +173,17 @@ function CatalogView() {
 
   const totalDraftItems = Object.values(draftLines).reduce((a, b) => a + (Number(b) || 0), 0);
   const totalDraftSkus = Object.keys(draftLines).filter(k => draftLines[k] > 0).length;
+  const colourOpportunities = data?.colour_opportunities || [];
+
+  const addOpportunityVariant = (variant) => {
+    const available = Number(variant.available_to_request || 0);
+    if (!variant.sku || available <= 0) return;
+    setDraftLines(current => ({
+      ...current,
+      [variant.sku]: Math.min(available, (Number(current[variant.sku]) || 0) + 1)
+    }));
+    toast.success(`${variant.size || "Size"} added to the request`);
+  };
 
   const handleSubmit = async () => {
     const lines = Object.entries(draftLines)
@@ -305,6 +316,14 @@ function CatalogView() {
       )}
 
       {/* Desktop Table */}
+      {data?.store && (
+        <ColourOpportunityPanel
+          opportunities={colourOpportunities}
+          onAddVariant={addOpportunityVariant}
+          draftLines={draftLines}
+        />
+      )}
+
       {data?.store && (
         <div className="card overflow-hidden hidden md:block">
           <div className="overflow-x-auto">
@@ -488,6 +507,93 @@ function CatalogView() {
         </div>
       )}
     </div>
+  );
+}
+
+function ColourOpportunityPanel({ opportunities, onAddVariant, draftLines }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!opportunities.length) return null;
+  const visibleOpportunities = expanded ? opportunities : opportunities.slice(0, 6);
+  return (
+    <section className="card overflow-hidden" data-testid="colour-opportunities">
+      <div className="px-4 py-3 border-b border-border bg-amber-50/70">
+        <div className="flex items-start gap-2">
+          <Sparkle size={18} weight="fill" className="mt-0.5 text-amber-700 shrink-0" />
+          <div>
+            <h3 className="font-semibold text-sm text-foreground">Colour opportunities</h3>
+            <p className="text-xs text-muted-foreground mt-0.5">
+              These colourways are available in the warehouse, the store sold this style,
+              and the store has no recorded sales, stock, or completed receipt for this colour.
+              They are suggestions—not automatic requests.
+            </p>
+          </div>
+        </div>
+      </div>
+      <div className="p-3 grid grid-cols-1 lg:grid-cols-2 gap-3">
+        {visibleOpportunities.map(opportunity => (
+          <div
+            key={`${opportunity.style_name}-${opportunity.color_print}`}
+            className="rounded-lg border border-amber-200 bg-white p-3"
+            data-testid={`colour-opportunity-${opportunity.style_name}-${opportunity.color_print}`}
+          >
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="font-semibold text-sm truncate" title={opportunity.style_name}>
+                  {opportunity.style_name}
+                </div>
+                <div className="text-sm text-amber-800 font-medium mt-0.5">
+                  {opportunity.color_print}
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  {fmtNum(opportunity.style_units_sold)} style units sold in this period
+                  {" · "}{fmtNum(opportunity.available_to_request)} in warehouse
+                </div>
+              </div>
+              <span className="shrink-0 rounded-full bg-amber-100 text-amber-900 px-2 py-1 text-[10px] font-semibold uppercase tracking-wide">
+                New colour
+              </span>
+            </div>
+            <div className="mt-3 flex flex-wrap gap-1.5">
+              {opportunity.variants.slice(0, 8).map(variant => (
+                <button
+                  key={variant.sku}
+                  type="button"
+                  onClick={() => onAddVariant(variant)}
+                  disabled={!variant.available_to_request}
+                  className={`rounded-md border px-2 py-1 text-xs font-medium transition-colors ${
+                    draftLines[variant.sku]
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                      : "border-slate-200 bg-slate-50 text-slate-700 hover:border-amber-300 hover:bg-amber-50"
+                  } disabled:opacity-40`}
+                  title={`Add one ${variant.size || ""} to the request`}
+                  data-testid={`button-add-opportunity-${variant.sku}`}
+                >
+                  {variant.size || "One size"} · {fmtNum(variant.available_to_request)} avail
+                  {draftLines[variant.sku] ? ` · ${draftLines[variant.sku]} added` : ""}
+                </button>
+              ))}
+              {opportunity.variant_count > 8 && (
+                <span className="self-center text-[11px] text-muted-foreground px-1">
+                  +{opportunity.variant_count - 8} more sizes in the catalogue below
+                </span>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+      {opportunities.length > 6 && (
+        <div className="px-3 pb-3">
+          <button
+            type="button"
+            onClick={() => setExpanded(current => !current)}
+            className="w-full rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900 hover:bg-amber-100"
+            data-testid="button-toggle-colour-opportunities"
+          >
+            {expanded ? "Show fewer colour opportunities" : `Show all ${opportunities.length} colour opportunities`}
+          </button>
+        </div>
+      )}
+    </section>
   );
 }
 

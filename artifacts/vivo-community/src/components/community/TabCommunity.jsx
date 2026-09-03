@@ -423,7 +423,7 @@ export default function TabCommunity({ member, subNav, composeAction, onComposeA
             <div className="flex-1">
               <h3 className="font-serif text-lg text-foreground mb-1">Give your Vivo a second life</h3>
               <p className="text-sm text-muted-foreground leading-relaxed max-w-xl">
-                Loved pieces you've outgrown can lift another woman up. Bring them to any Vivo store and we'll take it from there.
+                Pieces you've outgrown can lift another woman up. In partnership with [X Home], your gently-used Vivo pieces go directly to women rebuilding their lives.
               </p>
               <button data-testid="givingback-open" onClick={() => onOpenPage?.("givingback")}
                       className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">
@@ -457,7 +457,7 @@ export default function TabCommunity({ member, subNav, composeAction, onComposeA
             <div className="flex-1">
               <h3 className="font-serif text-lg text-foreground mb-1">Give your Vivo a second life</h3>
               <p className="text-sm text-muted-foreground leading-relaxed max-w-xl">
-                Loved pieces you've outgrown can lift another woman up. Bring them to any Vivo store and we'll take it from there.
+                Pieces you've outgrown can lift another woman up. In partnership with [X Home], your gently-used Vivo pieces go directly to women rebuilding their lives.
               </p>
               <button data-testid="events-givingback-open" onClick={() => onOpenPage?.("givingback")}
                       className="mt-3 inline-flex items-center gap-1 text-[13px] font-medium text-primary-ink hover:underline">
