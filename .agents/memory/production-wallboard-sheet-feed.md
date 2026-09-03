@@ -17,3 +17,5 @@ Sheet parsing quirks (hand-edited!):
 - Live mode EXCLUDES actuals typed into not-yet-started slots (`counted=false`, dimmed cell) so stray entries can't inflate made/pace/projection.
 - Duplicates: last (line,date,slot) row wins; duplicate/skipped counts surface in `payload.warnings` and an amber "Sheet check" strip on the page.
 - Backend uses `hr_attendance._gsheet_values` whole-column read (A1:E); `PRODUCTION_SHEET_ID`/`PRODUCTION_SHEET_TAB` secrets with safe defaults baked in.
+- `ManPower` is repeated on every hourly row but represents one line-level headcount. Read the first nonblank value per line and sum each line once for the factory total; never sum it across slots.
+- The in-tab date selector uses `?date=YYYY-MM-DD` and the sheet-derived `available_dates` list. Historical days remain direct sheet reads and use past-day actual-only projection semantics.

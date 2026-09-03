@@ -48,11 +48,12 @@ function LineBoard({ d }) {
         </span>
       </div>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+       <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10 }}>
         <Metric label="MADE" value={fmt(d.made_so_far)} sub={`of ${fmt(d.daily_target)}`} />
         <Metric label="% OF TARGET" value={`${pct}%`} sub={`should be ${fmt(d.expected_by_now)}`} />
         <Metric label="PACE / HR" value={d.pace_per_hour == null ? "—" : fmt(Math.round(d.pace_per_hour))} sub={`${d.hours_filled ?? 0}/${d.productive_hours} hrs filled`} />
         <Metric label="PROJECTED" value={fmt(d.projected_landing)} sub={`${d.projected_pct}% of target`} bg={sc.bg} />
+         <Metric label="MANPOWER" value={fmt(d.manpower)} sub={d.manpower == null ? "not entered" : "operators"} />
       </div>
 
       <div style={{ position: "relative", height: 26, background: "#0a1a12", borderRadius: 8, overflow: "hidden" }}>
@@ -85,12 +86,18 @@ export default function ProductionWallboard() {
   const [err, setErr] = useState(null);
   const [updated, setUpdated] = useState(null);
   const [clock, setClock] = useState(new Date());
+  const initialDate = new URLSearchParams(window.location.search).get("date") || "";
+  const [selectedDate, setSelectedDate] = useState(initialDate);
+  const selectedDateRef = useRef(initialDate);
   const boardRef = useRef(null);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (dateOverride) => {
     try {
-      // Optional ?date=YYYY-MM-DD lets supervisors review a past day's board.
-      const dateParam = new URLSearchParams(window.location.search).get("date");
+      // An empty date uses the backend's latest available day fallback. A
+      // selected date is sent explicitly so historical boards are reproducible.
+      const dateParam = dateOverride === undefined
+        ? selectedDateRef.current
+        : dateOverride;
       const { data } = await api.get("/production/hourly-tracker", {
         forceFresh: true,
         params: dateParam ? { work_date: dateParam } : undefined,
@@ -117,6 +124,21 @@ export default function ProductionWallboard() {
     else el.requestFullscreen?.();
   };
 
+  const chooseDate = (value) => {
+    selectedDateRef.current = value;
+    setSelectedDate(value);
+    const search = new URLSearchParams(window.location.search);
+    if (value) search.set("date", value);
+    else search.delete("date");
+    const query = search.toString();
+    window.history.replaceState(
+      window.history.state,
+      "",
+      `${window.location.pathname}${query ? `?${query}` : ""}`,
+    );
+    load(value);
+  };
+
   const t = payload?.totals;
   const dateLabel = payload
     ? new Date(payload.work_date + "T00:00:00").toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "short" })
@@ -132,11 +154,31 @@ export default function ProductionWallboard() {
           <span style={{ fontSize: "clamp(16px, 1.5vw, 26px)", opacity: 0.85 }}>{dateLabel}</span>
           {payload && !payload.is_today && (
             <span style={{ background: payload.is_future ? "#4a5568" : "#c98a00", color: "#fff", fontWeight: 800, borderRadius: 999, padding: "4px 16px", fontSize: "clamp(13px, 1.2vw, 20px)" }}>
-              {payload.is_future ? "SCHEDULED DAY — not started yet" : "LAST RECORDED DAY — waiting for today's first entry"}
+              {payload.is_future
+                ? "SCHEDULED DAY — not started yet"
+                : selectedDate
+                  ? "HISTORICAL VIEW — actuals only"
+                  : "LAST RECORDED DAY — waiting for today's first entry"}
             </span>
           )}
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, color: "#eafaf1", fontSize: 15, fontWeight: 700 }}>
+            <span>VIEW DATE</span>
+            <select
+              value={selectedDate || payload?.work_date || ""}
+              onChange={(e) => chooseDate(e.target.value)}
+              aria-label="View production date"
+              style={{ background: "#eafaf1", color: "#12261c", border: "1px solid #9fd8b8", borderRadius: 8, padding: "9px 10px", fontSize: 15, fontWeight: 700, minWidth: 170 }}
+            >
+              <option value="">Latest available</option>
+              {(payload?.available_dates || []).slice().reverse().map((date) => (
+                <option key={date} value={date}>
+                  {new Date(`${date}T00:00:00`).toLocaleDateString("en-GB", { day: "numeric", month: "short", year: "numeric" })}
+                </option>
+              ))}
+            </select>
+          </label>
           <span style={{ fontSize: "clamp(13px, 1vw, 17px)", opacity: 0.7 }}>
             {agoSec == null ? "" : agoSec < 5 ? "updated just now" : `updated ${agoSec}s ago`}
           </span>
@@ -166,10 +208,11 @@ export default function ProductionWallboard() {
 
       {/* Factory totals */}
       {t && (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10, marginBottom: 14, color: "#eafaf1" }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(5, 1fr)", gap: 10, marginBottom: 14, color: "#eafaf1" }}>
           <Metric label="FACTORY MADE" value={fmt(t.made_so_far)} sub={`of ${fmt(t.daily_target)} target`} />
           <Metric label="% OF TARGET" value={`${t.pct_achieved}%`} sub={`should be ${fmt(t.expected_by_now)} by now`} />
           <Metric label="PROJECTED LANDING" value={fmt(t.projected_landing)} sub={`${t.projected_pct}% of target`} bg={t.projected_pct >= 97 ? "#0f7a3d" : t.projected_pct >= 85 ? "#c98a00" : "#7a2018"} />
+          <Metric label="MANPOWER" value={fmt(t.manpower)} sub={`${t.manpower_set || 0}/${payload.lines.length} lines set`} />
           <Metric label="SEWING LINES" value={payload.lines.length} sub="reporting today" />
         </div>
       )}

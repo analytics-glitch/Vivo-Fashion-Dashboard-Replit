@@ -1,7 +1,7 @@
 """Production hourly-tracker wallboard backend.
 
 Reads the "Production Tracker" Google Sheet (one row per sewing line per hour
-slot: Sewing Line | Date | Time Slot | Target | Actual) via the Replit
+slot: Sewing Line | Date | Time Slot | Target | Actual | ManPower) via the Replit
 google-sheet connector and serves ONE JSON payload with per-line hourly
 target-vs-actual, pace, and a projected end-of-day landing.
 
@@ -34,7 +34,7 @@ loudly with 503 — no silent fallback.
 All "now" math is EAT (UTC+3) wall-clock. Dates in the sheet are D/M/YYYY
 (Kenya locale); slots like "8:00-9:00", "12:00-1:00", "2:00-3:00" — start
 hours < 7 are PM (+12). Lunch (1:00-2:00) simply doesn't appear as a slot.
-Whole-column read (A1:E) — never a fixed row cap (bins-sheet lesson).
+Whole-column read (A:ZZ) — never a fixed row cap (bins-sheet lesson).
 """
 
 import os
@@ -128,7 +128,9 @@ def _read_sheet_rows():
         with _cache_lock:  # another request may have refreshed while we waited
             if _cache["rows"] is not None and time.time() - _cache["ts"] < _TTL_SECONDS:
                 return _cache["rows"]
-        values = _gsheet_values(SHEET_ID, SHEET_TAB, "A1:E")
+        # ManPower was added as column F. Keep reading the whole row width so
+        # future operational columns do not silently disappear from the feed.
+        values = _gsheet_values(SHEET_ID, SHEET_TAB, "A:ZZ")
         with _cache_lock:
             _cache["rows"] = values
             _cache["ts"] = time.time()
@@ -155,18 +157,28 @@ def _parse_grid(values):
     c_slot = col("time slot", "slot", "time")
     c_target = col("target")
     c_actual = col("actual", "achieved")
+    c_manpower = col(
+        "manpower", "man power", "headcount", "operators",
+        "operator count", "staff",
+    )
     if c_line is None or c_date is None or c_slot is None or c_target is None:
         raise HTTPException(
             status_code=503,
             detail="Production Tracker sheet header changed — expected "
-                   "'Sewing Line | Date | Time Slot | Target | Actual'.",
+                   "'Sewing Line | Date | Time Slot | Target | Actual' "
+                   "and optional 'ManPower'.",
         )
 
     out = {}
     dupes = 0
     skipped = 0
     for raw in values[1:]:
-        row = list(raw) + [""] * (5 - len(raw))
+        row = list(raw)
+        required_columns = [
+            c_line, c_date, c_slot, c_target, c_actual, c_manpower,
+        ]
+        width = max((i for i in required_columns if i is not None), default=0) + 1
+        row += [""] * max(0, width - len(row))
         if not any(str(c).strip() for c in row):
             continue  # fully blank row — not a data-quality problem
         line = str(row[c_line] or "").strip()
@@ -185,6 +197,9 @@ def _parse_grid(values):
             "end_hour": end,
             "target": _to_num(row[c_target]),
             "actual": _to_num(row[c_actual]) if c_actual is not None else None,
+            "manpower": (
+                _to_num(row[c_manpower]) if c_manpower is not None else None
+            ),
         }
     return out, {"duplicate_rows": dupes, "skipped_rows": skipped}
 
@@ -230,6 +245,10 @@ def _line_payload(line_name, slots_by_hour, now_eat, day_mode):
             done_slots += 1
 
     productive_hours = len(slots)
+    manpower = next(
+        (s["manpower"] for s in slots if s.get("manpower") is not None),
+        None,
+    )
 
     # Pace is data-driven, not clock-driven: made ÷ hours actually FILLED IN
     # (counted slots with an Actual). With 2 hours filled, pace = made/2 until
@@ -272,6 +291,7 @@ def _line_payload(line_name, slots_by_hour, now_eat, day_mode):
         "hours_filled": hours_filled,
         "hours_completed": done_slots,
         "productive_hours": productive_hours,
+        "manpower": manpower,
         "projected_landing": int(round(projected)),
         "projected_pct": int(round(100 * projected / daily_target)) if daily_target else 0,
         "status": status,
@@ -326,6 +346,14 @@ def hourly_tracker(work_date: str = Query(default=None, pattern=r"^\d{4}-\d{2}-\
         "made_so_far": sum(l["made_so_far"] for l in lines),
         "expected_by_now": sum(l["expected_by_now"] for l in lines),
         "projected_landing": sum(l["projected_landing"] for l in lines),
+        "manpower": (
+            sum(l["manpower"] for l in lines if l["manpower"] is not None)
+            if any(l["manpower"] is not None for l in lines)
+            else None
+        ),
+        "manpower_set": sum(
+            1 for l in lines if l["manpower"] is not None
+        ),
     }
     totals["pct_achieved"] = (
         int(round(100 * totals["made_so_far"] / totals["daily_target"]))
@@ -338,7 +366,7 @@ def hourly_tracker(work_date: str = Query(default=None, pattern=r"^\d{4}-\d{2}-\
         "work_date": chosen.isoformat(),
         "is_today": day_mode == "live",
         "is_future": day_mode == "future",
-        "available_dates": [d.isoformat() for d in dates[-14:]],
+        "available_dates": [d.isoformat() for d in dates],
         "generated_at": now_eat.isoformat(),
         "timezone": "Africa/Nairobi",
         "lines": lines,
