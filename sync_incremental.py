@@ -389,6 +389,7 @@ SITE_LOCATION_MAP = {
 # (which reads SHOPIFY_*/DATABASE_URL env vars at import time).
 from odoo_locations import ODOO_LOCATION_MAP
 from extract_odoo_inventory import LOCATION_COUNTRY_MAP
+from transform_all_customers import norm_email, norm_phone, norm_name
 
 UGANDA_VAT_LOCATIONS = {"The Oasis Mall", "Vivo Acacia"}
 RWANDA_VAT_LOCATIONS = {"Vivo Kigali Heights", "Vivo M-peace Plaza"}
@@ -1562,18 +1563,15 @@ def sync_odoo_customers_incremental(conn):
     ac_rows = []
     new_ids = []
     for oid, name, email, phone, mobile, city, country in recent:
-        name = (name or "").strip()
-        parts = name.split(" ", 1)
-        first = parts[0] if parts else ""
-        last = parts[1] if len(parts) > 1 else ""
+        full = norm_name(name)
         ac_rows.append(
             (
                 str(oid),
                 "vivofashiongroup",
-                first,
-                last,
-                email,
-                phone or mobile,
+                full,
+                None,
+                norm_email(email),
+                norm_phone(country or "Kenya", phone, mobile),
                 city,
                 country,
                 now_utc,
