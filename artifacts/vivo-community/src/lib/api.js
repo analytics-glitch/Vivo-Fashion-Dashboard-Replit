@@ -188,8 +188,8 @@ export const api = {
   // size comes back in stock. Auth required for all three operations.
   restockAlerts: (sku) =>
     req("/restock-alert?sku=" + encodeURIComponent(sku), { auth: true }),
-  restockAlertSet: (size_sku) =>
-    req("/restock-alert", { method: "POST", body: { size_sku }, auth: true }),
+  restockAlertSet: (payload) =>
+    req("/restock-alert", { method: "POST", body: payload, auth: true }),
   restockAlertCancel: (size_sku) =>
     req("/restock-alert", { method: "DELETE", body: { size_sku }, auth: true }),
   // Challenges — real entries (photo riding the same b64-JSON lane as

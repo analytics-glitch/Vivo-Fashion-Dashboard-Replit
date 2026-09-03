@@ -8,3 +8,6 @@ description: Filter/sort contract for the community products endpoint + drawer U
 - Colour filtering is server-side keyword BUCKETS over noisy color_print values (facets + WHERE share COMMUNITY_COLOR_BUCKETS); size filter = EXISTS over sibling SKUs with stock; price bands/sorts are allowlisted server constants — never interpolate client values.
 - count_only=1 returns {total} off the same WHERE so the drawer's "Show N styles" can never disagree with the applied grid.
 - Quiz size_range → concrete sizes map (incl. split sizes like 1X/2X) ships in the facets payload so the server owns that canon; "My size" chip just applies it.
+- Restock alerts use canonical style+colour product identity plus an optional variant identity; active partial unique indexes deduplicate member and lowercased guest-email subscriptions independently.
+- **Why:** a PDP can be opened through any sibling size SKU, so raw request SKUs cannot reliably identify a whole-product subscription.
+- **How to apply:** email is deliverable through the shared retail SMTP sender. Keep push requests pending until the native consent flow gains server-addressable push-token registration; never mark that channel delivered from consent alone.
