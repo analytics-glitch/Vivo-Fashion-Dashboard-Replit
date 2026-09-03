@@ -50,6 +50,7 @@ const colors = {
     // Borders and input outlines
     border: '#e2ddd4',
     input: '#d8d1c6',
+    scrim: 'rgba(38, 35, 33, 0.42)',
   },
 
   // Border radius (in px). Sync from the sibling web artifact's --radius

@@ -1,6 +1,9 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as SecureStore from 'expo-secure-store';
 import * as Clipboard from 'expo-clipboard';
 import * as Linking from 'expo-linking';
+import * as Notifications from 'expo-notifications';
+import { Feather } from '@expo/vector-icons';
 import { Stack } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -24,6 +27,8 @@ import WebView, {
 import colors from '@/constants/colors';
 
 const TOKEN_KEY = 'vivo_community_token';
+const NOTIF_PROMPT_DISMISSED_KEY = 'notif_prompt_dismissed';
+const NOTIF_OS_PERMISSION_KEY = 'notif_os_permission';
 const PRODUCTION_COMMUNITY_URL = 'https://vivofashionbrands.com/app/';
 // A store bundle must never redirect its credential bridge to an environment
 // variable. Overrides are accepted only in a development build.
@@ -34,6 +39,14 @@ const COMMUNITY_URL = __DEV__
       : PRODUCTION_COMMUNITY_URL)
   : PRODUCTION_COMMUNITY_URL;
 const COMMUNITY_ORIGIN = new URL(COMMUNITY_URL).origin;
+type NotificationPermissionState = 'granted' | 'denied' | null;
+type NotificationPromptMode = 'initial' | 'contextual' | 'settings';
+
+interface StoredNotificationState {
+  dismissed: boolean;
+  osPermission: NotificationPermissionState;
+}
+
 const INJECTED_BOOT = `
   (function () {
     window.__VIVO_NATIVE_APP__ = true;
@@ -58,6 +71,153 @@ const INJECTED_BOOT = `
   })();
   true;
 `;
+
+async function readNotificationState(): Promise<StoredNotificationState> {
+  const [[, dismissedValue], [, permissionValue]] = await AsyncStorage.multiGet([
+    NOTIF_PROMPT_DISMISSED_KEY,
+    NOTIF_OS_PERMISSION_KEY,
+  ]);
+  let osPermission: NotificationPermissionState =
+    permissionValue === 'granted' || permissionValue === 'denied' ? permissionValue : null;
+
+  // The OS is authoritative on every evaluation. This also handles members
+  // upgrading from an older app version after already allowing or denying.
+  if (Platform.OS !== 'web') {
+    try {
+      const current = await Notifications.getPermissionsAsync();
+      const currentStatus: NotificationPermissionState = current.granted
+        ? 'granted'
+        : current.status === 'denied' && current.canAskAgain === false
+          ? 'denied'
+          : null;
+      if (currentStatus !== osPermission) {
+        osPermission = currentStatus;
+        if (currentStatus) {
+          await AsyncStorage.setItem(NOTIF_OS_PERMISSION_KEY, currentStatus);
+        } else {
+          await AsyncStorage.removeItem(NOTIF_OS_PERMISSION_KEY);
+        }
+      }
+    } catch {
+      // Keep the last confirmed status when the OS permission query is unavailable.
+    }
+  }
+
+  return {
+    dismissed: dismissedValue === 'true',
+    osPermission,
+  };
+}
+
+interface NotificationPermissionRequestResult {
+  permission: Exclude<NotificationPermissionState, null>;
+  needsSettings: boolean;
+}
+
+async function requestNotificationPermission(): Promise<NotificationPermissionRequestResult> {
+  if (Platform.OS === 'web') return { permission: 'denied', needsSettings: false };
+
+  if (Platform.OS === 'android') {
+    await Notifications.setNotificationChannelAsync('default', {
+      name: 'Vivo Johari updates',
+      importance: Notifications.AndroidImportance.DEFAULT,
+    });
+  }
+
+  const existing = await Notifications.getPermissionsAsync();
+  const alreadyDenied =
+    !existing.granted && existing.status === 'denied' && existing.canAskAgain === false;
+  const result = existing.granted || alreadyDenied
+    ? existing
+    : await Notifications.requestPermissionsAsync({
+        ios: {
+          allowAlert: true,
+          allowBadge: true,
+          allowSound: true,
+        },
+      });
+  const permission: Exclude<NotificationPermissionState, null> =
+    result.granted ? 'granted' : 'denied';
+  await AsyncStorage.setItem(NOTIF_OS_PERMISSION_KEY, permission);
+  return { permission, needsSettings: alreadyDenied };
+}
+
+interface NotificationPermissionPromptProps {
+  mode: NotificationPromptMode;
+  busy: boolean;
+  onAllow: () => void;
+  onDismiss: () => void;
+  onOpenSettings: () => void;
+}
+
+function NotificationPermissionPrompt({
+  mode,
+  busy,
+  onAllow,
+  onDismiss,
+  onOpenSettings,
+}: NotificationPermissionPromptProps) {
+  const isInitial = mode === 'initial';
+  const isSettings = mode === 'settings';
+  const heading = isInitial
+    ? 'Stay in the loop'
+    : isSettings
+      ? 'Turn on notifications in Settings'
+      : "Turn on notifications so you don't miss your bonus points";
+  const body = isInitial
+    ? 'Turn on notifications to get updates on rewards, exclusive drops, and community challenges — right when they happen.'
+    : isSettings
+      ? 'Notifications are currently turned off. Open your phone settings to enable updates from Vivo Johari.'
+      : 'Get a timely heads-up when rewards, bonus points, and new Johari moments are ready for you.';
+
+  const content = (
+    <View style={isInitial ? styles.notificationGate : styles.notificationSheet}>
+      <View style={styles.notificationIcon}>
+        <Feather name="bell" size={25} color={colors.light.primaryDeep} />
+      </View>
+      <Text style={styles.notificationTitle}>{heading}</Text>
+      <Text style={styles.notificationBody}>{body}</Text>
+      <Pressable
+        testID={isSettings ? 'notification-open-settings' : 'notification-allow'}
+        onPress={isSettings ? onOpenSettings : onAllow}
+        disabled={busy}
+        style={({ pressed }) => [
+          styles.notificationPrimaryButton,
+          (pressed || busy) && styles.notificationButtonPressed,
+        ]}
+      >
+        {busy ? (
+          <ActivityIndicator color={colors.light.primaryForeground} />
+        ) : (
+          <Text style={styles.notificationPrimaryText}>
+            {isSettings ? 'Open Settings' : 'Allow Notifications'}
+          </Text>
+        )}
+      </Pressable>
+      <Pressable
+        testID="notification-not-now"
+        onPress={onDismiss}
+        disabled={busy}
+        style={({ pressed }) => [
+          styles.notificationSecondaryButton,
+          pressed && styles.notificationButtonPressed,
+        ]}
+      >
+        <Text style={styles.notificationSecondaryText}>Not now</Text>
+      </Pressable>
+    </View>
+  );
+
+  if (isInitial) {
+    return <View style={styles.notificationFullScreen}>{content}</View>;
+  }
+
+  return (
+    <View style={styles.notificationScrim}>
+      <View style={styles.notificationSheetWrap}>{content}</View>
+    </View>
+  );
+}
 
 function encodeJavaScriptString(value: string) {
   return JSON.stringify(value).replace(/</g, '\\u003c');
@@ -157,6 +317,8 @@ export default function CommunityWebView() {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState('');
   const [sourceUrl, setSourceUrl] = useState(COMMUNITY_URL);
+  const [notificationPrompt, setNotificationPrompt] = useState<NotificationPromptMode | null>(null);
+  const [notificationBusy, setNotificationBusy] = useState(false);
 
   const webViewSource = useMemo(() => ({ uri: sourceUrl }), [sourceUrl]);
 
@@ -218,6 +380,60 @@ export default function CommunityWebView() {
     }
   }, []);
 
+  const showInitialNotificationPrompt = useCallback(async () => {
+    const state = await readNotificationState();
+    if (!state.osPermission && !state.dismissed) {
+      setNotificationPrompt('initial');
+    }
+  }, []);
+
+  const showContextualNotificationPrompt = useCallback(async () => {
+    const state = await readNotificationState();
+    if (state.osPermission === 'granted') return;
+    if (state.osPermission === 'denied') {
+      setNotificationPrompt('settings');
+      return;
+    }
+    if (state.dismissed) setNotificationPrompt('contextual');
+  }, []);
+
+  const dismissNotificationPrompt = useCallback(async () => {
+    if (notificationPrompt !== 'settings') {
+      await AsyncStorage.setItem(NOTIF_PROMPT_DISMISSED_KEY, 'true');
+    }
+    setNotificationPrompt(null);
+  }, [notificationPrompt]);
+
+  const allowNotifications = useCallback(async () => {
+    setNotificationBusy(true);
+    try {
+      // Note: confirm with backend/CRM whether granted notification permissions tie into
+      // segment-specific push campaigns (e.g., Gold segment pilot invites) or general
+      // Vivo Johari notifications only.
+      const result = await requestNotificationPermission();
+      setNotificationPrompt(result.needsSettings ? 'settings' : null);
+    } catch {
+      Alert.alert(
+        'Unable to open notification permission',
+        'Please try again. You can continue using Vivo Johari without notifications.',
+      );
+    } finally {
+      setNotificationBusy(false);
+    }
+  }, []);
+
+  const openNotificationSettings = useCallback(async () => {
+    setNotificationBusy(true);
+    try {
+      await RNLinking.openSettings();
+      setNotificationPrompt(null);
+    } catch {
+      Alert.alert('Unable to open Settings', 'Open your phone Settings and choose Vivo Johari.');
+    } finally {
+      setNotificationBusy(false);
+    }
+  }, []);
+
   const handleMessage = useCallback(async (event: WebViewMessageEvent) => {
     let message: {
       type?: string;
@@ -225,6 +441,7 @@ export default function CommunityWebView() {
       title?: string;
       text?: string;
       url?: string;
+      moment?: string;
     };
     try {
       message = JSON.parse(event.nativeEvent.data);
@@ -242,6 +459,7 @@ export default function CommunityWebView() {
       if (message.token && /^[A-Za-z0-9_-]{43}$/.test(message.token)) {
         await SecureStore.setItemAsync(TOKEN_KEY, message.token);
         setSecureToken(message.token);
+        await showInitialNotificationPrompt();
       }
       return;
     }
@@ -266,8 +484,12 @@ export default function CommunityWebView() {
     if (message.type === 'clipboard' && message.text) {
       await Clipboard.setStringAsync(message.text);
       Alert.alert('Copied', 'The link is ready to paste.');
+      return;
     }
-  }, []);
+    if (message.type === 'notification-moment' && message.moment === 'points-awarded') {
+      await showContextualNotificationPrompt();
+    }
+  }, [showContextualNotificationPrompt, showInitialNotificationPrompt]);
 
   const handleNavigation = useCallback((request: WebViewNavigation) => {
     const { url } = request;
@@ -317,7 +539,7 @@ export default function CommunityWebView() {
 
   return (
     <SafeAreaView style={styles.safeArea} edges={['top', 'bottom']}>
-      <StatusBar style="light" />
+      <StatusBar style={notificationPrompt ? 'dark' : 'light'} />
       <Stack.Screen options={{ headerShown: false }} />
       <View style={styles.container}>
         <WebView
@@ -375,6 +597,15 @@ export default function CommunityWebView() {
               <Text style={styles.secondaryText}>Open in browser</Text>
             </Pressable>
           </View>
+        )}
+        {notificationPrompt && (
+          <NotificationPermissionPrompt
+            mode={notificationPrompt}
+            busy={notificationBusy}
+            onAllow={() => void allowNotifications()}
+            onDismiss={() => void dismissNotificationPrompt()}
+            onOpenSettings={() => void openNotificationSettings()}
+          />
         )}
       </View>
     </SafeAreaView>
@@ -454,5 +685,91 @@ const styles = StyleSheet.create({
     color: colors.light.primaryDeep,
     fontFamily: 'Inter_600SemiBold',
     fontSize: 14,
+  },
+  notificationFullScreen: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    backgroundColor: colors.light.background,
+  },
+  notificationGate: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 30,
+    paddingVertical: 36,
+    backgroundColor: colors.light.background,
+  },
+  notificationScrim: {
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 20,
+    justifyContent: 'flex-end',
+    backgroundColor: colors.light.scrim,
+  },
+  notificationSheetWrap: {
+    padding: 12,
+  },
+  notificationSheet: {
+    alignItems: 'center',
+    paddingHorizontal: 24,
+    paddingTop: 30,
+    paddingBottom: 18,
+    borderRadius: 16,
+    backgroundColor: colors.light.card,
+  },
+  notificationIcon: {
+    width: 56,
+    height: 56,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 28,
+    marginBottom: 22,
+    backgroundColor: colors.light.secondary,
+  },
+  notificationTitle: {
+    maxWidth: 330,
+    color: colors.light.foreground,
+    fontFamily: 'Inter_700Bold',
+    fontSize: 26,
+    lineHeight: 32,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  notificationBody: {
+    maxWidth: 340,
+    color: colors.light.mutedForeground,
+    fontFamily: 'Inter_400Regular',
+    fontSize: 15,
+    lineHeight: 23,
+    textAlign: 'center',
+    marginBottom: 30,
+  },
+  notificationPrimaryButton: {
+    width: '100%',
+    minHeight: 50,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: colors.radius,
+    paddingHorizontal: 20,
+    backgroundColor: colors.light.primary,
+  },
+  notificationPrimaryText: {
+    color: colors.light.primaryForeground,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 15,
+  },
+  notificationSecondaryButton: {
+    minHeight: 46,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 20,
+    marginTop: 4,
+  },
+  notificationSecondaryText: {
+    color: colors.light.primaryDeep,
+    fontFamily: 'Inter_600SemiBold',
+    fontSize: 14,
+  },
+  notificationButtonPressed: {
+    opacity: 0.72,
   },
 });

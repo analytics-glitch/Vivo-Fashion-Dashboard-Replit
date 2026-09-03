@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { ArrowLeft, CheckCircle2, AlertCircle, Ruler, Scissors } from 'lucide-react';
 import { btnPrimary, inputCls, cardCls } from './ui';
-import { api } from '../../lib/api';
+import { api, postNativeMessage } from '@/lib/api';
 
 const SIZE_OPTIONS = [
   { size: 'XS', UK: '4-6', US: '0-2' },
@@ -70,6 +70,7 @@ export default function MySizeView({ member, onBack, onMemberUpdate }) {
       
       if (res.points_awarded) {
         setPointsAwarded(res.points_awarded_value || 15);
+        postNativeMessage('notification-moment', { moment: 'points-awarded' });
       }
       setSavedProfile(res.profile || null);
       setSuccess(true);

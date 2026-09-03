@@ -115,6 +115,7 @@
 - Community campaigns: [articles](community-campaign-articles.md), [redemption](community-entry-pipeline.md) — points only at canonical milestones; keep privacy and role gates.
 - Community navigation: [handoffs](strictmode-sessionstorage-handoff.md), [stores](community-find-a-store.md), [composer](community-composer-handoff.md) — tap-only state and secondary placement.
 - Community native AI: [credential bridge](community-native-credential-bridge.md), [Gemini image](gemini-image-tryon.md) — fixed trusted origin and exact REST payload casing.
+- [Johari notification consent](johari-notification-consent.md) — keep soft-prompt dismissal separate from OS permission; reconcile the OS on every native evaluation and route denial nudges to Settings.
 - [vivo-bi cookie-only web auth](vivo-bi-cookie-only-auth.md) — staff SPA uses only the httpOnly session cookie (no vivo_token/Bearer); login has account+IP lockout; e2e auth via addCookies.
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
 - [Sublimation costing canon](sublimation-costing-canon.md) — BOM op time = settable STANDARD throughput (default 60, actual = variance only); server recomputes saves; reprint on printing lines only; rate constants FE+BE lockstep.

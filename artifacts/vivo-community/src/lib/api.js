@@ -7,6 +7,14 @@ const TOKEN_KEY = "vivo_community_token";
 let onUnauthorized = null;
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
 
+export function postNativeMessage(type, payload = {}) {
+  try {
+    if (window.ReactNativeWebView) {
+      window.ReactNativeWebView.postMessage(JSON.stringify({ type, ...payload }));
+    }
+  } catch { /* bridge unavailable or private browser */ }
+}
+
 export function getToken() {
   try { return localStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
 }
@@ -18,14 +26,7 @@ export function setToken(t) {
   // The installed Johari shell mirrors the opaque member token into the
   // platform secure store. The browser still uses localStorage, so this is
   // additive and does not change the hosted web experience.
-  try {
-    if (window.ReactNativeWebView) {
-      window.ReactNativeWebView.postMessage(JSON.stringify({
-        type: t ? "auth-token" : "signed-out",
-        token: t || "",
-      }));
-    }
-  } catch { /* bridge unavailable or private browser */ }
+  postNativeMessage(t ? "auth-token" : "signed-out", { token: t || "" });
 }
 
 async function req(path, { method = "GET", body, auth = false } = {}) {
