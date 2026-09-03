@@ -6,6 +6,8 @@ import MonthlyTargetsTracker from "@/components/MonthlyTargetsTracker";
 import TotalSalesSummary from "@/components/TotalSalesSummary";
 import CustomProjectionCard from "@/components/CustomProjectionCard";
 import TargetsSnapshot from "@/components/TargetsSnapshot";
+import OnlineSeptemberSnapshot from "@/components/OnlineSeptemberSnapshot";
+import OnlineSeptemberChallengeCard from "@/components/OnlineSeptemberChallengeCard";
 import TargetFunnelCard from "@/components/TargetFunnelCard";
 import TargetDrilldownModal from "@/components/TargetDrilldownModal";
 import { Target, TrendUp, CalendarBlank, DeviceMobile, MagnifyingGlassPlus } from "@phosphor-icons/react";
@@ -346,6 +348,10 @@ export default function TargetsTracker() {
   const [priorYearData, setPriorYearData] = useState(null);
   const [error, setError] = useState(null);
   const [snapshot, setSnapshot] = useState(false);
+  const [onlineCampaign, setOnlineCampaign] = useState(null);
+  const [onlineCampaignLoading, setOnlineCampaignLoading] = useState(true);
+  const [onlineCampaignError, setOnlineCampaignError] = useState(null);
+  const [onlineSnapshot, setOnlineSnapshot] = useState(false);
   // Drill-down popup: { label, bucket } for a clicked Annual tile (null = closed).
   const [drill, setDrill] = useState(null);
 
@@ -368,6 +374,29 @@ export default function TargetsTracker() {
     });
     return () => { cancelled = true; };
   }, [year]);
+
+  // This is intentionally independent from the annual/current-quarter fetch:
+  // the campaign has a fixed September window and its own config/source.
+  useEffect(() => {
+    let cancelled = false;
+    setOnlineCampaignLoading(true);
+    setOnlineCampaignError(null);
+    api.get("/analytics/online-september", { params: { month: "2026-09-01" } })
+      .then((r) => {
+        if (cancelled) return;
+        setOnlineCampaign(r.data);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        setOnlineCampaignError(
+          e?.response?.data?.detail || e?.message || "Campaign data is unavailable",
+        );
+      })
+      .finally(() => {
+        if (!cancelled) setOnlineCampaignLoading(false);
+      });
+    return () => { cancelled = true; };
+  }, []);
 
   // Memoize the three derived tile sets: Annual / Current Q / Previous Q.
   const cards = useMemo(() => {
@@ -500,7 +529,18 @@ export default function TargetsTracker() {
     </div>
   );
 
-  // Snapshot view — full-screen overlay, single-screen mobile-friendly
+  // Campaign snapshot view — full-screen overlay, single-screen mobile-friendly
+  // and separate from the existing current-quarter snapshot flow.
+  if (onlineSnapshot && onlineCampaign) {
+    return (
+      <OnlineSeptemberSnapshot
+        campaign={onlineCampaign}
+        onClose={() => setOnlineSnapshot(false)}
+      />
+    );
+  }
+
+  // Existing quarterly snapshot view — full-screen overlay, single-screen mobile-friendly
   // card the CEO can screenshot or save as a PNG to share. Sources
   // exactly the same data as the Current Quarter tile grid so the
   // snapshot is always a faithful mirror of what's on screen.
@@ -533,6 +573,13 @@ export default function TargetsTracker() {
           </button>
         )}
       </div>
+
+      <OnlineSeptemberChallengeCard
+        campaign={onlineCampaign}
+        loading={onlineCampaignLoading}
+        error={onlineCampaignError}
+        onOpenSnapshot={() => setOnlineSnapshot(true)}
+      />
 
       {/* Annual */}
       <TargetsCardShell

@@ -19826,6 +19826,62 @@ def _seed_targets_budget_2026():
             conn.close()
 
 
+# Online September Challenge is intentionally stored in the same durable target
+# table but under its own scope/source. The annual and quarterly target queries
+# only read scope='region', source='budget', so this campaign can never alter
+# the official FY2026 finance budget.
+_ONLINE_SEPTEMBER_CAMPAIGN = {
+    "scope": "campaign",
+    "name": "Online September Challenge",
+    "country": "Online",
+    "month": "2026-09-01",
+    "goal_kes": 10_000_000,
+    "source": "online_september_2026",
+    "label": "Online September Challenge",
+    "reward_kes": 5_000,
+}
+_ONLINE_SEPTEMBER_SEED_LOCK_KEY = 822027
+
+
+def _seed_online_september_campaign():
+    """Idempotently persist the standalone September campaign goal.
+
+    This is additive and conflict-safe: it never deletes or updates a campaign
+    row that an operator may have amended, and its scope/source are excluded
+    from all official finance target readers.
+    """
+    c = _ONLINE_SEPTEMBER_CAMPAIGN
+    conn = None
+    try:
+        conn = get_conn()
+        conn.autocommit = False
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)",
+                    (_ONLINE_SEPTEMBER_SEED_LOCK_KEY,))
+        cur.execute(
+            "INSERT INTO targets_monthly "
+            "(scope, name, country, month, target_kes, source, updated_at) "
+            "VALUES (%s, %s, %s, %s::date, %s, %s, now()) "
+            "ON CONFLICT (scope, name, month, source) DO NOTHING",
+            (c["scope"], c["name"], c["country"], c["month"],
+             c["goal_kes"], c["source"]),
+        )
+        conn.commit()
+        cur.close()
+        print("[targets] Online September campaign seed ensured", flush=True)
+    except Exception as e:  # pragma: no cover - best effort, never block boot
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        print(f"[targets] Online September campaign seed failed: {e}",
+              flush=True)
+    finally:
+        if conn is not None:
+            conn.close()
+
+
 # --------------------------------------------------------------------------- #
 # Finance P&L account map (account_code -> P&L group/section).                  #
 # Hand-curated mapping with NO external source to re-derive it from, and (like  #
@@ -20015,6 +20071,7 @@ def _seed_style_tier_overrides():
 def _targets_startup():
     _ensure_targets_table()
     _seed_targets_budget_2026()
+    _seed_online_september_campaign()
     _ensure_finance_account_map()
     _seed_finance_account_map()
     # Optional free-text transfer/PO reference attached when a replenishment is
@@ -20147,6 +20204,157 @@ def analytics_annual_targets(year: int = Query(default=None)):
         "total": total, "buckets": buckets,
         "completion_pct": round(100.0 * days_elapsed / days_total, 1),
         "days_elapsed": days_elapsed, "days_total": days_total, "as_of": today.isoformat(),
+    }
+
+
+@app.get("/api/analytics/online-september")
+def analytics_online_september(month: str = Query(default="2026-09-01")):
+    """Live, standalone Online September Challenge snapshot.
+
+    The month is deliberately fixed to September 2026. Actuals use the same
+    VAT-inclusive net-of-discounts-and-returns expression as the Targets page,
+    but are restricted to the Online bucket and the campaign's own date window.
+    """
+    try:
+        requested = date.fromisoformat((month or "")[:10]).replace(day=1)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400,
+                            detail="invalid month (expected 2026-09-01)")
+    campaign_month = date(2026, 9, 1)
+    if requested != campaign_month:
+        raise HTTPException(
+            status_code=400,
+            detail="Online September Challenge is only available for September 2026",
+        )
+
+    c = _ONLINE_SEPTEMBER_CAMPAIGN
+    try:
+        config_rows = run_query(
+            "SELECT target_kes::numeric AS goal_kes "
+            "FROM targets_monthly "
+            "WHERE scope = '" + c["scope"] + "' "
+            "AND name = '" + c["name"].replace("'", "''") + "' "
+            "AND month = '" + c["month"] + "'::date "
+            "AND source = '" + c["source"] + "' "
+            "LIMIT 1",
+            ttl=60,
+        )
+    except Exception as e:
+        log.error("online September campaign config read failed: %s", e)
+        raise HTTPException(status_code=503,
+                            detail="Online September campaign data is unavailable")
+    if not config_rows or config_rows[0].get("goal_kes") is None:
+        raise HTTPException(
+            status_code=404,
+            detail="Online September Challenge is not configured",
+        )
+
+    goal_kes = round(float(config_rows[0]["goal_kes"]))
+    nstart = date(2026, 10, 1)
+    mend = nstart - timedelta(days=1)
+    today = date.today()
+    as_of = min(today, mend)
+    days_total = (mend - campaign_month).days + 1
+    if today < campaign_month:
+        days_elapsed = 0
+        days_remaining = days_total
+    elif today > mend:
+        days_elapsed = days_total
+        days_remaining = 0
+    else:
+        days_elapsed = (today - campaign_month).days + 1
+        days_remaining = days_total - days_elapsed
+
+    # Do not manufacture a zero when the source table is unavailable. An empty
+    # result is a valid, data-backed zero; a query failure is an explicit 503.
+    achieved_kes = 0
+    if today >= campaign_month:
+        try:
+            actual_rows = run_query(
+                "SELECT ROUND(" + _TARGET_REVENUE + ") AS achieved_kes "
+                "FROM all_sales s "
+                "WHERE s.sale_date::date BETWEEN '" + str(campaign_month) +
+                "' AND '" + str(as_of) + "' "
+                "AND s.sale_kind IN ('sale','order','return') "
+                "AND " + BASE_FILTERS + " "
+                "AND (s.country = 'Online' "
+                "OR s.pos_location_name ILIKE '%online%')",
+                ttl=30,
+            )
+        except Exception as e:
+            log.error("online September campaign actuals read failed: %s", e)
+            raise HTTPException(
+                status_code=503,
+                detail="Online September sales data is unavailable",
+            )
+        if actual_rows and actual_rows[0].get("achieved_kes") is not None:
+            achieved_kes = round(float(actual_rows[0]["achieved_kes"]))
+
+    progress_pct = round(100.0 * achieved_kes / goal_kes, 1) if goal_kes else 0.0
+    remaining_kes = max(0, goal_kes - achieved_kes)
+    in_progress = campaign_month <= today <= mend
+    projection_meaningful = in_progress and days_elapsed > 0 and achieved_kes > 0
+    projected_landing_kes = (
+        round(achieved_kes / days_elapsed * days_total)
+        if projection_meaningful else None
+    )
+
+    if today < campaign_month:
+        status = "prestart"
+        status_message = (
+            "The challenge starts on 1 September 2026. "
+            "Online sales will begin counting then."
+        )
+    elif achieved_kes >= goal_kes:
+        status = "won"
+        status_message = (
+            "Goal reached — every employee receives a KES 5,000 voucher."
+        )
+    elif today > mend:
+        status = "closed"
+        status_message = (
+            "September is closed. The final Online result did not reach "
+            "the KES 10,000,000 goal."
+        )
+    elif projection_meaningful and projected_landing_kes >= goal_kes:
+        status = "in_progress"
+        status_message = (
+            "Current pace projects a finish at KES "
+            + f"{projected_landing_kes:,.0f}. Keep the momentum going."
+        )
+    elif projection_meaningful:
+        status = "in_progress"
+        status_message = (
+            "The challenge is live — KES "
+            + f"{remaining_kes:,.0f} remains to reach the finish line."
+        )
+    else:
+        status = "in_progress"
+        status_message = (
+            "The challenge is live. A projection will appear once "
+            "there is meaningful September sales activity."
+        )
+
+    return {
+        "label": c["label"],
+        "channel": c["country"],
+        "month_label": "September 2026",
+        "month_start": str(campaign_month),
+        "month_end": str(mend),
+        "goal_kes": goal_kes,
+        "achieved_kes": achieved_kes,
+        "progress_pct": progress_pct,
+        "remaining_kes": remaining_kes,
+        "projected_landing_kes": projected_landing_kes,
+        "projection_meaningful": projection_meaningful,
+        "days_elapsed": days_elapsed,
+        "days_remaining": days_remaining,
+        "days_total": days_total,
+        "as_of": as_of.isoformat(),
+        "reward_kes": c["reward_kes"],
+        "status": status,
+        "status_message": status_message,
+        "is_prestart": today < campaign_month,
     }
 
 
