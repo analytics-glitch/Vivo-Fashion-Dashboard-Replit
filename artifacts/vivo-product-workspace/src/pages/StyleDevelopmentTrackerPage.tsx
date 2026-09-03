@@ -1,6 +1,7 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users, ArrowLeft, SlidersHorizontal } from 'lucide-react';
+import { groupStyleDevelopmentItems, type StyleDevelopmentGroupBy } from '../lib/styleDevelopmentBoard';
 
 type TrackerStyle = {
   id: number;
@@ -17,6 +18,12 @@ type TrackerStyle = {
   originalSubCategory: string;
   brand: string;
   fabric: string;
+  designer: string | null;
+  designerUserId: number | null;
+  collection: string;
+  theme: string;
+  knitOrWoven: 'Knit' | 'Woven' | null;
+  printOrSolid: 'Print' | 'Solid' | null;
   patternMaker: string | null;
   patternAssignmentKey: string;
   patternMakerUserId: number | null;
@@ -26,6 +33,7 @@ type TrackerStyle = {
   adoptionDate: string | null;
   targetOrderWeek: string | null;
   targetLaunchWeek: string | null;
+  launchMonth: string | null;
   sampleApprovalDate: string | null;
   dataQualityFlags: string[];
   blocked: boolean;
@@ -92,8 +100,9 @@ type HistoryEntry = {
 
 type TrackerDetailPayload = TrackerStyle & { history: HistoryEntry[] };
 
-type CardFieldKey = 'targetOrderWeek' | 'stageDays' | 'patternMaker' | 'type' | 'tier' | 'status';
+type CardFieldKey = 'targetOrderWeek' | 'stageDays' | 'patternMaker' | 'designer' | 'collection' | 'knitOrWoven' | 'printOrSolid' | 'type' | 'tier' | 'status';
 type CardFieldVisibility = Record<CardFieldKey, boolean>;
+type GroupByKey = StyleDevelopmentGroupBy;
 type AssignmentOption = {
   assignmentKey: string;
   name: string;
@@ -104,6 +113,10 @@ const DEFAULT_CARD_FIELDS: CardFieldVisibility = {
   targetOrderWeek: true,
   stageDays: true,
   patternMaker: true,
+  designer: true,
+  collection: true,
+  knitOrWoven: false,
+  printOrSolid: false,
   type: true,
   tier: true,
   status: true,
@@ -113,6 +126,10 @@ const CARD_FIELD_OPTIONS: { key: CardFieldKey; label: string }[] = [
   { key: 'targetOrderWeek', label: 'Target order week' },
   { key: 'stageDays', label: 'Days at current stage' },
   { key: 'patternMaker', label: 'Pattern maker' },
+  { key: 'designer', label: 'Designer' },
+  { key: 'collection', label: 'Collection' },
+  { key: 'knitOrWoven', label: 'Knit or woven' },
+  { key: 'printOrSolid', label: 'Print or solid' },
   { key: 'type', label: 'Type' },
   { key: 'tier', label: 'Tier' },
   { key: 'status', label: 'Status' },
@@ -135,6 +152,15 @@ type PatternMakerOption = {
   patternStageCount: number;
 };
 
+type DesignerOption = {
+  id: number;
+  name: string;
+  role: string;
+  team: string;
+  assignable: boolean;
+  unavailableNow: boolean;
+};
+
 type ReassignmentReason = {
   id: number;
   code: string;
@@ -150,6 +176,7 @@ type TrackerPayload = {
   statuses: string[];
   stageStandards: Record<string, number>;
   patternMakers: PatternMakerOption[];
+  designers: DesignerOption[];
   reassignmentReasons: ReassignmentReason[];
   facets: {
     targetOrderWeek: string[];
@@ -159,6 +186,12 @@ type TrackerPayload = {
     type: string[];
     tier: string[];
     patternMaker: string[];
+    designer: string[];
+    collection: string[];
+    theme: string[];
+    knitOrWoven: string[];
+    printOrSolid: string[];
+    launchMonth: string[];
     status: string[];
   };
 };
@@ -249,7 +282,7 @@ type ReportingPayload = {
     monthlyGap: number;
     byPatternMaker: (CapacityAssignment & {
       isTeamLead: boolean;
-      nextUnavailable: { id: number; unavailableFrom: string; unavailableTo: string; note: string } | null;
+      nextUnavailable: { id: number; unavailableFrom: string; unavailableTo: string | null; note: string } | null;
       balanceStatus: 'overloaded' | 'balanced' | 'light';
     })[];
     routedWork: CapacityAssignment[];
@@ -283,7 +316,7 @@ type ReportingPayload = {
       patternMakerId: number;
       patternMaker: string;
       unavailableFrom: string;
-      unavailableTo: string;
+      unavailableTo: string | null;
       note: string;
       recordedBy: string;
       makersDuring: number;
@@ -312,7 +345,7 @@ async function loadTracker(): Promise<TrackerPayload> {
 }
 
 function targetWeekNumber(value: string | null): number | null {
-  const match = value?.match(/^WK\s*(\d+)$/i);
+  const match = value?.match(/(?:^|-)W(?:K)?\s*(\d+)$/i);
   return match ? Number(match[1]) : null;
 }
 
@@ -353,11 +386,16 @@ export default function StyleDevelopmentTrackerPage() {
     type: 'All',
     tier: 'All',
     patternMaker: 'All',
+    designer: 'All',
+    collection: 'All',
+    theme: 'All',
+    knitOrWoven: 'All',
+    printOrSolid: 'All',
     status: 'All',
     blocked: 'All',
   });
 
-  const [groupBy, setGroupBy] = useState<'stage' | 'targetOrderWeek' | 'category' | 'subCategory' | 'brand' | 'type' | 'patternMaker' | 'status'>('stage');
+  const [groupBy, setGroupBy] = useState<GroupByKey>('stage');
   const [sortField, setSortField] = useState<keyof TrackerStyle>('targetOrderWeek');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
@@ -370,6 +408,7 @@ export default function StyleDevelopmentTrackerPage() {
   const stages = tracker.data?.stages ?? [];
   const statuses = tracker.data?.statuses ?? [];
   const patternMakers = tracker.data?.patternMakers ?? [];
+  const designers = tracker.data?.designers ?? [];
   const reassignmentReasons = tracker.data?.reassignmentReasons ?? [];
   const assignmentLoads = useMemo(() => {
     const loads = new Map<string, number>([['', 0]]);
@@ -433,12 +472,18 @@ export default function StyleDevelopmentTrackerPage() {
     type: Array.from(new Set(items.map(s => s.type).filter(Boolean))) as string[],
     tier: Array.from(new Set(items.map(s => s.tier).filter(Boolean))) as string[],
     patternMaker: Array.from(new Set(items.map(s => s.patternMaker).filter(Boolean))) as string[],
+    designer: Array.from(new Set(items.map(s => s.designer).filter(Boolean))) as string[],
+    collection: Array.from(new Set(items.map(s => s.collection).filter(Boolean))) as string[],
+    theme: Array.from(new Set(items.map(s => s.theme).filter(Boolean))) as string[],
+    knitOrWoven: Array.from(new Set(items.map(s => s.knitOrWoven).filter(Boolean))) as string[],
+    printOrSolid: Array.from(new Set(items.map(s => s.printOrSolid).filter(Boolean))) as string[],
+    launchMonth: Array.from(new Set(items.map(s => s.launchMonth).filter(Boolean))) as string[],
     status: Array.from(new Set(items.map(s => s.status).filter(Boolean))) as string[],
   };
 
   const filtered = useMemo(() => {
     return items.filter(style => {
-      const searchStr = `${style.styleNumber || ''} ${style.styleName} ${style.fabric || ''} ${style.sampleFabricName || ''} ${style.sampleFabricColour || ''}`.toLowerCase();
+      const searchStr = `${style.styleNumber || ''} ${style.styleName} ${style.fabric || ''} ${style.sampleFabricName || ''} ${style.sampleFabricColour || ''} ${style.designer || ''} ${style.collection || ''} ${style.theme || ''}`.toLowerCase();
       const matchSearch = search ? searchStr.includes(search.toLowerCase()) : true;
       const matchStage = filters.stage === 'All' || style.stage === filters.stage;
       const matchWeek = filters.targetOrderWeek === 'All' || style.targetOrderWeek === filters.targetOrderWeek;
@@ -449,10 +494,20 @@ export default function StyleDevelopmentTrackerPage() {
       const matchTier = filters.tier === 'All' || style.tier === filters.tier;
       const matchPatternMaker = filters.patternMaker === 'All'
         || (filters.patternMaker === 'Unassigned' ? !style.patternMaker : style.patternMaker === filters.patternMaker);
+      const matchDesigner = filters.designer === 'All'
+        || (filters.designer === 'Unassigned' ? !style.designer : style.designer === filters.designer);
+      const matchCollection = filters.collection === 'All'
+        || (filters.collection === 'Unassigned' ? !style.collection : style.collection === filters.collection);
+      const matchTheme = filters.theme === 'All'
+        || (filters.theme === 'Unassigned' ? !style.theme : style.theme === filters.theme);
+      const matchKnitOrWoven = filters.knitOrWoven === 'All'
+        || (filters.knitOrWoven === 'Unassigned' ? !style.knitOrWoven : style.knitOrWoven === filters.knitOrWoven);
+      const matchPrintOrSolid = filters.printOrSolid === 'All'
+        || (filters.printOrSolid === 'Unassigned' ? !style.printOrSolid : style.printOrSolid === filters.printOrSolid);
       const matchStatus = filters.status === 'All' || style.status === filters.status;
       const matchBlocked = filters.blocked === 'All' || (filters.blocked === 'Blocked' ? style.blocked : !style.blocked);
 
-      return matchSearch && matchStage && matchWeek && matchCategory && matchSubCategory && matchBrand && matchType && matchTier && matchPatternMaker && matchStatus && matchBlocked;
+      return matchSearch && matchStage && matchWeek && matchCategory && matchSubCategory && matchBrand && matchType && matchTier && matchPatternMaker && matchDesigner && matchCollection && matchTheme && matchKnitOrWoven && matchPrintOrSolid && matchStatus && matchBlocked;
     });
   }, [items, search, filters]);
 
@@ -464,9 +519,8 @@ export default function StyleDevelopmentTrackerPage() {
       for (const value of orderedValues) values.set(value, []);
     }
 
-    for (const style of filtered) {
-      const key = String((style as any)[groupBy] || (groupBy === 'stage' ? 'Unassigned' : 'Unknown'));
-      values.set(key, [...(values.get(key) ?? []), style]);
+    for (const [key, styles] of groupStyleDevelopmentItems(filtered, groupBy)) {
+      values.set(key, [...(values.get(key) ?? []), ...styles]);
     }
     const entries = Array.from(values.entries());
 
@@ -487,6 +541,8 @@ export default function StyleDevelopmentTrackerPage() {
           if (na !== null && nb !== null) return na - nb;
           return a.localeCompare(b);
        });
+    } else if (groupBy === 'blocked') {
+       entries.sort(([a], [b]) => (a === 'Blocked' ? -1 : b === 'Blocked' ? 1 : a.localeCompare(b)));
     } else {
        entries.sort(([a], [b]) => a.localeCompare(b));
     }
@@ -528,7 +584,8 @@ export default function StyleDevelopmentTrackerPage() {
     setSearch('');
     setFilters({
       stage: 'All', targetOrderWeek: 'All', category: 'All', subCategory: 'All', brand: 'All',
-      type: 'All', tier: 'All', patternMaker: 'All', status: 'All', blocked: 'All',
+      type: 'All', tier: 'All', patternMaker: 'All', designer: 'All', collection: 'All',
+      theme: 'All', knitOrWoven: 'All', printOrSolid: 'All', status: 'All', blocked: 'All',
     });
   };
 
@@ -632,6 +689,46 @@ export default function StyleDevelopmentTrackerPage() {
             </select>
           </div>
           <div className="tracker-filter-select">
+            <label>Designer</label>
+            <select value={filters.designer} onChange={e => setFilters({...filters, designer: e.target.value})}>
+              <option value="All">All</option>
+              <option value="Unassigned">Unassigned</option>
+              {facets.designer?.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </div>
+          <div className="tracker-filter-select">
+            <label>Collection</label>
+            <select value={filters.collection} onChange={e => setFilters({...filters, collection: e.target.value})}>
+              <option value="All">All</option>
+              <option value="Unassigned">Unassigned</option>
+              {facets.collection?.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </div>
+          <div className="tracker-filter-select">
+            <label>Theme</label>
+            <select value={filters.theme} onChange={e => setFilters({...filters, theme: e.target.value})}>
+              <option value="All">All</option>
+              <option value="Unassigned">Unassigned</option>
+              {facets.theme?.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </div>
+          <div className="tracker-filter-select">
+            <label>Knit / Woven</label>
+            <select value={filters.knitOrWoven} onChange={e => setFilters({...filters, knitOrWoven: e.target.value})}>
+              <option value="All">All</option>
+              <option value="Unassigned">Unassigned</option>
+              {facets.knitOrWoven?.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </div>
+          <div className="tracker-filter-select">
+            <label>Print / Solid</label>
+            <select value={filters.printOrSolid} onChange={e => setFilters({...filters, printOrSolid: e.target.value})}>
+              <option value="All">All</option>
+              <option value="Unassigned">Unassigned</option>
+              {facets.printOrSolid?.map(f => <option key={f} value={f}>{f}</option>)}
+            </select>
+          </div>
+          <div className="tracker-filter-select">
             <label>Status</label>
             <select value={filters.status} onChange={e => setFilters({...filters, status: e.target.value})}>
               <option value="All">All</option>
@@ -649,16 +746,24 @@ export default function StyleDevelopmentTrackerPage() {
           <button className="tracker-filter-clear" onClick={clearFilters}>Clear</button>
 
           <div className="tracker-filter-select" style={{ marginLeft: 'auto' }}>
-            <label>Group By</label>
-            <select value={groupBy} onChange={e => setGroupBy(e.target.value as any)}>
+            <label>Choose a stacking field</label>
+            <select value={groupBy} onChange={e => setGroupBy(e.target.value as GroupByKey)}>
               <option value="stage">Stage</option>
-              <option value="targetOrderWeek">Target Week</option>
-              <option value="subCategory">Sub-category</option>
-              <option value="category">Category</option>
-              <option value="brand">Brand</option>
-              <option value="type">Type</option>
-              <option value="patternMaker">Pattern Maker</option>
               <option value="status">Status</option>
+              <option value="targetOrderWeek">Target Week</option>
+              <option value="category">Category</option>
+              <option value="subCategory">Sub-category</option>
+              <option value="type">Type</option>
+              <option value="tier">Tier</option>
+              <option value="brand">Brand</option>
+              <option value="patternMaker">Pattern Maker</option>
+              <option value="designer">Designer</option>
+              <option value="collection">Collection</option>
+              <option value="theme">Theme</option>
+              <option value="knitOrWoven">Knit or woven</option>
+              <option value="printOrSolid">Print or solid</option>
+              <option value="launchMonth">Launch month</option>
+              <option value="blocked">Blocked</option>
             </select>
           </div>
         </div>
@@ -826,7 +931,7 @@ export default function StyleDevelopmentTrackerPage() {
         <TrackerCapacity reassignmentReasons={reassignmentReasons} focusedPatternMaker={focusedPatternMaker} />
       )}
 
-      {detailId && <TrackerDetailDrawer id={detailId} patternMakers={patternMakers} reassignmentReasons={reassignmentReasons} onClose={() => setDetailId(null)} />}
+      {detailId && <TrackerDetailDrawer id={detailId} patternMakers={patternMakers} designers={designers} reassignmentReasons={reassignmentReasons} onClose={() => setDetailId(null)} />}
       {pendingReassignment && (
         <ReassignmentDialog
           count={pendingReassignment.styleIds.length}
@@ -921,6 +1026,10 @@ function StyleDevelopmentBoardCard({
               ))}
             </select>
           )}
+          {cardFields.designer && <span className="tracker-card-chip tracker-card-chip-designer" title={item.designer || 'Unassigned designer'}>{item.designer || 'Designer unassigned'}</span>}
+          {cardFields.collection && <span className="tracker-card-chip tracker-card-chip-collection" title={item.collection || 'Unassigned collection'}>{item.collection || 'Collection unassigned'}</span>}
+          {cardFields.knitOrWoven && <span className="tracker-card-chip">{item.knitOrWoven || 'Knit / woven unassigned'}</span>}
+          {cardFields.printOrSolid && <span className="tracker-card-chip">{item.printOrSolid || 'Print / solid unassigned'}</span>}
           {cardFields.type && <span className="tracker-card-chip tracker-card-chip-type">{item.type}</span>}
           {cardFields.tier && <span className="tracker-card-chip tracker-card-chip-tier">{item.tier}</span>}
         </div>
@@ -1439,7 +1548,7 @@ function TrackerCapacity({ reassignmentReasons, focusedPatternMaker }: { reassig
           <div className="capacity-event-grid">
             {data.availabilitySchedule.map(period => (
               <article key={period.id}>
-                <div><strong>{period.patternMaker}</strong><span>{new Date(`${period.unavailableFrom}T00:00:00`).toLocaleDateString('en-GB')} – {new Date(`${period.unavailableTo}T00:00:00`).toLocaleDateString('en-GB')}</span></div>
+                <div><strong>{period.patternMaker}</strong><span>{new Date(`${period.unavailableFrom}T00:00:00`).toLocaleDateString('en-GB')} – {period.unavailableTo ? new Date(`${period.unavailableTo}T00:00:00`).toLocaleDateString('en-GB') : 'Until further notice'}</span></div>
                 <div className="capacity-impact-number"><strong>{Number(period.weeklyCapacityDuring).toFixed(2)}</strong><span>patterns / week</span></div>
                 <p>{Number(period.makersDuring).toFixed(1)} effective makers during this period{period.note ? ` · ${period.note}` : ''}</p>
               </article>
@@ -1533,7 +1642,7 @@ function PatternMakerDirectory() {
       if (!res.ok) throw new Error('Could not load assignment options');
       return res.json() as Promise<{
         items: PatternMakerOption[];
-        unavailability: { id: number; patternMakerId: number; patternMaker: string; unavailableFrom: string; unavailableTo: string; note: string; recordedBy: string }[];
+        unavailability: { id: number; patternMakerId: number; patternMaker: string; unavailableFrom: string; unavailableTo: string | null; note: string; recordedBy: string }[];
       }>;
     },
   });
@@ -1627,7 +1736,7 @@ function PatternMakerDirectory() {
             {query.data?.items.filter(option => option.active && option.kind === 'person').map(option => <option key={option.id} value={option.id}>{option.name}</option>)}
           </select>
           <label><span>From</span><input type="date" value={unavailableFrom} onChange={event => setUnavailableFrom(event.target.value)} required /></label>
-          <label><span>To</span><input type="date" min={unavailableFrom} value={unavailableTo} onChange={event => setUnavailableTo(event.target.value)} required /></label>
+          <label><span>To (optional)</span><input type="date" min={unavailableFrom} value={unavailableTo} onChange={event => setUnavailableTo(event.target.value)} /></label>
           <input value={unavailableNote} onChange={event => setUnavailableNote(event.target.value)} maxLength={500} placeholder="Leave, sickness, or other context…" />
           <button className="button button-dark" disabled={availabilityMutation.isPending}>Save period</button>
         </form>
@@ -1635,7 +1744,7 @@ function PatternMakerDirectory() {
           <div className="availability-list">
             {query.data.unavailability.map(period => (
               <div key={period.id}>
-                <span><strong>{period.patternMaker}</strong><small>{String(period.unavailableFrom).slice(0, 10)} → {String(period.unavailableTo).slice(0, 10)}{period.note ? ` · ${period.note}` : ''}</small></span>
+                <span><strong>{period.patternMaker}</strong><small>{String(period.unavailableFrom).slice(0, 10)} → {period.unavailableTo ? String(period.unavailableTo).slice(0, 10) : 'Until further notice'}{period.note ? ` · ${period.note}` : ''}</small></span>
                 <button className="text-button" onClick={() => removeAvailabilityMutation.mutate(period.id)}>Remove</button>
               </div>
             ))}
@@ -1911,9 +2020,10 @@ function TrackerFabricSelection({ item }: { item: TrackerDetailPayload }) {
   );
 }
 
-function TrackerDetailDrawer({ id, patternMakers, reassignmentReasons, onClose }: {
+function TrackerDetailDrawer({ id, patternMakers, designers, reassignmentReasons, onClose }: {
   id: number;
   patternMakers: PatternMakerOption[];
+  designers: DesignerOption[];
   reassignmentReasons: ReassignmentReason[];
   onClose: () => void;
 }) {
@@ -2021,7 +2131,7 @@ function TrackerDetailDrawer({ id, patternMakers, reassignmentReasons, onClose }
 
                  <div className="tracker-drawer-section">
                      <h3>Master Details</h3>
-                     <TrackerMasterForm item={data} patternMakers={patternMakers} reassignmentReasons={reassignmentReasons} />
+                     <TrackerMasterForm item={data} patternMakers={patternMakers} designers={designers} reassignmentReasons={reassignmentReasons} />
                  </div>
 
                  <div className="tracker-drawer-section">
@@ -2157,9 +2267,10 @@ function TrackerEventForm({ item }: { item: TrackerDetailPayload }) {
   );
 }
 
-function TrackerMasterForm({ item, patternMakers, reassignmentReasons }: {
+function TrackerMasterForm({ item, patternMakers, designers, reassignmentReasons }: {
   item: TrackerDetailPayload;
   patternMakers: PatternMakerOption[];
+  designers: DesignerOption[];
   reassignmentReasons: ReassignmentReason[];
 }) {
   const queryClient = useQueryClient();
@@ -2195,6 +2306,11 @@ function TrackerMasterForm({ item, patternMakers, reassignmentReasons }: {
      subCategory: item.subCategory || '',
       brand: item.brand || '',
       fabric: item.fabric || '',
+       designerUserId: item.designerUserId ? String(item.designerUserId) : '',
+       collection: item.collection || '',
+       theme: item.theme || '',
+       knitOrWoven: (item.knitOrWoven || '') as '' | 'Knit' | 'Woven',
+       printOrSolid: (item.printOrSolid || '') as '' | 'Print' | 'Solid',
       patternAssignmentKey: item.patternAssignmentKey || '',
       adoptionDate: item.adoptionDate || '',
       targetOrderWeek: item.targetOrderWeek || '',
@@ -2222,6 +2338,11 @@ function TrackerMasterForm({ item, patternMakers, reassignmentReasons }: {
        subCategory: form.subCategory,
         brand: form.brand,
         fabric: form.fabric,
+        designerUserId: form.designerUserId ? Number(form.designerUserId) : null,
+        collection: form.collection,
+        theme: form.theme,
+        knitOrWoven: form.knitOrWoven || null,
+        printOrSolid: form.printOrSolid || null,
         patternAssignmentKey: form.patternAssignmentKey,
         adoptionDate: form.adoptionDate || null,
         targetOrderWeek: form.targetOrderWeek || null,
@@ -2285,6 +2406,37 @@ function TrackerMasterForm({ item, patternMakers, reassignmentReasons }: {
                <span>Fabric Description</span>
                <input type="text" value={form.fabric} onChange={e => setForm({...form, fabric: e.target.value})} />
             </label>
+             <label className="tracker-input-wrap">
+                <span>Designer</span>
+                <select value={form.designerUserId} onChange={e => setForm({...form, designerUserId: e.target.value})}>
+                  <option value="">Unassigned</option>
+                  {designers.map(designer => (
+                    <option key={designer.id} value={designer.id} disabled={!designer.assignable && designer.id !== item.designerUserId}>
+                      {designer.name}{!designer.assignable ? ' · former team member' : designer.unavailableNow ? ' · unavailable' : ''}
+                    </option>
+                  ))}
+                </select>
+             </label>
+             <label className="tracker-input-wrap">
+                <span>Collection</span>
+                <input type="text" value={form.collection} onChange={e => setForm({...form, collection: e.target.value})} placeholder="e.g. Weekend in Lamu" />
+             </label>
+             <label className="tracker-input-wrap">
+                <span>Theme</span>
+                <input type="text" value={form.theme} onChange={e => setForm({...form, theme: e.target.value})} placeholder="Story, occasion or capsule" />
+             </label>
+             <label className="tracker-input-wrap">
+                <span>Knit or woven</span>
+                <select value={form.knitOrWoven} onChange={e => setForm({...form, knitOrWoven: e.target.value as '' | 'Knit' | 'Woven'})}>
+                  <option value="">Unassigned</option><option value="Knit">Knit</option><option value="Woven">Woven</option>
+                </select>
+             </label>
+             <label className="tracker-input-wrap">
+                <span>Print or solid</span>
+                <select value={form.printOrSolid} onChange={e => setForm({...form, printOrSolid: e.target.value as '' | 'Print' | 'Solid'})}>
+                  <option value="">Unassigned</option><option value="Print">Print</option><option value="Solid">Solid</option>
+                </select>
+             </label>
             <label className="tracker-input-wrap">
                <span>Pattern Maker</span>
                 <select value={form.patternAssignmentKey} onChange={e => setForm({...form, patternAssignmentKey: e.target.value})}>
@@ -2349,6 +2501,10 @@ function TrackerMasterForm({ item, patternMakers, reassignmentReasons }: {
                <span>Target Launch Week</span>
                <input type="text" value={form.targetLaunchWeek} onChange={e => setForm({...form, targetLaunchWeek: e.target.value})} placeholder="e.g. 2026-W40" />
             </label>
+             <label className="tracker-input-wrap">
+                <span>Launch Month</span>
+                <input type="text" value={item.launchMonth || 'Derived from target launch week'} readOnly />
+             </label>
             <label className="tracker-input-wrap">
                <span>Sample Approval Date</span>
                <input type="date" value={form.sampleApprovalDate} onChange={e => setForm({...form, sampleApprovalDate: e.target.value})} />

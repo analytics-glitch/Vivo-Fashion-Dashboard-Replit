@@ -14,3 +14,9 @@ The same identity rule applies to mutable L10 owners and PLM tech-pack, grading,
 **Why:** Live work must follow renames without fragmenting ownership, but historical evidence must preserve what was recorded at the time.
 
 **How to apply:** Do not convert arbitrary JSON assignee payloads or historical names merely because they contain person-like text; only introduce references where the field is an active editable assignment with established Settings-user semantics.
+
+Former team members may remain in the workspace identity table as non-current records so historic Designer references continue to resolve, but they must be excluded from current-team pickers and new assignment choices. Grace is the first such historical-only designer. Rose is a current CAD member and remains eligible as a referenced designer even while unavailable.
+
+**Why:** Deleting a departed person breaks historic attribution, while leaving them selectable creates incorrect new assignments.
+
+**How to apply:** Join historic references regardless of current-member status, but require current-member status for any changed Designer assignment and for public/current team directories.

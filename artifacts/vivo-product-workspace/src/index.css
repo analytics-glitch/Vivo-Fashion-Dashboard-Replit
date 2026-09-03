@@ -2719,6 +2719,15 @@ a { color: inherit; text-decoration: none; }
 }
 
 /* Monday Operating Brief Dashboard */
+.weekly-line-style .weekly-data-quality-flag {
+  align-items: center;
+  color: #9b4d32;
+  display: flex;
+  font-weight: 650;
+  gap: 4px;
+  margin-top: 3px;
+}
+
 .dash-brief {
   display: flex;
   flex-direction: column;
@@ -2755,12 +2764,12 @@ a { color: inherit; text-decoration: none; }
   color: var(--color-primary);
 }
 .dash-tile-title {
-  font-family: var(--app-font-sans);
-  font-size: 13px;
-  font-weight: 700;
+  font-family: var(--app-font-mono);
+  font-size: 10px;
+  font-weight: 500;
   color: var(--color-muted-foreground);
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.11em;
   margin: 0;
   display: flex;
   justify-content: space-between;
@@ -2772,21 +2781,24 @@ a { color: inherit; text-decoration: none; }
   gap: 4px;
 }
 .dash-tile-value {
-  font-family: var(--app-font-serif);
+  font-family: var(--app-font-sans);
   font-size: 32px;
   font-weight: 600;
   color: var(--color-foreground);
   line-height: 1;
 }
 .dash-tile-sub {
-  font-family: var(--app-font-mono);
+  font-family: var(--app-font-sans);
   font-size: 12px;
+  font-weight: 500;
+  line-height: 1.35;
   color: var(--color-muted-foreground);
 }
 .dash-tile-status {
   margin-top: auto;
   padding-top: 12px;
   border-top: 1px dashed var(--color-border);
+  font-family: var(--app-font-sans);
   font-size: 12px;
   font-weight: 500;
   display: flex;
@@ -2802,8 +2814,8 @@ a { color: inherit; text-decoration: none; }
   flex-direction: column;
   gap: 6px;
   margin-top: 8px;
-  max-height: 120px;
-  overflow-y: auto;
+  max-height: none;
+  overflow: visible;
 }
 .dash-gap-item {
   display: flex;
@@ -2844,7 +2856,7 @@ a { color: inherit; text-decoration: none; }
   font-weight: 500;
   margin-top: 2px;
 }
-.dash-gap-item strong { font-family: var(--app-font-mono); }
+.dash-gap-item strong { font-family: var(--app-font-sans); font-weight: 700; }
 
 .dash-waiting-list {
   display: flex;
@@ -2863,7 +2875,7 @@ a { color: inherit; text-decoration: none; }
   font-size: 12px;
 }
 .dash-waiting-item strong {
-  font-family: var(--app-font-mono);
+  font-family: var(--app-font-sans);
   font-size: 14px;
 }
 .dash-waiting-item.critical {
@@ -2893,7 +2905,7 @@ a { color: inherit; text-decoration: none; }
 .dash-scorecard-meta {
   color: var(--color-muted-foreground);
   display: flex;
-  font-family: var(--app-font-mono);
+  font-family: var(--app-font-sans);
   font-size: 11px;
   gap: 7px;
 }
@@ -2905,7 +2917,8 @@ a { color: inherit; text-decoration: none; }
 .dash-scorecard-table th {
   background: #f8f6f2;
   color: var(--color-muted-foreground);
-  font-size: 10px;
+  font-family: var(--app-font-sans);
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: .06em;
   padding: 10px 14px;
@@ -2914,6 +2927,7 @@ a { color: inherit; text-decoration: none; }
 }
 .dash-scorecard-table td {
   border-top: 1px solid var(--color-border);
+  font-family: var(--app-font-sans);
   font-size: 12px;
   padding: 12px 14px;
   vertical-align: middle;
@@ -2930,7 +2944,8 @@ a { color: inherit; text-decoration: none; }
 }
 .dash-scorecard-table .goal,
 .dash-scorecard-table .value {
-  font-family: var(--app-font-mono);
+  font-family: var(--app-font-sans);
+  font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
 .dash-scorecard-status {

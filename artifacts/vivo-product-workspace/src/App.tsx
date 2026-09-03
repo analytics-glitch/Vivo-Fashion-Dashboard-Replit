@@ -371,7 +371,10 @@ function Dashboard() {
     : "The decisions shaping the next Vivo collection.";
   const scorecardValue = (row: FocusScorecard) => {
     if (!row.available || row.value === null) return '—';
-    const value = Number.isInteger(row.value) ? row.value.toLocaleString() : row.value.toLocaleString(undefined, { maximumFractionDigits: 1 });
+    const isAverage = /^avg\b/i.test(row.measurable.trim());
+    const value = row.uom === 'No.' && !isAverage
+      ? Math.round(row.value).toLocaleString()
+      : Number.isInteger(row.value) ? row.value.toLocaleString() : row.value.toLocaleString(undefined, { maximumFractionDigits: 1 });
     return row.uom === '%' ? `${value}%` : row.uom === 'Mtrs' ? `${value} m` : value;
   };
 

@@ -667,6 +667,7 @@ const WORKSPACE_TEAM_SEEDS = [
   ["Re", "CAD Team Lead", "Product", "CAD"],
   ["Abigail", "CAD Designer", "Product", "CAD"],
   ["Tony", "Assistant CAD Designer", "Product", "CAD"],
+  ["Rose", "CAD Designer", "Product", "CAD"],
 ] as const;
 
 type L10MetricSeed = {
@@ -1358,6 +1359,11 @@ async function ensureStyleDevelopmentTrackerData() {
        ADD COLUMN IF NOT EXISTS indicative_cogs_kes NUMERIC,
        ADD COLUMN IF NOT EXISTS pattern_effort_days NUMERIC,
        ADD COLUMN IF NOT EXISTS pattern_maker_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
+       ADD COLUMN IF NOT EXISTS designer_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
+       ADD COLUMN IF NOT EXISTS collection_name TEXT NOT NULL DEFAULT '',
+       ADD COLUMN IF NOT EXISTS theme TEXT NOT NULL DEFAULT '',
+       ADD COLUMN IF NOT EXISTS knit_or_woven TEXT,
+       ADD COLUMN IF NOT EXISTS print_or_solid TEXT,
        ADD COLUMN IF NOT EXISTS exit_status TEXT NOT NULL DEFAULT 'active' CHECK (exit_status IN ('active','on_hold','cancelled')),
        ADD COLUMN IF NOT EXISTS exit_reason TEXT,
        ADD COLUMN IF NOT EXISTS exited_at TIMESTAMPTZ,
@@ -1427,12 +1433,16 @@ async function ensureStyleDevelopmentTrackerData() {
       id BIGSERIAL PRIMARY KEY,
       pattern_maker_id INTEGER NOT NULL REFERENCES ${schema}.style_development_pattern_makers(id) ON DELETE CASCADE,
       unavailable_from DATE NOT NULL,
-      unavailable_to DATE NOT NULL,
+      unavailable_to DATE,
       note TEXT NOT NULL DEFAULT '',
       recorded_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      CHECK (unavailable_to >= unavailable_from)
+      CHECK (unavailable_to IS NULL OR unavailable_to >= unavailable_from)
     );
+    ALTER TABLE ${schema}.workspace_users
+      ADD COLUMN IF NOT EXISTS current_member BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE ${schema}.style_development_pattern_maker_unavailability
+      ALTER COLUMN unavailable_to DROP NOT NULL;
     ALTER TABLE ${schema}.style_development_history
       ADD COLUMN IF NOT EXISTS reassignment_batch_id TEXT REFERENCES ${schema}.style_development_reassignment_batches(id) ON DELETE SET NULL,
       ADD COLUMN IF NOT EXISTS reassignment_reason_code TEXT,
@@ -1447,6 +1457,23 @@ async function ensureStyleDevelopmentTrackerData() {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    await client.query(
+      `INSERT INTO ${schema}.workspace_users (name,role,department,team,current_member)
+       SELECT 'Rose','CAD Designer','Product','CAD',TRUE
+       WHERE NOT EXISTS (
+         SELECT 1 FROM ${schema}.workspace_users WHERE LOWER(BTRIM(name))='rose'
+       );
+       UPDATE ${schema}.workspace_users
+          SET role='CAD Designer',department='Product',team='CAD',current_member=TRUE
+        WHERE LOWER(BTRIM(name))='rose';
+       INSERT INTO ${schema}.workspace_users (name,role,department,team,current_member)
+       SELECT 'Grace','Former Designer','Product','Design',FALSE
+       WHERE NOT EXISTS (
+         SELECT 1 FROM ${schema}.workspace_users WHERE LOWER(BTRIM(name))='grace'
+       );
+       UPDATE ${schema}.workspace_users SET current_member=FALSE
+        WHERE LOWER(BTRIM(name))='grace'`,
+    );
     const claim = await client.query(
       `INSERT INTO ${schema}.style_development_tracker_imports (import_key)
        VALUES ('q3-2026-batch-one-v2')
@@ -1627,6 +1654,7 @@ async function ensureStyleDevelopmentTrackerData() {
       ["Abigail", "person", null, 50, "Abigail"],
       ["Re", "person", null, 55, "Re"],
       ["Tony", "person", null, 56, "Tony"],
+      ["Rose", "person", null, 57, "Rose"],
       ["CAD", "team", null, 60, null],
       ["Ken Knit", "supplier", null, 70, null],
     ] as const;
@@ -1645,6 +1673,21 @@ async function ensureStyleDevelopmentTrackerData() {
         [name, kind, effectiveCapacity, displayOrder, workspaceUserName],
       );
     }
+    await client.query(
+      `INSERT INTO ${schema}.style_development_pattern_maker_unavailability
+         (pattern_maker_id,unavailable_from,unavailable_to,note)
+       SELECT pm.id,DATE '2026-09-03',NULL,'Maternity leave — return date to confirm'
+         FROM ${schema}.style_development_pattern_makers pm
+         JOIN ${schema}.workspace_users wu ON wu.id=pm.workspace_user_id
+        WHERE LOWER(BTRIM(wu.name))='rose'
+          AND NOT EXISTS (
+            SELECT 1
+              FROM ${schema}.style_development_pattern_maker_unavailability a
+             WHERE a.pattern_maker_id=pm.id
+               AND a.unavailable_from<=CURRENT_DATE
+               AND COALESCE(a.unavailable_to,DATE '9999-12-31')>=CURRENT_DATE
+          )`,
+    );
     await client.query(
       `UPDATE ${schema}.style_development_tracker t
           SET pattern_maker_user_id=wu.id,pattern_route_id=NULL,pattern_maker='',updated_at=NOW()
@@ -3021,6 +3064,7 @@ async function ensureSchema() {
       date_of_birth DATE,
       description TEXT NOT NULL DEFAULT '',
       photo_url TEXT,
+      current_member BOOLEAN NOT NULL DEFAULT TRUE,
       display_order INTEGER NOT NULL DEFAULT 100,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
@@ -3224,7 +3268,8 @@ async function ensureSchema() {
       selected_colourways TEXT[] NOT NULL DEFAULT '{}',
       estimated_quantity INTEGER NOT NULL CHECK (estimated_quantity > 0),
       order_type TEXT NOT NULL CHECK (order_type IN ('New','Re-order','Replenishment','Range Refreshed')),
-      order_stage TEXT NOT NULL CHECK (order_stage IN ('CAD Marker Making','Buying Requisition','Buying Production Order','Production Sample')),
+      order_stage TEXT NOT NULL CHECK (order_stage IN ('CAD Marker Making','Buying Requisition','Buying Production Order','Production Sample','Set Sampling','Set Sample Fitting','Approved for Production')),
+      data_quality_flags TEXT[] NOT NULL DEFAULT '{}',
       created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -3508,6 +3553,25 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS units_sold_last_month INTEGER;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS expected_unit_cost NUMERIC;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS selling_price NUMERIC;
+    ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS data_quality_flags TEXT[] NOT NULL DEFAULT '{}';
+    DO $weekly_stage_constraint$
+    DECLARE stage_definition TEXT;
+    BEGIN
+      SELECT pg_get_constraintdef(c.oid) INTO stage_definition
+      FROM pg_constraint c
+      JOIN pg_class t ON t.oid=c.conrelid
+      JOIN pg_namespace n ON n.oid=t.relnamespace
+      WHERE n.nspname='${schema}' AND t.relname='weekly_order_plan_lines'
+        AND c.conname='weekly_order_plan_lines_order_stage_check';
+      IF stage_definition IS NULL OR POSITION('Approved for Production' IN stage_definition)=0 THEN
+        ALTER TABLE ${schema}.weekly_order_plan_lines
+          DROP CONSTRAINT IF EXISTS weekly_order_plan_lines_order_stage_check;
+        ALTER TABLE ${schema}.weekly_order_plan_lines
+          ADD CONSTRAINT weekly_order_plan_lines_order_stage_check
+          CHECK (order_stage IN ('CAD Marker Making','Buying Requisition','Buying Production Order','Production Sample','Set Sampling','Set Sample Fitting','Approved for Production'));
+      END IF;
+    END
+    $weekly_stage_constraint$;
     ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_floor_pct NUMERIC NOT NULL DEFAULT 40;
     ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_target_units INTEGER;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_style_count INTEGER NOT NULL DEFAULT 0;
@@ -4520,7 +4584,8 @@ async function readTeamPickerRows() {
       `SELECT name,id::text,role,department,team,
               created_at AS "createdAt",date_of_birth AS "dateOfBirth"
          FROM ${schema}.workspace_users
-        WHERE NULLIF(BTRIM(name),'') IS NOT NULL
+        WHERE current_member
+          AND NULLIF(BTRIM(name),'') IS NOT NULL
         ORDER BY name`,
     ),
     4000,
@@ -5229,6 +5294,23 @@ function workingDaysBetween(startValue: unknown, endValue: unknown) {
   return count;
 }
 
+function styleDevelopmentLaunchMonth(targetLaunchWeek: unknown) {
+  const raw = String(targetLaunchWeek ?? "").trim();
+  const match = raw.match(/^(?:(\d{4})\s*-\s*)?W(?:K)?\s*(\d{1,2})$/i)
+    ?? raw.match(/^WK\s*(\d{1,2})$/i);
+  if (!match) return null;
+  const hasYear = match.length > 2 && Boolean(match[1]);
+  const year = hasYear ? Number(match[1]) : new Date().getUTCFullYear();
+  const week = Number(hasYear ? match[2] : match[1]);
+  if (!Number.isInteger(year) || !Number.isInteger(week) || week < 1 || week > 53) return null;
+  const januaryFourth = new Date(Date.UTC(year, 0, 4));
+  const mondayOfWeekOne = new Date(januaryFourth);
+  mondayOfWeekOne.setUTCDate(januaryFourth.getUTCDate() - ((januaryFourth.getUTCDay() + 6) % 7));
+  const launchDate = new Date(mondayOfWeekOne);
+  launchDate.setUTCDate(mondayOfWeekOne.getUTCDate() + (week - 1) * 7);
+  return launchDate.toLocaleDateString("en-GB", { month: "long", year: "numeric", timeZone: "UTC" });
+}
+
 const STYLE_INTERVALS = [
   ["pattern", "pattern_started", "pattern_done", 2],
   ["techPack", "tech_pack_started", "tech_pack_done", 1],
@@ -5362,6 +5444,13 @@ function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Re
     originalSubCategory: row.originalSubCategory,
     brand: row.brand,
     fabric: row.fabric,
+    designer: row.designer ?? null,
+    designerUserId: row.designerUserId === null || row.designerUserId === undefined
+      ? null : Number(row.designerUserId),
+    collection: row.collection ?? "",
+    theme: row.theme ?? "",
+    knitOrWoven: row.knitOrWoven ?? null,
+    printOrSolid: row.printOrSolid ?? null,
     patternMaker: row.patternMaker,
     patternAssignmentKey: row.patternAssignmentKey ?? "",
     patternMakerUserId: row.patternMakerUserId === null || row.patternMakerUserId === undefined
@@ -5373,6 +5462,7 @@ function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Re
     adoptionDate: row.adoptionDate ? String(row.adoptionDate).slice(0, 10) : null,
     targetOrderWeek: row.targetOrderWeek ?? null,
     targetLaunchWeek: row.targetLaunchWeek ?? null,
+    launchMonth: styleDevelopmentLaunchMonth(row.targetLaunchWeek),
     sampleApprovalDate: row.sampleApprovalDate ?? null,
     dataQualityFlags: row.dataQualityFlags ?? [],
     blocked: status === "Blocked",
@@ -5434,7 +5524,10 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
       t.style_type AS type,t.tier,t.status,t.category,t.sub_category AS "subCategory",
       t.original_sub_category AS "originalSubCategory",t.target_order_week AS "targetOrderWeek",t.fabric,
       t.sample_approval_date AS "sampleApprovalDate",t.data_quality_flags AS "dataQualityFlags",
-      t.brand,COALESCE(wu.name,route.name,NULLIF(BTRIM(t.pattern_maker),'')) AS "patternMaker",
+      t.brand,du.name AS designer,t.designer_user_id AS "designerUserId",
+      t.collection_name AS collection,t.theme,t.knit_or_woven AS "knitOrWoven",
+      t.print_or_solid AS "printOrSolid",
+      COALESCE(wu.name,route.name,NULLIF(BTRIM(t.pattern_maker),'')) AS "patternMaker",
       CASE
         WHEN t.pattern_maker_user_id IS NOT NULL THEN 'user:' || t.pattern_maker_user_id::text
         WHEN t.pattern_route_id IS NOT NULL THEN 'route:' || t.pattern_route_id::text
@@ -5452,6 +5545,7 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
       t.created_at AS "createdAt",t.updated_at AS "updatedAt"
      FROM ${schema}.style_development_tracker t
      LEFT JOIN ${schema}.workspace_users wu ON wu.id=t.pattern_maker_user_id
+     LEFT JOIN ${schema}.workspace_users du ON du.id=t.designer_user_id
      LEFT JOIN ${schema}.style_development_pattern_makers route ON route.id=t.pattern_route_id
      ${where}
      ORDER BY t.style_name`,
@@ -5550,7 +5644,8 @@ async function loadStyleDevelopmentPatternMakers(includeInactive = false) {
        (name,kind,effective_capacity,active,display_order,workspace_user_id)
      SELECT 'workspace-user-' || wu.id::text,'person',NULL,TRUE,100 + wu.id,wu.id
        FROM ${schema}.workspace_users wu
-      WHERE LOWER(BTRIM(wu.team)) IN ('pattern / sampling','cad')
+       WHERE wu.current_member
+         AND LOWER(BTRIM(wu.team)) IN ('pattern / sampling','cad')
      ON CONFLICT DO NOTHING`,
   );
   const result = await pool.query(
@@ -5599,7 +5694,7 @@ async function resolveStyleDevelopmentAssignment(
       `SELECT wu.id,wu.name
          FROM ${schema}.workspace_users wu
          JOIN ${schema}.style_development_pattern_makers pm ON pm.workspace_user_id=wu.id
-        WHERE wu.id=$1 AND pm.active AND pm.kind='person'`,
+         WHERE wu.id=$1 AND wu.current_member AND pm.active AND pm.kind='person'`,
       [Number(match[2])],
     );
     if (!result.rows[0]) return null;
@@ -5624,6 +5719,29 @@ async function resolveStyleDevelopmentAssignment(
     displayName: String(result.rows[0].name),
     kind: result.rows[0].kind as "team" | "supplier",
   };
+}
+
+async function loadStyleDevelopmentDesigners() {
+  const result = await pool.query(
+    `SELECT wu.id,wu.name,wu.role,wu.team,wu.current_member AS assignable,
+       EXISTS (
+         SELECT 1
+           FROM ${schema}.style_development_pattern_makers pm
+           JOIN ${schema}.style_development_pattern_maker_unavailability a ON a.pattern_maker_id=pm.id
+          WHERE pm.workspace_user_id=wu.id
+            AND a.unavailable_from<=CURRENT_DATE
+            AND COALESCE(a.unavailable_to,DATE '9999-12-31')>=CURRENT_DATE
+       ) AS "unavailableNow"
+       FROM ${schema}.workspace_users wu
+      WHERE LOWER(BTRIM(wu.name)) IN
+        ('victoria orlando','mercy','florence bwibo','alex wanjohi','grace','rose')
+      ORDER BY
+        CASE LOWER(BTRIM(wu.name))
+          WHEN 'victoria orlando' THEN 1 WHEN 'mercy' THEN 2 WHEN 'florence bwibo' THEN 3
+          WHEN 'alex wanjohi' THEN 4 WHEN 'rose' THEN 5 ELSE 6
+        END`,
+  );
+  return result.rows;
 }
 
 const styleDevelopmentLoadSnapshotSql = `
@@ -5657,9 +5775,10 @@ async function loadStyleDevelopmentReassignmentReasons(includeInactive = false) 
 
 router.get("/style-development-tracker", async (_req, res, next) => {
   try {
-    const [items, patternMakers, reassignmentReasons] = await Promise.all([
+    const [items, patternMakers, designers, reassignmentReasons] = await Promise.all([
       loadStyleDevelopmentTracker(),
       loadStyleDevelopmentPatternMakers(),
+      loadStyleDevelopmentDesigners(),
       loadStyleDevelopmentReassignmentReasons(),
     ]);
     const unique = (key: string) => Array.from(new Set(items.map((item) => String((item as Record<string, unknown>)[key] ?? "")).filter(Boolean))).sort();
@@ -5669,6 +5788,7 @@ router.get("/style-development-tracker", async (_req, res, next) => {
       statuses: STYLE_DEVELOPMENT_STATUSES,
       stageStandards: STYLE_DEVELOPMENT_STAGE_STANDARD_DAYS,
       patternMakers,
+      designers,
       reassignmentReasons,
       facets: {
         targetOrderWeek: unique("targetOrderWeek"),
@@ -5678,6 +5798,12 @@ router.get("/style-development-tracker", async (_req, res, next) => {
         type: unique("type"),
         tier: unique("tier"),
         patternMaker: unique("patternMaker"),
+        designer: unique("designer"),
+        collection: unique("collection"),
+        theme: unique("theme"),
+        knitOrWoven: unique("knitOrWoven"),
+        printOrSolid: unique("printOrSolid"),
+        launchMonth: unique("launchMonth"),
         status: unique("status"),
       },
     });
@@ -5775,7 +5901,7 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
          JOIN ${schema}.style_development_pattern_makers pm ON pm.id=a.pattern_maker_id
          LEFT JOIN ${schema}.workspace_users wu ON wu.id=pm.workspace_user_id
          LEFT JOIN ${schema}.users u ON u.id=a.recorded_by
-         WHERE a.unavailable_to>=CURRENT_DATE
+          WHERE COALESCE(a.unavailable_to,DATE '9999-12-31')>=CURRENT_DATE
          ORDER BY a.unavailable_from,a.id`,
       ),
       pool.query(
@@ -5793,7 +5919,8 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
     const makerByKey = new Map(makerConfig.map((row) => [String(row.assignmentKey), row]));
     const today = new Date().toISOString().slice(0, 10);
     const currentUnavailable = new Set<number>(unavailabilityResult.rows
-      .filter((row) => String(row.unavailableFrom).slice(0, 10) <= today && String(row.unavailableTo).slice(0, 10) >= today)
+      .filter((row) => String(row.unavailableFrom).slice(0, 10) <= today
+        && (!row.unavailableTo || String(row.unavailableTo).slice(0, 10) >= today))
       .map((row) => Number(row.patternMakerId)));
     const baseMakers = makerConfig
       .filter((row) => row.active && row.kind === "person" && Number(row.effectiveCapacity) > 0)
@@ -5882,7 +6009,8 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
           nextUnavailable: nextUnavailable ? {
             id: Number(nextUnavailable.id),
             unavailableFrom: String(nextUnavailable.unavailableFrom).slice(0, 10),
-            unavailableTo: String(nextUnavailable.unavailableTo).slice(0, 10),
+            unavailableTo: nextUnavailable.unavailableTo
+              ? String(nextUnavailable.unavailableTo).slice(0, 10) : null,
             note: nextUnavailable.note,
           } : null,
           displayOrder: config?.displayOrder ?? 999,
@@ -5932,7 +6060,7 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
       const impactDate = String(row.unavailableFrom).slice(0, 10) < today ? today : String(row.unavailableFrom).slice(0, 10);
       const overlappingMakerIds = new Set(unavailabilityResult.rows
         .filter((candidate) => String(candidate.unavailableFrom).slice(0, 10) <= impactDate
-          && String(candidate.unavailableTo).slice(0, 10) >= impactDate)
+          && (!candidate.unavailableTo || String(candidate.unavailableTo).slice(0, 10) >= impactDate))
         .map((candidate) => Number(candidate.patternMakerId)));
       const unavailableCapacity = makerConfig
         .filter((maker) => overlappingMakerIds.has(Number(maker.id)) && maker.kind === "person")
@@ -5943,7 +6071,7 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
         patternMakerId: Number(row.patternMakerId),
         patternMaker: row.patternMaker,
         unavailableFrom: String(row.unavailableFrom).slice(0, 10),
-        unavailableTo: String(row.unavailableTo).slice(0, 10),
+        unavailableTo: row.unavailableTo ? String(row.unavailableTo).slice(0, 10) : null,
         note: row.note,
         recordedBy: row.recordedBy,
         makersDuring,
@@ -5980,7 +6108,7 @@ router.get("/style-development-tracker/pattern-makers", async (_req, res, next) 
          JOIN ${schema}.style_development_pattern_makers pm ON pm.id=a.pattern_maker_id
          LEFT JOIN ${schema}.workspace_users wu ON wu.id=pm.workspace_user_id
          LEFT JOIN ${schema}.users u ON u.id=a.recorded_by
-         WHERE a.unavailable_to>=CURRENT_DATE
+         WHERE COALESCE(a.unavailable_to,DATE '9999-12-31')>=CURRENT_DATE
          ORDER BY a.unavailable_from,a.id`,
       ),
     ]);
@@ -6072,9 +6200,11 @@ router.patch("/style-development-tracker/pattern-makers/:id", async (req: AuthRe
 router.post("/style-development-tracker/pattern-makers/:id/unavailability", async (req: AuthRequest, res, next) => {
   try {
     const unavailableFrom = String(req.body?.unavailableFrom ?? "");
-    const unavailableTo = String(req.body?.unavailableTo ?? "");
+    const unavailableTo = String(req.body?.unavailableTo ?? "").trim();
     const note = String(req.body?.note ?? "").trim().slice(0, 500);
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(unavailableFrom) || !/^\d{4}-\d{2}-\d{2}$/.test(unavailableTo) || unavailableTo < unavailableFrom) {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(unavailableFrom)
+      || (unavailableTo && !/^\d{4}-\d{2}-\d{2}$/.test(unavailableTo))
+      || (unavailableTo && unavailableTo < unavailableFrom)) {
       res.status(400).json({ error: "Choose a valid unavailable date range" }); return;
     }
     const patternMakerId = Number(req.params.id);
@@ -6086,16 +6216,16 @@ router.post("/style-development-tracker/pattern-makers/:id/unavailability", asyn
     if (!maker.rows[0]) { res.status(404).json({ error: "Active pattern maker not found" }); return; }
     const overlap = await pool.query(
       `SELECT id FROM ${schema}.style_development_pattern_maker_unavailability
-        WHERE pattern_maker_id=$1 AND daterange(unavailable_from,unavailable_to,'[]')
+         WHERE pattern_maker_id=$1 AND daterange(unavailable_from,unavailable_to,'[]')
           && daterange($2::date,$3::date,'[]') LIMIT 1`,
-      [patternMakerId, unavailableFrom, unavailableTo],
+      [patternMakerId, unavailableFrom, unavailableTo || null],
     );
     if (overlap.rows[0]) { res.status(409).json({ error: "This unavailable period overlaps an existing one" }); return; }
     const result = await pool.query(
       `INSERT INTO ${schema}.style_development_pattern_maker_unavailability
         (pattern_maker_id,unavailable_from,unavailable_to,note,recorded_by)
        VALUES ($1,$2::date,$3::date,$4,$5) RETURNING id`,
-      [patternMakerId, unavailableFrom, unavailableTo, note, req.workspaceUser?.id ?? null],
+       [patternMakerId, unavailableFrom, unavailableTo || null, note, req.workspaceUser?.id ?? null],
     );
     res.status(201).json({ id: Number(result.rows[0].id) });
   } catch (error) { next(error); }
@@ -6251,6 +6381,10 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
       subCategory: "sub_category",
       brand: "brand",
       fabric: "fabric",
+      collection: "collection_name",
+      theme: "theme",
+      knitOrWoven: "knit_or_woven",
+      printOrSolid: "print_or_solid",
       adoptionDate: "adoption_date",
       targetOrderWeek: "target_order_week",
       targetLaunchWeek: "target_launch_week",
@@ -6268,6 +6402,40 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
     const assignments: string[] = [];
     const values: unknown[] = [];
     const changes: Array<{ key: string; oldValue: unknown; newValue: unknown }> = [];
+    if (req.body?.designerUserId !== undefined) {
+      const requestedDesignerId = req.body.designerUserId === null || req.body.designerUserId === ""
+        ? null : Number(req.body.designerUserId);
+      if (requestedDesignerId !== null && (!Number.isInteger(requestedDesignerId) || requestedDesignerId <= 0)) {
+        throw new Error("Choose a valid designer");
+      }
+      const currentDesignerId = current.rows[0].designer_user_id === null
+        ? null : Number(current.rows[0].designer_user_id);
+      if (currentDesignerId !== requestedDesignerId) {
+        let newDesignerName = "Unassigned";
+        if (requestedDesignerId !== null) {
+          const designer = await client.query(
+            `SELECT id,name FROM ${schema}.workspace_users
+              WHERE id=$1 AND current_member
+                AND LOWER(BTRIM(name)) IN
+                  ('victoria orlando','mercy','florence bwibo','alex wanjohi','rose')`,
+            [requestedDesignerId],
+          );
+          if (!designer.rows[0]) throw new Error("Choose a current designer from Settings");
+          newDesignerName = String(designer.rows[0].name);
+        }
+        const oldDesigner = currentDesignerId === null ? null : await client.query(
+          `SELECT name FROM ${schema}.workspace_users WHERE id=$1`,
+          [currentDesignerId],
+        );
+        values.push(requestedDesignerId);
+        assignments.push(`designer_user_id=$${values.length}`);
+        changes.push({
+          key: "designer",
+          oldValue: oldDesigner?.rows[0]?.name ?? "Unassigned",
+          newValue: newDesignerName,
+        });
+      }
+    }
     if (req.body?.patternAssignmentKey !== undefined) {
       const requestedAssignmentKey = String(req.body.patternAssignmentKey ?? "").trim();
       const currentAssignmentKey = current.rows[0].pattern_maker_user_id
@@ -6324,6 +6492,12 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
       if (String(oldValue ?? "") === String(value ?? "")) continue;
       if (key === "type" && !["NEW", "RR"].includes(String(value))) throw new Error("Type must be NEW or RR");
       if (key === "tier" && !["Tier 3", "Tier 4"].includes(String(value))) throw new Error("Tier must be Tier 3 or Tier 4");
+      if (key === "knitOrWoven" && value !== "" && !["Knit", "Woven"].includes(String(value))) {
+        throw new Error("Knit or woven must be Knit or Woven");
+      }
+      if (key === "printOrSolid" && value !== "" && !["Print", "Solid"].includes(String(value))) {
+        throw new Error("Print or solid must be Print or Solid");
+      }
       if (key === "patternEffortDays" && value !== null && value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0.5 || Number(value) > 20)) {
         throw new Error("Estimated pattern effort must be between 0.5 and 20 working days");
       }
@@ -9353,6 +9527,7 @@ router.get("/team-directory", async (_req, res, next) => {
         (LOWER(role) LIKE '%team lead%' OR UPPER(BTRIM(role))='CEO') AS "isLma",
         display_order AS "displayOrder",created_at AS "createdAt"
        FROM ${schema}.workspace_users
+       WHERE current_member
        ORDER BY
          CASE
            WHEN NULLIF(BTRIM(team),'') IS NULL AND LOWER(BTRIM(department))='leadership' THEN 0
@@ -9786,7 +9961,7 @@ async function workspaceHomeFocus() {
   const [weekResult, gapResult, waitingResult, cogsResult, scorecardRows] = await Promise.all([
     pool.query<{
       isoYear: number; isoWeek: number; startDate: string; endDate: string;
-      planStyles: number; actualStyles: number; pendingStyles: number;
+      planStyles: number; planUnits: number; actualStyles: number; pendingStyles: number;
       actualUnits: number; pendingUnits: number; actualNewUnits: number;
       pendingNewUnits: number; actualNewStyles: number; replenishmentUnits: number;
       reorderUnits: number; productionOrders: number; monthlyPlanUnits: number;
@@ -9806,8 +9981,12 @@ async function workspaceHomeFocus() {
       ),
       actual_by_style AS (
         SELECT
-          LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''),NULLIF(o.style_name,'')))) AS style_key,
-          LOWER(BTRIM(COALESCE(o.style_name,''))) AS style_name_key,
+          CASE
+            WHEN NULLIF(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))),'') IS NOT NULL
+              THEN 'number:' || LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))
+            ELSE 'name:' || LOWER(BTRIM(COALESCE(o.style_name,'')))
+          END AS style_key,
+          MAX(LOWER(BTRIM(COALESCE(o.style_name,'')))) AS style_name_key,
           SUM(COALESCE(o.order_qty,0))::numeric AS units,
           MAX(COALESCE(o.lifecycle_type,'')) AS lifecycle_type,
           COUNT(DISTINCT o.order_ref)::int AS orders
@@ -9815,14 +9994,17 @@ async function workspaceHomeFocus() {
         WHERE o.date_ordered>=b.start_date AND o.date_ordered<=b.end_date
           AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
           AND LOWER(COALESCE(o.production_type,'main production')) IN ('main production','in-house','in house')
-        GROUP BY 1,2
+        GROUP BY 1
       ),
       pending_plan AS (
         SELECT l.* FROM ${schema}.weekly_order_plan_lines l
         JOIN selected_plan p ON p.id=l.plan_id
         WHERE NOT EXISTS (
           SELECT 1 FROM actual_by_style a
-          WHERE a.style_key=LOWER(BTRIM(COALESCE(NULLIF(l.style_number,''),l.style_name)))
+          WHERE a.style_key=CASE
+              WHEN NULLIF(BTRIM(l.style_number),'') IS NOT NULL THEN 'number:' || LOWER(BTRIM(l.style_number))
+              ELSE 'name:' || LOWER(BTRIM(l.style_name))
+            END
              OR (a.style_name_key<>'' AND a.style_name_key=LOWER(BTRIM(COALESCE(l.style_name,''))))
         )
       ),
@@ -9840,16 +10022,24 @@ async function workspaceHomeFocus() {
       )
       SELECT b.iso_year AS "isoYear",b.iso_week AS "isoWeek",
         b.start_date::text AS "startDate",b.end_date::text AS "endDate",
-        (SELECT COUNT(*)::int FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id) AS "planStyles",
+        (SELECT COUNT(DISTINCT CASE
+            WHEN NULLIF(BTRIM(l.style_number),'') IS NOT NULL THEN 'number:' || LOWER(BTRIM(l.style_number))
+            ELSE 'name:' || LOWER(BTRIM(l.style_name))
+          END)::int
+         FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id) AS "planStyles",
+        COALESCE((SELECT SUM(l.estimated_quantity) FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id),0)::float AS "planUnits",
         (SELECT COUNT(*)::int FROM actual_by_style) AS "actualStyles",
-        (SELECT COUNT(*)::int FROM pending_plan) AS "pendingStyles",
-        COALESCE((SELECT SUM(units) FROM actual_by_style),0)::float AS "actualUnits",
-        COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan),0)::float AS "pendingUnits",
-        COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type)='new'),0)::float AS "actualNewUnits",
-        COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan WHERE LOWER(order_type)='new'),0)::float AS "pendingNewUnits",
+        (SELECT COUNT(DISTINCT CASE
+            WHEN NULLIF(BTRIM(style_number),'') IS NOT NULL THEN 'number:' || LOWER(BTRIM(style_number))
+            ELSE 'name:' || LOWER(BTRIM(style_name))
+          END)::int FROM pending_plan) AS "pendingStyles",
+         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style),0))::float AS "actualUnits",
+         ROUND(COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan),0))::float AS "pendingUnits",
+         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type)='new'),0))::float AS "actualNewUnits",
+         ROUND(COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan WHERE LOWER(order_type)='new'),0))::float AS "pendingNewUnits",
         (SELECT COUNT(*)::int FROM actual_by_style WHERE LOWER(lifecycle_type)='new') AS "actualNewStyles",
-        COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) LIKE 'replen%'),0)::float AS "replenishmentUnits",
-        COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) IN ('re-order','reorder','repeat','rr')),0)::float AS "reorderUnits",
+         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) LIKE 'replen%'),0))::float AS "replenishmentUnits",
+         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) IN ('re-order','reorder','repeat','rr')),0))::float AS "reorderUnits",
         COALESCE((SELECT SUM(orders) FROM actual_by_style),0)::int AS "productionOrders",
         COALESCE((SELECT units FROM monthly_plan),0)::float AS "monthlyPlanUnits",
         COALESCE((SELECT newness_target_units FROM monthly_plan),0)::float AS "monthlyNewnessTargetUnits",
@@ -9933,8 +10123,8 @@ async function workspaceHomeFocus() {
 
   const week = weekResult.rows[0];
   const waiting = waitingResult.rows[0];
-  const unitsCommitted = Number(week.actualUnits) + Number(week.pendingUnits);
-  const stylesCommitted = Number(week.actualStyles) + Number(week.pendingStyles);
+  const unitsCommitted = Number(week.planUnits);
+  const stylesCommitted = Number(week.planStyles);
   const weeklyPaceUnits = Number(week.monthlyPlanUnits) / 4;
   const monthlyNewness = calculateNewnessCommitment({
     targetUnits: Number(week.monthlyNewnessTargetUnits),
@@ -11962,50 +12152,12 @@ const weeklyPlanPayload = (row: Record<string, unknown>) => ({
   confirmedAt: row.confirmedAt ?? null,
 });
 
-async function ensureWeek36Plan() {
-  const existing = await pool.query(`SELECT id FROM ${schema}.weekly_order_plans WHERE iso_year=2026 AND iso_week=36`);
-  if (existing.rows.length) return;
-  const client = await pool.connect();
-  try {
-    await client.query("BEGIN");
-    const plan = await client.query(
-      `INSERT INTO ${schema}.weekly_order_plans (iso_year,iso_week)
-       VALUES (2026,36) ON CONFLICT (iso_year,iso_week) DO UPDATE SET updated_at=NOW() RETURNING id`,
-    );
-    const candidates = await client.query(
-      `SELECT id,style_number,style_name,style_type,tier,category,sub_category,brand,
-         COALESCE(NULLIF(fabric,''),'Fabric pending') AS fabric,sample_fabric_product_id,target_order_week
-       FROM ${schema}.style_development_tracker
-       WHERE style_number_status='confirmed' AND NULLIF(BTRIM(style_number),'') IS NOT NULL
-         AND exit_status='active'
-         AND NULLIF(SUBSTRING(UPPER(COALESCE(target_order_week,'')) FROM '([0-9]{1,2})$'),'')::int=36
-       ORDER BY style_name LIMIT 6`,
-    );
-    let sequence = 0;
-    for (const style of candidates.rows) {
-      sequence += 1;
-      await client.query(
-        `INSERT INTO ${schema}.weekly_order_plan_lines
-          (plan_id,sequence_no,order_number,source,source_id,style_number,style_name,style_type,tier,
-           category,sub_category,brand,fabric,fabric_product_id,target_order_week,image_url,
-           estimated_quantity,order_type,order_stage)
-         VALUES ($1,$2,$3,'development',$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,300,$16,'CAD Marker Making')
-         ON CONFLICT (plan_id,source,source_id) DO NOTHING`,
-        [plan.rows[0].id, sequence, `W36${String(sequence).padStart(3, "0")}`, String(style.id),
-          style.style_number, style.style_name, style.style_type, style.tier, style.category, style.sub_category,
-          style.brand, style.fabric, style.sample_fabric_product_id, style.target_order_week,
-          `/api/workspace/garment-images/workspace/${encodeURIComponent(String(style.style_number))}`,
-          style.style_type === "RR" ? "Range Refreshed" : "New"],
-      );
-    }
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
-}
+const weeklyStyleIdentity = (row: Record<string, unknown>) => {
+  const styleNumber = String(row.styleNumber ?? row.style_number ?? "").trim().toLowerCase();
+  return styleNumber
+    ? `number:${styleNumber}`
+    : `name:${String(row.styleName ?? row.style_name ?? "").trim().toLowerCase()}`;
+};
 
 router.get("/weekly-order-plan/sources", async (req, res, next) => {
   try {
@@ -12094,7 +12246,6 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
 
 router.get("/weekly-order-plan", async (req, res, next) => {
   try {
-    await ensureWeek36Plan();
     const isoYear = Number(req.query.year ?? 2026);
     const isoWeek = Number(req.query.week ?? 36);
     const datesResult = await pool.query(
@@ -12123,6 +12274,7 @@ router.get("/weekly-order-plan", async (req, res, next) => {
           CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END || '/' ||
           encode(LOWER(BTRIM(l.style_number))::bytea,'escape') END AS "imageUrl",
         l.available_colourways AS "availableColourways",l.selected_colourways AS "selectedColourways",
+        l.data_quality_flags AS "dataQualityFlags",
         l.estimated_quantity AS "estimatedQuantity",l.order_type AS "orderType",l.order_stage AS "orderStage",
         COALESCE(fm.metres,0)::float AS "availableMetres",
         ao.first_order_date::text AS "firstOrderDate",COALESCE(ao.actual_quantity,0)::float AS "actualQuantity",
@@ -12155,11 +12307,18 @@ router.get("/weekly-order-plan", async (req, res, next) => {
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
     ) : { rows: [] };
-    const source = await getBiWorkspaceSource();
+    let source: BiWorkspaceSource = { styles: [], orders: [] };
+    try {
+      source = await getBiWorkspaceSource();
+    } catch (error) {
+      if (!(error instanceof BiSourceUnavailable)) throw error;
+    }
     for (const line of lines.rows) {
+      const lineStyleNumber = String(line.styleNumber ?? "").trim().toLowerCase();
+      const lineStyleName = String(line.styleName ?? "").trim().toLowerCase();
       const matched = activeBiOrders(source.orders).filter((order) =>
-        String(line.styleNumber ?? "").toLowerCase() === order.styleNumber.toLowerCase() ||
-        String(line.styleName ?? "").toLowerCase() === order.styleName.toLowerCase());
+        (lineStyleNumber !== "" && lineStyleNumber === order.styleNumber.trim().toLowerCase()) ||
+        (lineStyleName !== "" && lineStyleName === order.styleName.trim().toLowerCase()));
       line.firstOrderDate = matched.map((order) => order.orderDate).sort()[0] ?? null;
       line.actualQuantity = matched.reduce((sum, order) => sum + order.quantity, 0);
       line.actualOrders = matched.map((order) => ({ orderRef: order.orderRef, orderDate: order.orderDate, quantity: order.quantity }));
@@ -12168,7 +12327,14 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       .filter((order) => order.orderDate >= startDate && order.orderDate <= endDate)
       .map((order) => {
         const style = source.styles.map(biStyle).find((candidate) => candidate.styleNumber.toLowerCase() === order.styleNumber.toLowerCase());
-        const plannedLineId = lines.rows.find((line) => String(line.styleNumber ?? "").toLowerCase() === order.styleNumber.toLowerCase() || String(line.styleName ?? "").toLowerCase() === order.styleName.toLowerCase())?.id ?? null;
+        const orderStyleNumber = order.styleNumber.trim().toLowerCase();
+        const orderStyleName = order.styleName.trim().toLowerCase();
+        const plannedLineId = lines.rows.find((line) => {
+          const lineStyleNumber = String(line.styleNumber ?? "").trim().toLowerCase();
+          const lineStyleName = String(line.styleName ?? "").trim().toLowerCase();
+          return (lineStyleNumber !== "" && orderStyleNumber !== "" && lineStyleNumber === orderStyleNumber)
+            || (lineStyleName !== "" && orderStyleName !== "" && lineStyleName === orderStyleName);
+        })?.id ?? null;
         return { ...order, styleName: order.styleName || style?.name || "Unknown style", subCategory: style?.subCategory ?? "Uncategorised", category: style?.category ?? null, brand: style?.brand ?? null, plannedLineId };
       }) };
     /*
@@ -12202,22 +12368,23 @@ router.get("/weekly-order-plan", async (req, res, next) => {
        ORDER BY o.date_ordered,o.order_ref`,
       [startDate, endDate, plan?.id ?? null],
     ); */
-    const summary = lines.rows.reduce((acc, line) => {
+    const summaryBase = lines.rows.reduce<{ units: number; newUnits: number; notRaisedUnits: number }>((acc, line) => {
       const units = Number(line.estimatedQuantity);
       acc.units += units;
-      acc.styles += 1;
       if (line.orderType === "New") acc.newUnits += units;
       if (!line.firstOrderDate) {
-        acc.notRaisedStyles += 1;
         acc.notRaisedUnits += units;
       }
       return acc;
-    }, { units: 0, styles: 0, newUnits: 0, notRaisedStyles: 0, notRaisedUnits: 0 });
-    const actualStyleKeys = new Set(actualOrders.rows.map((order) =>
-      `${String(order.styleNumber ?? "").trim().toLowerCase()}|${String(order.styleName ?? "").trim().toLowerCase()}`));
+    }, { units: 0, newUnits: 0, notRaisedUnits: 0 });
+    const summary = {
+      ...summaryBase,
+      styles: new Set(lines.rows.map(weeklyStyleIdentity)).size,
+      notRaisedStyles: new Set(lines.rows.filter((line) => !line.firstOrderDate).map(weeklyStyleIdentity)).size,
+    };
+    const actualStyleKeys = new Set(actualOrders.rows.map(weeklyStyleIdentity));
     const unplannedOrders = actualOrders.rows.filter((order) => order.plannedLineId == null);
-    const unplannedStyleKeys = new Set(unplannedOrders.map((order) =>
-      `${String(order.styleNumber ?? "").trim().toLowerCase()}|${String(order.styleName ?? "").trim().toLowerCase()}`));
+    const unplannedStyleKeys = new Set(unplannedOrders.map(weeklyStyleIdentity));
     const monthlyNewnessResult = await pool.query<{
       monthStart: string; monthLabel: string; targetUnits: number;
     }>(
@@ -12354,7 +12521,7 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const isoWeek = Number(body.isoWeek);
     const quantity = Number(body.estimatedQuantity);
     const validTypes = ["New", "Re-order", "Replenishment", "Range Refreshed"];
-    const validStages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample"];
+    const validStages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample", "Set Sampling", "Set Sample Fitting", "Approved for Production"];
     if (!Number.isInteger(isoYear) || !Number.isInteger(isoWeek) || isoWeek < 1 || isoWeek > 53 || !Number.isInteger(quantity) || quantity <= 0) {
       res.status(400).json({ error: "A valid week and estimated quantity are required" }); return;
     }
@@ -12437,7 +12604,7 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
 router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
   try {
     const quantity = Number(req.body?.estimatedQuantity);
-    const stages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample"];
+    const stages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample", "Set Sampling", "Set Sample Fitting", "Approved for Production"];
     const types = ["New", "Re-order", "Replenishment", "Range Refreshed"];
     if (!Number.isInteger(quantity) || quantity <= 0 || !stages.includes(req.body?.orderStage) || !types.includes(req.body?.orderType)) {
       res.status(400).json({ error: "Quantity, order type and stage are required" }); return;

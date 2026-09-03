@@ -11,6 +11,7 @@ type SourceStyle = {
 type PlanLine = SourceStyle & {
   id: number; orderNumber: string; availableColourways: string[]; selectedColourways: string[];
   estimatedQuantity: number; orderType: string; orderStage: string;
+  dataQualityFlags: string[];
   firstOrderDate: string | null; actualQuantity: number;
   actualOrders: { orderRef: string; orderDate: string; quantity: number }[];
   originalIsoYear: number; originalIsoWeek: number; moveCount: number;
@@ -44,7 +45,7 @@ type PlanPayload = {
     orderedThisWeekUnits: number; plannedThisWeekUnits: number; remainingUnits: number; ceilingBreached: boolean;
   }[];
 };
-const stages = ['CAD Marker Making', 'Buying Requisition', 'Buying Production Order', 'Production Sample'];
+const stages = ['CAD Marker Making', 'Buying Requisition', 'Buying Production Order', 'Production Sample', 'Set Sampling', 'Set Sample Fitting', 'Approved for Production'];
 const orderTypes = ['New', 'Re-order', 'Replenishment', 'Range Refreshed'];
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
@@ -156,7 +157,7 @@ function EditableLine({ line, locked, week, startDate, endDate }: { line: PlanLi
   const status = raisedThisWeek ? 'Raised this week' : raisedAfterWeek ? 'Raised later' : line.firstOrderDate ? 'Raised before' : 'Not raised';
   return <tr className={!line.firstOrderDate ? 'weekly-target-pending' : ''}>
     <td><span className="weekly-order-no">{line.orderNumber}</span></td>
-    <td><div className="weekly-line-style"><StyleImage style={line} /><div><strong>{line.styleName}</strong><span>{line.styleNumber} · {line.brand || '—'}</span><small>{line.source === 'development' ? 'Style Development' : 'Style Catalogue'}</small></div></div></td>
+    <td><div className="weekly-line-style"><StyleImage style={line} /><div><strong>{line.styleName}</strong><span>{line.styleNumber || 'Needs style number'} · {line.brand || '—'}</span><small>{line.source === 'development' ? 'Style Development' : 'Style Catalogue'}</small>{line.dataQualityFlags?.map((flag) => <small className="weekly-data-quality-flag" key={flag}><AlertTriangle size={11} /> {flag}</small>)}</div></div></td>
     <td><strong>{line.subCategory || 'Uncategorised'}</strong><span>{line.category || '—'} · {line.tier || '—'}</span></td>
     <td><strong>{line.fabric || 'Pending'}</strong><span>{Math.round(line.availableMetres || 0).toLocaleString()}m available</span></td>
     <td><input className="weekly-qty" type="number" min="1" disabled={locked} value={quantity} onChange={(event) => setQuantity(event.target.value)} onBlur={() => Number(quantity) !== line.estimatedQuantity && save.mutate()} /></td>
