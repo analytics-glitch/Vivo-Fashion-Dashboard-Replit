@@ -53,8 +53,12 @@ export default function AuthFlow() {
   const referralCodeRef = useRef(new URLSearchParams(window.location.search).get("ref") || "");
 
   const phoneDigits = () => cc + local.replace(/\D/g, "").replace(/^0+/, "");
-  const localOk = /^\d{9,10}$/.test(local.replace(/\D/g, "").replace(/^0+/, "")) ||
-    /^0\d{9}$/.test(local.replace(/\D/g, ""));
+  const localDigits = local.replace(/\D/g, "");
+  const localOk = /^\d{9,10}$/.test(localDigits.replace(/^0+/, "")) ||
+    /^0\d{9}$/.test(localDigits);
+  const phoneHint = localDigits && !localOk
+    ? `Enter 9 digits after +${cc}, for example 712 345 678.`
+    : `Enter 9 digits after +${cc}, for example 712 345 678.`;
 
   // Membership is 18+ (Terms §1) — cap the date picker; the server enforces it too.
   const dobMax = (() => {
@@ -301,9 +305,17 @@ export default function AuthFlow() {
                       value={local}
                       onChange={(e) => setLocal(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && localOk && !busy && sendCode()}
+                      aria-invalid={Boolean(localDigits && !localOk)}
+                      aria-describedby="phone-hint"
                       className={`${inputCls} flex-1 min-w-0`}
                     />
                   </div>
+                  <p
+                    id="phone-hint"
+                    className={`text-xs leading-relaxed ${localDigits && !localOk ? "text-destructive" : "text-muted-foreground"}`}
+                  >
+                    {phoneHint}
+                  </p>
                 </div>
 
                 <ErrorNote>{error}</ErrorNote>
