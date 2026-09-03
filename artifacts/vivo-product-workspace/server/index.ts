@@ -13,6 +13,10 @@ import pg from "pg";
 import { Server as SocketServer } from "socket.io";
 import { RESOURCE_SEEDS } from "./resource-seeds.js";
 import {
+  STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENTS,
+  STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENT_IMPORT_KEY,
+} from "./style-development-assignments.js";
+import {
   FEEDBACK_IMAGE_MAX_FILES,
   FEEDBACK_IMAGE_MAX_BYTES,
   FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT,
@@ -1482,6 +1486,31 @@ async function ensureStyleDevelopmentTrackerData() {
               adoption_date=COALESCE(adoption_date, created_at::date)
         WHERE brand='' OR adoption_date IS NULL`,
     );
+    const assignmentClaim = await client.query(
+      `INSERT INTO ${schema}.style_development_tracker_imports (import_key)
+       VALUES ($1)
+       ON CONFLICT DO NOTHING
+       RETURNING import_key`,
+      [STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENT_IMPORT_KEY],
+    );
+    if (assignmentClaim.rows[0]) {
+      const assignedStyleNumbers = [...new Set(Object.values(STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENTS).flat())];
+      await client.query(
+        `UPDATE ${schema}.style_development_tracker
+            SET pattern_maker='',updated_at=NOW()
+          WHERE COALESCE(UPPER(BTRIM(style_number)),'')<>ALL($1::text[])
+            AND pattern_maker<>''`,
+        [assignedStyleNumbers],
+      );
+      for (const [patternMaker, styleNumbers] of Object.entries(STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENTS)) {
+        await client.query(
+          `UPDATE ${schema}.style_development_tracker
+              SET pattern_maker=$1,updated_at=NOW()
+            WHERE UPPER(BTRIM(style_number))=ANY($2::text[])`,
+          [patternMaker, styleNumbers],
+        );
+      }
+    }
     await client.query(
       `INSERT INTO ${schema}.style_development_history
         (tracker_style_id,entry_type,event_type,outcome,note,occurred_at)
@@ -5128,9 +5157,9 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
     const readyToStart = active.filter((item) => String((item as Record<string, unknown>).stage) === "Pattern" && ((item as Record<string, unknown>).adoptionReadiness as { ready: boolean }).ready);
     const activePatternWork = active.filter((item) => {
       const value = item as Record<string, unknown>;
-      return value.stage === "Pattern" || value.stage === "Transfer to CAD";
+      return value.stage === "Pattern";
     });
-    const queue = [...readyToStart, ...activePatternWork];
+    const queue = activePatternWork;
     const cutoff = Date.now() - 28 * 86400000;
     const adoptedPerWeek = items.filter((item) => {
       const date = new Date(String((item as Record<string, unknown>).adoptionDate ?? "")).getTime();
@@ -5142,9 +5171,44 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
     const cancellationsByStage = items.filter((item) => (item as Record<string, unknown>).exitStatus === "cancelled").reduce((out: Record<string, number>, item) => {
       const stage = String((item as Record<string, unknown>).stage ?? "Pattern"); out[stage] = (out[stage] ?? 0) + 1; return out;
     }, {});
+    const daysPerPattern = 2;
+    const workingDaysPerWeek = 5;
+    const patternMakerKinds: Record<string, "person" | "team" | "supplier" | "unassigned"> = {
+      CAD: "team",
+      "Ken Knit": "supplier",
+      Unassigned: "unassigned",
+    };
+    const patternMakerOrder = ["Wanjohi", "Mercy", "Victoria", "Florence", "Abigail", "CAD", "Ken Knit", "Unassigned"];
+    const byPatternMaker = Object.entries(active.reduce((out: Record<string, { load: number; patternStageCount: number }>, item) => {
+      const value = item as Record<string, unknown>;
+      const patternMaker = String(value.patternMaker || "Unassigned");
+      const current = out[patternMaker] ?? { load: 0, patternStageCount: 0 };
+      current.load += 1;
+      if (value.stage === "Pattern") current.patternStageCount += 1;
+      out[patternMaker] = current;
+      return out;
+    }, {}))
+      .map(([patternMaker, counts]) => ({
+        patternMaker,
+        ...counts,
+        patternWorkDays: counts.patternStageCount * daysPerPattern,
+        weeksOfPatternWork: counts.patternStageCount * daysPerPattern / workingDaysPerWeek,
+        kind: patternMakerKinds[patternMaker] ?? "person",
+        isTeamLead: patternMaker === "Florence",
+        effectiveCapacity: patternMaker === "Florence"
+          ? 0.5
+          : ["Wanjohi", "Mercy", "Victoria"].includes(patternMaker)
+            ? 1
+            : null,
+      }))
+      .sort((a, b) => {
+        const aIndex = patternMakerOrder.indexOf(a.patternMaker);
+        const bIndex = patternMakerOrder.indexOf(b.patternMaker);
+        return (aIndex < 0 ? patternMakerOrder.length : aIndex) - (bIndex < 0 ? patternMakerOrder.length : bIndex);
+      });
     res.json({ intervals, totalDays: 13, whereTimeGoing, assumptionsWrong, cancellationsByReason: cancellations,
       cancellationsByStage,
-      capacity: { makers: 3.5, daysPerPattern: 2, weeklyCapacity: 8.75, monthlyCapacity: 38, queueDepth: queue.length, readyToStart: readyToStart.length, activePatternWork: activePatternWork.length, weeksCover: queue.length / 8.75, patternsPerMaker: queue.length / 3.5, byPatternMaker: Object.entries(activePatternWork.reduce((out: Record<string, number>, item) => { const maker = String((item as Record<string, unknown>).patternMaker || "Unassigned"); out[maker] = (out[maker] ?? 0) + 1; return out; }, {})).map(([patternMaker, load]) => ({ patternMaker, load })), adoptedPerWeek, targetAdoptionsPerWeek: 10, monthlyGap: 38 - adoptedPerWeek * 4 } });
+      capacity: { makers: 3.5, daysPerPattern, weeklyCapacity: 8.75, monthlyCapacity: 38, queueDepth: queue.length, readyToStart: readyToStart.length, activePatternWork: activePatternWork.length, weeksCover: queue.length / 8.75, patternsPerMaker: queue.length / 3.5, byPatternMaker, adoptedPerWeek, targetAdoptionsPerWeek: 10, monthlyGap: 38 - adoptedPerWeek * 4 } });
   } catch (error) { next(error); }
 });
 

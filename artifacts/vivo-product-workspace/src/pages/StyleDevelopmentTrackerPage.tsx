@@ -141,7 +141,16 @@ type ReportingPayload = {
     adoptedPerWeek: number;
     targetAdoptionsPerWeek: number;
     monthlyGap: number;
-    byPatternMaker: { patternMaker: string; load: number }[];
+    byPatternMaker: {
+      patternMaker: string;
+      load: number;
+      patternStageCount: number;
+      patternWorkDays: number;
+      weeksOfPatternWork: number;
+      kind: 'person' | 'team' | 'supplier' | 'unassigned';
+      isTeamLead: boolean;
+      effectiveCapacity: number | null;
+    }[];
   };
 };
 
@@ -642,18 +651,33 @@ function TrackerCapacity() {
 
       <div className="tracker-rep-card" style={{ marginTop: 24 }}>
          <h3>Load by Pattern Maker</h3>
+          <p className="tracker-capacity-note">Pattern work is planned at two working days per pattern. Florence is shown at 0.5 effective capacity because team leadership and quality checks take half of her working time. CAD and Ken Knit are routed work, not personal pattern-maker capacity.</p>
          <table className="tracker-rep-table">
-           <thead><tr><th>Maker</th><th>Load</th><th>Utilization</th></tr></thead>
+            <thead><tr><th>Owner / route</th><th>All assigned</th><th>At Pattern</th><th>Pattern work</th><th>Capacity treatment</th></tr></thead>
            <tbody>
               {data.byPatternMaker?.map((pm, i) => (
-                <tr key={i}>
-                  <td>{pm.patternMaker}</td>
-                  <td>{pm.load}</td>
-                  <td>
-                    <div className="cap-util-bar">
-                      <div className="cap-util-fill" style={{ width: `${Math.min(100, (pm.load / 5) * 100)}%`, background: (pm.load / 5) * 100 > 90 ? 'var(--coral)' : '#C9A96E' }} />
-                      <span>{Math.round((pm.load / 5) * 100)}%</span>
-                    </div>
+                 <tr key={i} className={pm.isTeamLead ? 'capacity-team-lead' : ''}>
+                   <td>
+                     <strong>{pm.patternMaker}</strong>
+                     {pm.isTeamLead && <span className="capacity-route-badge lead">Team lead</span>}
+                     {pm.kind === 'team' && <span className="capacity-route-badge">CAD team</span>}
+                     {pm.kind === 'supplier' && <span className="capacity-route-badge">External supplier</span>}
+                   </td>
+                   <td>{pm.load} styles</td>
+                   <td><strong>{pm.patternStageCount}</strong></td>
+                   <td>{Number(pm.weeksOfPatternWork).toFixed(1)} weeks <span className="capacity-work-days">({pm.patternWorkDays} days)</span></td>
+                   <td>
+                     {pm.isTeamLead
+                       ? '0.5 effective maker'
+                       : pm.kind === 'team'
+                         ? 'Routed to team'
+                         : pm.kind === 'supplier'
+                           ? 'External capacity'
+                           : pm.kind === 'unassigned'
+                             ? 'Needs assignment'
+                             : pm.effectiveCapacity === 1
+                               ? '1.0 effective maker'
+                               : 'Tracked separately'}
                   </td>
                 </tr>
               ))}
