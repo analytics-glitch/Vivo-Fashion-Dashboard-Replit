@@ -62,6 +62,10 @@ def cors_config() -> dict[str, Any]:
         "allow_origins": trusted_origins(),
         "allow_methods": _ALLOWED_METHODS,
         "allow_headers": _ALLOWED_HEADERS,
+        # Preview can serve the SPA and API from different trusted Replit
+        # origins. Staff auth is cookie-only, so those exact-origin requests
+        # must be allowed to accept and send Secure/HttpOnly cookies.
+        "allow_credentials": True,
     }
 
 

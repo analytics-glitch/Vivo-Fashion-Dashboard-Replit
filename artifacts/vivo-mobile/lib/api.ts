@@ -196,7 +196,10 @@ export async function verifyTwoFactorRequest(code: string, challengeToken: strin
   return apiPost<{ token: string; user: AuthUser }>("/auth/2fa/verify", {
     code,
     challenge_token: challengeToken,
-  }, { "X-Vivo-2FA-Challenge": challengeToken });
+  }, {
+    "X-Vivo-2FA-Challenge": challengeToken,
+    "X-Vivo-Mobile": "1",
+  });
 }
 
 export async function fetchMe(): Promise<AuthUser> {

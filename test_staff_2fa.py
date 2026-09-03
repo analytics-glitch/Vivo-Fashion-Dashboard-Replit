@@ -3,6 +3,7 @@
 import time
 import unittest
 import uuid
+from unittest import mock
 
 from fastapi.testclient import TestClient
 
@@ -11,6 +12,8 @@ import api_pg
 
 class StaffTwoFactorTests(unittest.TestCase):
     def setUp(self):
+        self.original_is_production = api_pg._IS_PRODUCTION
+        api_pg._IS_PRODUCTION = True
         api_pg._ensure_users_table()
         self.client = TestClient(api_pg.app, base_url="https://testserver")
         self.user_id = "test-2fa:" + uuid.uuid4().hex[:14]
@@ -30,6 +33,7 @@ class StaffTwoFactorTests(unittest.TestCase):
                            (self.user_id,))
         api_pg._users_exec("DELETE FROM app_users WHERE user_id=%s",
                            (self.user_id,))
+        api_pg._IS_PRODUCTION = self.original_is_production
 
     def _enrol(self):
         login = self.client.post(
@@ -79,6 +83,33 @@ class StaffTwoFactorTests(unittest.TestCase):
             "/api/auth/2fa/verify", json={"code": backup_codes[0]})
         self.assertEqual(reused.status_code, 401, reused.text)
 
+    def test_native_verification_receives_explicit_session_token(self):
+        secret, _ = self._enrol()
+        verified = self.client.post(
+            "/api/auth/2fa/verify",
+            headers={"x-vivo-mobile": "1"},
+            json={"code": api_pg._totp_code(
+                secret, int(time.time()) // api_pg._TOTP_STEP_SECONDS)},
+        )
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertIn("token", verified.json())
+        self.assertIn("session_token", verified.cookies)
+
+    def test_browser_origin_cannot_spoof_native_verification_token(self):
+        secret, _ = self._enrol()
+        verified = self.client.post(
+            "/api/auth/2fa/verify",
+            headers={
+                "x-vivo-mobile": "1",
+                "origin": "https://testserver",
+            },
+            json={"code": api_pg._totp_code(
+                secret, int(time.time()) // api_pg._TOTP_STEP_SECONDS)},
+        )
+        self.assertEqual(verified.status_code, 200, verified.text)
+        self.assertNotIn("token", verified.json())
+        self.assertIn("session_token", verified.cookies)
+
     def test_verification_rate_limit(self):
         self._enrol()
         responses = [
@@ -87,6 +118,34 @@ class StaffTwoFactorTests(unittest.TestCase):
         ]
         self.assertTrue(all(r.status_code == 401 for r in responses[:4]))
         self.assertEqual(responses[-1].status_code, 429, responses[-1].text)
+
+    def test_session_creation_failure_returns_safe_503(self):
+        secret, _ = self._enrol()
+        code = api_pg._totp_code(
+            secret, int(time.time()) // api_pg._TOTP_STEP_SECONDS)
+        conflicting_token = api_pg._create_session(self.user_id)
+        with mock.patch.object(
+            api_pg.secrets, "token_urlsafe", return_value=conflicting_token
+        ), mock.patch.object(api_pg.log, "error") as error_log:
+            verified = self.client.post(
+                "/api/auth/2fa/verify", json={"code": code})
+        self.assertEqual(verified.status_code, 503, verified.text)
+        self.assertNotIn("session_token", verified.cookies)
+        self.assertIn("stage=2fa_verify", repr(error_log.call_args))
+        # The failed session insert must roll back enrollment and challenge
+        # consumption, allowing the same valid challenge to be retried.
+        state = api_pg._users_exec(
+            "SELECT totp_enabled FROM app_users WHERE user_id=%s",
+            (self.user_id,), fetch=True)[0]
+        self.assertFalse(state["totp_enabled"])
+        challenge_count = api_pg._users_exec(
+            "SELECT COUNT(*) AS n FROM user_2fa_challenges WHERE user_id=%s",
+            (self.user_id,), fetch=True)[0]["n"]
+        self.assertEqual(challenge_count, 1)
+        retried = self.client.post("/api/auth/2fa/verify", json={"code": code})
+        self.assertEqual(retried.status_code, 200, retried.text)
+        self.assertIn("session_token", retried.cookies)
+        self.assertNotIn("token", retried.json())
 
     def test_admin_reset_keeps_existing_session(self):
         api_pg._users_exec(

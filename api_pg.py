@@ -1210,6 +1210,10 @@ def _active_admins_excluding(cur, exclude_user_id=None):
     return int(row["n"]) if row else 0
 
 
+_AUTH_SCHEMA_LOCK = threading.Lock()
+_AUTH_SCHEMA_READY = False
+
+
 def _ensure_users_table():
     _users_exec("""
         CREATE TABLE IF NOT EXISTS app_users (
@@ -1278,6 +1282,31 @@ def _ensure_users_table():
             expires_at TIMESTAMPTZ NOT NULL
         )
     """)
+    # A prior deployment may have created the challenge table and then stopped
+    # part-way through its migration. CREATE TABLE IF NOT EXISTS does not repair
+    # missing columns on an existing table, so add every field used by the
+    # enrollment/verification transactions idempotently.
+    _users_exec(
+        "ALTER TABLE user_2fa_challenges "
+        "ADD COLUMN IF NOT EXISTS secret_enc TEXT")
+    _users_exec(
+        "ALTER TABLE user_2fa_challenges "
+        "ADD COLUMN IF NOT EXISTS backup_codes JSONB")
+    _users_exec(
+        "ALTER TABLE user_2fa_challenges "
+        "ADD COLUMN IF NOT EXISTS backup_codes_shown BOOLEAN NOT NULL DEFAULT FALSE")
+    _users_exec(
+        "ALTER TABLE user_2fa_challenges "
+        "ADD COLUMN IF NOT EXISTS attempts INTEGER NOT NULL DEFAULT 0")
+    _users_exec(
+        "ALTER TABLE user_2fa_challenges "
+        "ADD COLUMN IF NOT EXISTS first_attempt_at TIMESTAMPTZ")
+    _users_exec(
+        "ALTER TABLE user_2fa_challenges "
+        "ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT now()")
+    _users_exec(
+        "ALTER TABLE user_2fa_challenges "
+        "ADD COLUMN IF NOT EXISTS expires_at TIMESTAMPTZ")
     _users_exec(
         "CREATE INDEX IF NOT EXISTS idx_user_2fa_challenges_expires "
         "ON user_2fa_challenges(expires_at)")
@@ -1291,6 +1320,7 @@ def _ensure_users_table():
         )
     except Exception:
         pass
+
     # Opaque server-side sessions. The token is the bearer/cookie value; we never
     # store anything derivable back to a password here.
     _users_exec("""
@@ -1322,6 +1352,42 @@ def _ensure_users_table():
         _users_exec("DELETE FROM user_2fa_challenges WHERE expires_at <= now()")
     except Exception:
         pass
+
+
+def _auth_store_unavailable_response():
+    return JSONResponse(
+        {"detail": "Authentication service is temporarily unavailable. Please try again."},
+        status_code=503,
+    )
+
+
+def _ensure_auth_schema():
+    """Ensure the auth tables/columns exist before a sign-in transaction.
+
+    Auth migrations normally run in the deferred startup thread so uvicorn can
+    bind quickly. A login can arrive before that thread finishes, though, and
+    older deployments may have stopped after only part of the migration. Keep a
+    process-local fast path after the first successful ensure, while serializing
+    the first attempt so login and deferred startup cannot run the DDL together
+    in this worker.
+    """
+    global _AUTH_SCHEMA_READY
+    if _AUTH_SCHEMA_READY:
+        return True
+    with _AUTH_SCHEMA_LOCK:
+        if _AUTH_SCHEMA_READY:
+            return True
+        try:
+            _ensure_users_table()
+        except Exception as exc:
+            # Do not include database exception text: drivers can echo SQL,
+            # bound values, or connection details. The stage and exception class
+            # are enough to identify an operational failure in server logs.
+            log.error("staff auth failed stage=schema_ready error=%s",
+                      type(exc).__name__)
+            return False
+        _AUTH_SCHEMA_READY = True
+        return True
 
 
 def _derive_pos_from_email(email: str):
@@ -1658,6 +1724,17 @@ def _two_factor_challenge_token(request, body=None):
              or request.headers.get("x-vivo-2fa-challenge")
              or (body or {}).get("challenge_token"))
     return token.strip() if token else None
+
+
+def _native_auth_requested(request):
+    """Recognize the explicit native credential hand-off contract.
+
+    Browser fetch/XHR POSTs carry an Origin header and JavaScript cannot remove
+    or forge that forbidden header. Requiring its absence prevents same-origin
+    web code from spoofing X-Vivo-Mobile to expose the httpOnly session value.
+    """
+    return (request.headers.get("x-vivo-mobile") == "1"
+            and not request.headers.get("origin"))
 
 
 def _two_factor_failure_response(message="Invalid verification code."):
@@ -2373,10 +2450,7 @@ def _check_report_libraries():
 @_deferred_startup
 def _init_user_store():
     # Idempotently create the app_users table so role/approval state has a home.
-    try:
-        _ensure_users_table()
-    except Exception:
-        pass
+    _ensure_auth_schema()
 
 
 @_deferred_startup
@@ -10271,72 +10345,100 @@ async def auth_login(request: Request):
     if _login_ip_throttled(ip):
         return JSONResponse(
             {"detail": "Too many attempts. Try again later."}, status_code=429)
+    if not _ensure_auth_schema():
+        return _auth_store_unavailable_response()
     # Check-and-bump runs inside one locked tx (row FOR UPDATE) so concurrent
     # guesses can't race past the counter — same pattern as the loyalty login.
-    with _users_tx(lock=True) as cur:
-        cur.execute(
-            "SELECT user_id, email, name, role, status, password_hash, extra_pages, "
-            "totp_enabled, "
-            "failed_logins, "
-            "(locked_until IS NOT NULL AND locked_until > now()) AS is_locked "
-            "FROM app_users WHERE email=%s FOR UPDATE", (email,))
-        rec = cur.fetchone()
-        if not rec:
-            # Uniform 401 (no account enumeration); still costs the IP budget.
-            _login_ip_record_fail(ip)
-            return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
-        if rec.get("is_locked"):
-            return JSONResponse(
-                {"detail": "Too many attempts. Try again later."}, status_code=429)
-        if not _verify_password(password, rec.get("password_hash")):
-            _login_ip_record_fail(ip)
-            fails = int(rec.get("failed_logins") or 0) + 1
-            if fails >= _LOGIN_MAX_FAILS:
-                cur.execute(
-                    "UPDATE app_users SET failed_logins=0, "
-                    "locked_until=now() + (%s || ' minutes')::interval WHERE user_id=%s",
-                    (_LOGIN_LOCK_MINUTES, rec["user_id"]))
+    try:
+        with _users_tx(lock=True) as cur:
+            cur.execute(
+                "SELECT user_id, email, name, role, status, password_hash, extra_pages, "
+                "totp_enabled, "
+                "failed_logins, "
+                "(locked_until IS NOT NULL AND locked_until > now()) AS is_locked "
+                "FROM app_users WHERE email=%s FOR UPDATE", (email,))
+            rec = cur.fetchone()
+            if not rec:
+                # Uniform 401 (no account enumeration); still costs the IP budget.
+                _login_ip_record_fail(ip)
+                return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
+            if rec.get("is_locked"):
                 return JSONResponse(
                     {"detail": "Too many attempts. Try again later."}, status_code=429)
+            if not _verify_password(password, rec.get("password_hash")):
+                _login_ip_record_fail(ip)
+                fails = int(rec.get("failed_logins") or 0) + 1
+                if fails >= _LOGIN_MAX_FAILS:
+                    cur.execute(
+                        "UPDATE app_users SET failed_logins=0, "
+                        "locked_until=now() + (%s || ' minutes')::interval WHERE user_id=%s",
+                        (_LOGIN_LOCK_MINUTES, rec["user_id"]))
+                    return JSONResponse(
+                        {"detail": "Too many attempts. Try again later."}, status_code=429)
+                cur.execute(
+                    "UPDATE app_users SET failed_logins=%s WHERE user_id=%s",
+                    (fails, rec["user_id"]))
+                return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
+            # Success: clear throttle state.
             cur.execute(
-                "UPDATE app_users SET failed_logins=%s WHERE user_id=%s",
-                (fails, rec["user_id"]))
-            return JSONResponse({"detail": "Invalid email or password"}, status_code=401)
-        # Success: clear throttle state.
-        cur.execute(
-            "UPDATE app_users SET failed_logins=0, locked_until=NULL WHERE user_id=%s",
-            (rec["user_id"],))
+                "UPDATE app_users SET failed_logins=0, locked_until=NULL WHERE user_id=%s",
+                (rec["user_id"],))
+    except Exception as exc:
+        log.error("staff auth failed stage=account_lookup error=%s",
+                  type(exc).__name__)
+        return _auth_store_unavailable_response()
     if rec["status"] == "rejected":
         return JSONResponse({"detail": "account_rejected"}, status_code=403)
     if rec["status"] == "disabled":
         return JSONResponse({"detail": "account_disabled"}, status_code=403)
-    user = _user_dict(rec)
-    user["hidden_pages"] = _hidden_pages()
-    user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
-    _apply_extra_pages(user)
-    _apply_crm_admin_grants(user)
-    _apply_atelier_entitlement(user)
+    try:
+        user = _user_dict(rec)
+        user["hidden_pages"] = _hidden_pages()
+        user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
+        _apply_extra_pages(user)
+        _apply_crm_admin_grants(user)
+        _apply_atelier_entitlement(user)
+    except Exception as exc:
+        log.error("staff auth failed stage=user_profile error=%s",
+                  type(exc).__name__)
+        return _auth_store_unavailable_response()
     # In preview/dev environments skip the 2FA challenge entirely so developers
     # can sign in without an enrolled authenticator app. In production the full
     # challenge flow runs as normal.
     if not _IS_PRODUCTION:
-        session = _create_session(rec["user_id"])
+        try:
+            session = _create_session(rec["user_id"])
+        except Exception as exc:
+            log.error("staff auth failed stage=session_create error=%s",
+                      type(exc).__name__)
+            return _auth_store_unavailable_response()
         try:
             _users_exec("UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
                         (rec["user_id"],))
         except Exception:
             pass
-        resp = JSONResponse({"token": session, "user": user})
+        payload = {"user": user}
+        # Native clients cannot read the web httpOnly cookie. The explicit
+        # native contract receives the opaque session token; browser responses
+        # never expose it to JavaScript.
+        if _native_auth_requested(request):
+            payload["token"] = session
+        resp = JSONResponse(payload)
         resp.set_cookie("session_token", session, **_login_cookie_kwargs(request))
         return resp
     mode = "verify" if rec.get("totp_enabled") else "enroll"
-    challenge = _create_2fa_challenge(rec["user_id"], mode)
+    try:
+        challenge = _create_2fa_challenge(rec["user_id"], mode)
+    except Exception as exc:
+        log.error("staff auth failed stage=challenge_create error=%s",
+                  type(exc).__name__)
+        return _auth_store_unavailable_response()
     payload = {
         "two_factor_required": True,
         "two_factor": {"mode": mode},
         "user": user,
     }
-    if request.headers.get("x-vivo-mobile") == "1":
+    if _native_auth_requested(request):
         payload["challenge_token"] = challenge
     resp = JSONResponse(payload)
     resp.set_cookie("staff_2fa_challenge", challenge,
@@ -10355,6 +10457,8 @@ async def auth_2fa_enroll(request: Request):
     token = _two_factor_challenge_token(request)
     if not token:
         return JSONResponse({"detail": "Two-factor challenge expired."}, status_code=401)
+    if not _ensure_auth_schema():
+        return _auth_store_unavailable_response()
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     plain_codes = None
     try:
@@ -10383,19 +10487,22 @@ async def auth_2fa_enroll(request: Request):
                     "WHERE challenge_hash=%s",
                     (_encrypt_totp_secret(secret), json.dumps(hashed_codes), token_hash))
             uri = _totp_provisioning_uri(secret, challenge["email"])
-        payload = {
-            "mode": "enroll",
-            "manual_key": secret,
-            "provisioning_uri": uri,
-            "qr_svg": _totp_qr_svg(uri),
-            "backup_codes": plain_codes or [],
-            "backup_codes_once": bool(plain_codes),
-        }
+            # Build the one-time response before committing. If QR generation or
+            # serialization fails, the challenge update rolls back so a retry can
+            # still receive a fresh seed and all eight backup codes.
+            payload = {
+                "mode": "enroll",
+                "manual_key": secret,
+                "provisioning_uri": uri,
+                "qr_svg": _totp_qr_svg(uri),
+                "backup_codes": plain_codes or [],
+                "backup_codes_once": bool(plain_codes),
+            }
         return payload
-    except Exception:
-        logging.exception("2FA enrollment setup failed")
-        return JSONResponse(
-            {"detail": "Could not start two-factor enrollment."}, status_code=500)
+    except Exception as exc:
+        log.error("staff auth failed stage=2fa_enrollment error=%s",
+                  type(exc).__name__)
+        return _auth_store_unavailable_response()
 
 
 @app.post("/api/auth/2fa/verify")
@@ -10410,8 +10517,12 @@ async def auth_2fa_verify(request: Request):
     token = _two_factor_challenge_token(request, body)
     if not token:
         return JSONResponse({"detail": "Two-factor challenge expired."}, status_code=401)
+    if not _ensure_auth_schema():
+        return _auth_store_unavailable_response()
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     user_id = None
+    session = secrets.token_urlsafe(32)
+    user = None
     completed_enrollment = False
     try:
         with _users_tx() as cur:
@@ -10504,35 +10615,40 @@ async def auth_2fa_verify(request: Request):
                     "UPDATE app_users SET totp_failed_attempts=0, "
                     "totp_last_failed_at=NULL, totp_locked_until=NULL WHERE user_id=%s",
                     (user_id,))
+            # Build the response identity and create the session before consuming
+            # the challenge. Any failure in this block rolls back enrollment,
+            # backup-code consumption, session insertion, and challenge deletion
+            # together, so the same valid challenge remains safely retryable.
+            user_row = dict(challenge)
+            if completed_enrollment:
+                user_row["totp_enabled"] = True
+            user = _user_dict(user_row)
+            user["hidden_pages"] = _hidden_pages()
+            user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
+            _apply_extra_pages(user)
+            _apply_crm_admin_grants(user)
+            _apply_atelier_entitlement(user)
+            cur.execute(
+                "INSERT INTO user_sessions (session_token, user_id, expires_at) "
+                "VALUES (%s, %s, now() + make_interval(secs => %s))",
+                (session, user_id, _SESSION_TTL))
+            cur.execute(
+                "UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
+                (user_id,))
             cur.execute("DELETE FROM user_2fa_challenges WHERE challenge_hash=%s",
                         (token_hash,))
-    except Exception:
-        logging.exception("2FA verification failed")
-        return JSONResponse(
-            {"detail": "Could not complete two-factor verification."}, status_code=500)
+    except Exception as exc:
+        log.error("staff auth failed stage=2fa_verify error=%s",
+                  type(exc).__name__)
+        return _auth_store_unavailable_response()
 
-    try:
-        _users_exec("UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
-                    (user_id,))
-    except Exception:
-        pass
-    rows = _users_exec(
-        "SELECT user_id, email, name, role, status, extra_pages, "
-        "totp_enabled FROM app_users WHERE user_id=%s", (user_id,), fetch=True)
-    if not rows:
-        return JSONResponse({"detail": "Account no longer exists."}, status_code=401)
-    user = _user_dict(rows[0])
-    user["hidden_pages"] = _hidden_pages()
-    user["allowed_pages"] = _effective_pages_for_role(user.get("role"))
-    _apply_extra_pages(user)
-    _apply_crm_admin_grants(user)
-    _apply_atelier_entitlement(user)
-    session = _create_session(user_id)
-    resp = JSONResponse({
-        "token": session,
+    payload = {
         "user": user,
         "two_factor_enrolled": completed_enrollment,
-    })
+    }
+    if _native_auth_requested(request):
+        payload["token"] = session
+    resp = JSONResponse(payload)
     resp.set_cookie("session_token", session, **_login_cookie_kwargs(request))
     resp.delete_cookie("staff_2fa_challenge", path="/")
     return resp
@@ -10698,6 +10814,8 @@ def auth_google_callback(request: Request):
     # then showed a dead white page). Fail back to the callback with a coded
     # error the login screen can render instead.
     try:
+        if not _ensure_auth_schema():
+            return _back("error=provisioning")
         rec = resolve_app_user(sub, email, name, picture)
         # In preview/dev environments skip the 2FA challenge entirely so
         # developers can sign in without an enrolled authenticator app. Create

@@ -73,9 +73,10 @@ class CookieOnlySessionTests(unittest.TestCase):
         # The cookie must be httpOnly.
         set_cookie = r.headers.get("set-cookie", "")
         self.assertIn("HttpOnly", set_cookie)
-        # Response body should carry token + user (same shape as 2fa/verify).
+        # Web responses carry the user but never expose the opaque session token
+        # to JavaScript; the browser authenticates with the httpOnly cookie only.
         body = r.json()
-        self.assertIn("token", body)
+        self.assertNotIn("token", body)
         self.assertIn("user", body)
         self.assertEqual(body["user"].get("email"), self.EMAIL)
 
@@ -89,6 +90,116 @@ class CookieOnlySessionTests(unittest.TestCase):
         self.assertLess(out.status_code, 300)
         me2 = c.get("/api/auth/me")
         self.assertGreaterEqual(me2.status_code, 401)
+
+    def test_native_preview_login_receives_explicit_session_token(self):
+        c = TestClient(api_pg.app, base_url="https://testserver")
+        r = c.post(
+            "/api/auth/login",
+            headers={"x-vivo-mobile": "1"},
+            json={"email": self.EMAIL, "password": self.PASSWORD},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertIn("token", r.json())
+
+    def test_browser_origin_cannot_spoof_native_token_response(self):
+        c = TestClient(api_pg.app, base_url="https://testserver")
+        r = c.post(
+            "/api/auth/login",
+            headers={
+                "x-vivo-mobile": "1",
+                "origin": "https://testserver",
+            },
+            json={"email": self.EMAIL, "password": self.PASSWORD},
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertNotIn("token", r.json())
+        self.assertIn("session_token", r.cookies)
+
+    def test_invalid_credentials_keep_uniform_response(self):
+        c = TestClient(api_pg.app, base_url="https://testserver")
+        r = c.post(
+            "/api/auth/login",
+            json={"email": self.EMAIL, "password": "definitely-wrong"},
+        )
+        self.assertEqual(r.status_code, 401, r.text)
+        self.assertEqual(r.json().get("detail"), "Invalid email or password")
+        self.assertNotIn("session_token", r.cookies)
+
+    def test_disabled_account_is_rejected_after_valid_password(self):
+        api_pg._users_exec(
+            "UPDATE app_users SET status='disabled' WHERE user_id=%s",
+            (self.user_id,),
+        )
+        try:
+            c = TestClient(api_pg.app, base_url="https://testserver")
+            r = c.post(
+                "/api/auth/login",
+                json={"email": self.EMAIL, "password": self.PASSWORD},
+            )
+            self.assertEqual(r.status_code, 403, r.text)
+            self.assertEqual(r.json().get("detail"), "account_disabled")
+            self.assertNotIn("session_token", r.cookies)
+        finally:
+            api_pg._users_exec(
+                "UPDATE app_users SET status='active' WHERE user_id=%s",
+                (self.user_id,),
+            )
+
+    def test_locked_account_returns_throttle_response(self):
+        api_pg._users_exec(
+            "UPDATE app_users SET locked_until=now() + interval '5 minutes' "
+            "WHERE user_id=%s",
+            (self.user_id,),
+        )
+        try:
+            c = TestClient(api_pg.app, base_url="https://testserver")
+            r = c.post(
+                "/api/auth/login",
+                json={"email": self.EMAIL, "password": self.PASSWORD},
+            )
+            self.assertEqual(r.status_code, 429, r.text)
+            self.assertNotIn("session_token", r.cookies)
+        finally:
+            api_pg._users_exec(
+                "UPDATE app_users SET locked_until=NULL, failed_logins=0 "
+                "WHERE user_id=%s",
+                (self.user_id,),
+            )
+
+    def test_database_unavailability_returns_safe_503_and_stage_log(self):
+        c = TestClient(api_pg.app, base_url="https://testserver")
+        with (
+            mock.patch.object(api_pg, "_ensure_auth_schema", return_value=True),
+            mock.patch.object(
+                api_pg, "_users_tx", side_effect=RuntimeError("sensitive-driver-detail")
+            ),
+            mock.patch.object(api_pg.log, "error") as error_log,
+        ):
+            r = c.post(
+                "/api/auth/login",
+                json={"email": self.EMAIL, "password": self.PASSWORD},
+            )
+        self.assertEqual(r.status_code, 503, r.text)
+        self.assertIn("temporarily unavailable", r.json().get("detail", "").lower())
+        rendered_log = repr(error_log.call_args)
+        self.assertIn("stage=account_lookup", rendered_log)
+        self.assertIn("RuntimeError", rendered_log)
+        self.assertNotIn(self.EMAIL, rendered_log)
+        self.assertNotIn(self.PASSWORD, rendered_log)
+        self.assertNotIn("sensitive-driver-detail", rendered_log)
+
+    def test_preview_session_creation_failure_returns_safe_503(self):
+        c = TestClient(api_pg.app, base_url="https://testserver")
+        with mock.patch.object(
+            api_pg, "_create_session", side_effect=RuntimeError("session insert failed")
+        ), mock.patch.object(api_pg.log, "error") as error_log:
+            r = c.post(
+                "/api/auth/login",
+                json={"email": self.EMAIL, "password": self.PASSWORD},
+            )
+        self.assertEqual(r.status_code, 503, r.text)
+        self.assertNotIn("session_token", r.cookies)
+        self.assertIn("stage=session_create", repr(error_log.call_args))
 
     # ── Production mode (2FA required) ────────────────────────────────────────
 
@@ -118,6 +229,7 @@ class CookieOnlySessionTests(unittest.TestCase):
             verified = c.post("/api/auth/2fa/verify", json={"code": code})
             self.assertEqual(verified.status_code, 200, verified.text)
             self.assertIn("session_token", verified.cookies)
+            self.assertNotIn("token", verified.json())
 
             # Cookie-only /auth/me works after 2FA.
             me = c.get("/api/auth/me")
@@ -126,12 +238,52 @@ class CookieOnlySessionTests(unittest.TestCase):
         finally:
             api_pg._IS_PRODUCTION = orig
 
+    def test_production_challenge_creation_failure_returns_safe_503(self):
+        c = TestClient(api_pg.app, base_url="https://testserver")
+        with (
+            mock.patch.object(api_pg, "_IS_PRODUCTION", True),
+            mock.patch.object(
+                api_pg,
+                "_create_2fa_challenge",
+                side_effect=RuntimeError("challenge insert failed"),
+            ),
+            mock.patch.object(api_pg.log, "error") as error_log,
+        ):
+            r = c.post(
+                "/api/auth/login",
+                json={"email": self.EMAIL, "password": self.PASSWORD},
+            )
+        self.assertEqual(r.status_code, 503, r.text)
+        self.assertNotIn("session_token", r.cookies)
+        self.assertNotIn("staff_2fa_challenge", r.cookies)
+        self.assertIn("stage=challenge_create", repr(error_log.call_args))
+
     # ── Unauthenticated rejection (both modes) ────────────────────────────────
 
     def test_me_rejected_without_credentials(self):
         fresh = TestClient(api_pg.app)
         r = fresh.get("/api/auth/me")
         self.assertGreaterEqual(r.status_code, 401)
+
+    def test_cross_origin_preview_allows_credentialed_auth_requests(self):
+        c = TestClient(api_pg.app, base_url="https://testserver")
+        r = c.options(
+            "/api/auth/login",
+            headers={
+                "Origin": "http://localhost:5173",
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "content-type",
+            },
+        )
+        self.assertEqual(r.status_code, 200, r.text)
+        self.assertEqual(
+            r.headers.get("access-control-allow-origin"),
+            "http://localhost:5173",
+        )
+        self.assertEqual(
+            r.headers.get("access-control-allow-credentials"),
+            "true",
+        )
 
     def test_fabric_costing_gate_uses_cookie_identity_and_keeps_allowlist(self):
         """A stale browser Bearer cannot override the signed-in web identity."""
@@ -181,6 +333,25 @@ class CookieOnlySessionTests(unittest.TestCase):
         self.assertNotRegex(source, r"Authorization\s*['\"]?\s*[:=]")
         self.assertNotRegex(source, r"Bearer\s*[+'\"]")
         self.assertIn("credentials:'include'", source)
+
+class AuthSchemaReadinessTests(unittest.TestCase):
+    def setUp(self):
+        self.original_ready = api_pg._AUTH_SCHEMA_READY
+        api_pg._AUTH_SCHEMA_READY = False
+
+    def tearDown(self):
+        api_pg._AUTH_SCHEMA_READY = self.original_ready
+
+    def test_partial_schema_failure_is_retried_then_cached(self):
+        with mock.patch.object(
+            api_pg,
+            "_ensure_users_table",
+            side_effect=[RuntimeError("legacy schema incomplete"), None],
+        ) as ensure:
+            self.assertFalse(api_pg._ensure_auth_schema())
+            self.assertTrue(api_pg._ensure_auth_schema())
+            self.assertTrue(api_pg._ensure_auth_schema())
+        self.assertEqual(ensure.call_count, 2)
 
 
 if __name__ == "__main__":

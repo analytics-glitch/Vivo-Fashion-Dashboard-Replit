@@ -19,7 +19,13 @@ const sameOrigin = (() => {
 })();
 
 export const API = sameOrigin ? "/api" : `${BACKEND_URL}/api`;
-export const api = axios.create({ baseURL: API, timeout: 120000 });
+export const api = axios.create({
+  baseURL: API,
+  timeout: 120000,
+  // Required when preview falls back to a different trusted API origin.
+  // Same-origin production requests are unaffected.
+  withCredentials: true,
+});
 
 // ---------------------------------------------------------------------------
 // Cache-busting + inflight de-dup + short-lived response cache
