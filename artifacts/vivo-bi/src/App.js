@@ -292,7 +292,7 @@ function App() {
                 <Route path="/range-mgmt" element={<Navigate to="/product-analysis?tab=range" replace />} />
                 <Route path="/footfall" element={<ProtectedShell pageId="footfall"><Footfall /></ProtectedShell>} />
                 <Route path="/trend-analysis" element={<ProtectedShell pageId="trend-analysis"><TrendAnalysis /></ProtectedShell>} />
-                <Route path="/product-analysis" element={<ProtectedShell anyOfPageIds={["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "pd-flow"]}><ProductAnalysis /></ProtectedShell>} />
+                <Route path="/product-analysis" element={<ProtectedShell anyOfPageIds={["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "style-library", "exports", "pd-flow"]}><ProductAnalysis /></ProtectedShell>} />
                 <Route path="/targets" element={<ProtectedShell anyOfPageIds={["targets", "quarter-scorecard"]}><TargetsHub /></ProtectedShell>} />
                 <Route path="/quarter-scorecard" element={<Navigate to="/targets?tab=quarter" replace />} />
                 <Route path="/re-order" element={<Navigate to="/product-analysis?tab=reorder" replace />} />

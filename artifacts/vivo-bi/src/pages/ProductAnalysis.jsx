@@ -1509,6 +1509,7 @@ const AllocationsTab = React.lazy(() => import("./Allocations"));
 const ReOrderTab = React.lazy(() => import("./ReOrder"));
 const StyleTrackerTab = React.lazy(() => import("./StyleTracker"));
 const CatalogueTab = React.lazy(() => import("./ProductCatalogue"));
+const StyleLibraryTab = React.lazy(() => import("./StyleLibrary"));
 const SORReportTab = React.lazy(() => import("@/components/SORReportExport"));
 const RetiredStockTab = React.lazy(() => import("@/components/RetiredStockReport"));
 const PDFlowTab = React.lazy(() => import("./PDFlow"));
@@ -1516,7 +1517,7 @@ const ProductsPlanTab = React.lazy(() => import("@/components/ProductsPlan"));
 
 export const PA_TAB_PAGE_IDS = [
   "product-analysis", "production", "range-mgmt", "allocations", "re-order",
-  "style-tracker", "gallery", "exports", "pd-flow",
+  "style-tracker", "gallery", "style-library", "exports", "pd-flow",
 ];
 
 const ProductionOverviewTab = React.lazy(() => import("./ProductionOverview"));
@@ -1538,6 +1539,7 @@ const PA_TABS = [
   { id: "allocations", label: "Allocations", pageId: "allocations", el: AllocationsTab },
   { id: "reorder", label: "Re-Order", pageId: "re-order", el: ReOrderTab },
   { id: "gallery", label: "Product Catalogue", pageId: "gallery", el: CatalogueTab },
+  { id: "style-library", label: "Style Library", pageId: "style-library", el: StyleLibraryTab },
 ];
 
 const ProductAnalysisPage = () => {

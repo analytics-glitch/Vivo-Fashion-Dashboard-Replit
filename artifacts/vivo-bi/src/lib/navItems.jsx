@@ -64,8 +64,8 @@ export const PRIMARY_NAV = [
   // "Operations & Production" group below.
   {
     to: "/product-analysis", label: "Product Development", icon: ChartBar, id: "product-analysis",
-    anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "exports", "pd-flow"],
-    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Style Launch Planner, PD Flow, Catalog & SOR, SOR Report, Retired Stock, Allocations, Re-Order and Product Catalogue tabs",
+    anyOfPageIds: ["product-analysis", "production", "range-mgmt", "allocations", "re-order", "style-tracker", "gallery", "style-library", "exports", "pd-flow"],
+    group: "Products & Range", desc: "Product development hub — Style Cockpit, Range Management, Style Launch Planner, PD Flow, Catalog & SOR, Style Library, SOR Report, Retired Stock, Allocations, Re-Order and Product Catalogue tabs",
     subReports: [
       { pageId: "product-analysis", label: "Style Cockpit & Catalog" },
       { pageId: "range-mgmt",       label: "Range Management" },
@@ -75,6 +75,7 @@ export const PRIMARY_NAV = [
       { pageId: "allocations",      label: "Allocations" },
       { pageId: "re-order",         label: "Re-Order" },
       { pageId: "gallery",          label: "Product Catalogue" },
+      { pageId: "style-library",    label: "Style Library" },
       { pageId: "exports",          label: "SOR Report" },
     ],
   },

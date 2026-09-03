@@ -983,7 +983,7 @@ _MERCH_PAGES = ["merchandising", "merch-overview", "merch-sales", "merch-invento
 _LEADERSHIP_PAGES = _dedup(_VIEWER_PAGES + ["exec-summary", "targets", "quarter-scorecard", "product-analysis", "range-mgmt", "size-health", "inventory", "warehouse-returns", "excess-inventory", "rebalancing", "store-flow", "marketing", "social", "crm", "order-explorer", "data-quality", "custom-report", "exports", "hr", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "finance", "margin", "l10", "rota", "growth", "retail-desk", "day-review", "product-desk", "workforce-desk", "customer-desk", "marketing-desk", "supply-chain-desk", "production-desk", "the-chair", "quality", "store-profiling", "store-feedback", "central-tracker", "community-app", "atelier"] + _MERCH_PAGES)
 
 DEFAULT_ROLE_PAGES = {
-    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
+    "product_development": ["product-analysis", "range-mgmt", "catalogue", "gallery", "style-library", "inventory", "size-health", "data-quality", "fabric", "exports", "production", "production-workspace", "production-report", "style-tracker", "pd-flow", "product-workspace", "partner-brands", "sops", "central-tracker"] + _MERCH_PAGES,
     "retail": ["store-flow", "overview", "exec-summary", "locations", "footfall", "store-profiling", "trend-analysis", "customers", "product-analysis", "gallery", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "exports", "partner-brands", "sops", "ask", "store-feedback", "store-stock-requests", "atelier"],
     "warehouse": ["store-flow", "inventory", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "re-order", "allocations", "data-quality", "exports", "sops", "store-stock-requests"],
     "store_manager": ["overview", "store-flow", "locations", "footfall", "store-profiling", "replenishments", "replenish-by-item", "warehouse-returns", "excess-inventory", "ibt", "rebalancing", "sops", "store-feedback", "store-stock-requests"],
@@ -1955,6 +1955,30 @@ async def clerk_auth_gate(request: Request, call_next):
         return JSONResponse({"detail": "account_disabled"}, status_code=403)
     if status != "active":
         return JSONResponse({"detail": "account_inactive"}, status_code=403)
+
+    if path == "/api/style-library" and request.method == "POST":
+        # FastAPI resolves Form/File dependencies before entering the handler.
+        # Require and cap Content-Length here so an oversized/chunked multipart
+        # body cannot be parsed or spooled before the 5 MB photo check runs.
+        raw_length = request.headers.get("content-length")
+        if not raw_length:
+            return JSONResponse(
+                {"detail": "Content-Length is required for Style Library uploads"},
+                status_code=411)
+        try:
+            body_length = int(raw_length)
+        except (TypeError, ValueError):
+            return JSONResponse({"detail": "Invalid Content-Length"}, status_code=400)
+        if body_length > STYLE_LIBRARY_MAX_REQUEST_BYTES:
+            return JSONResponse(
+                {"detail": "Upload is too large (maximum photo size is 5 MB)"},
+                status_code=413)
+
+    # Style Library is a separately grantable Product Development surface.
+    # Viewing follows the page grant; creation is intentionally narrower and is
+    # checked again in the handler so client-side controls cannot widen it.
+    if path.startswith("/api/style-library") and not _style_library_can_view(user):
+        return JSONResponse({"detail": "Style Library access requires a page grant"}, status_code=403)
 
     # Employee self-service fence: the auto-approved "employee" role exists ONLY
     # to apply for salary advances. Everything except the salary-advance
@@ -4267,6 +4291,24 @@ def _effective_pages_for_role(role):
     if role in ov:
         return ov[role]
     return _default_pages_for_role(role)
+
+
+def _style_library_can_view(user):
+    """The library is a separately grantable page, not an alias for Gallery."""
+    if not user:
+        return False
+    if (user.get("role") or "").lower() == "admin":
+        return True
+    pages = user.get("allowed_pages")
+    if not isinstance(pages, list):
+        pages = _effective_pages_for_role(user.get("role"))
+    return "style-library" in pages
+
+
+def _style_library_can_create(user):
+    return _style_library_can_view(user) and (
+        (user.get("role") or "").lower() in ("product_development", "admin")
+    )
 
 
 def _apply_extra_pages(u):
@@ -8262,6 +8304,402 @@ def get_gallery_facets():
     out = {"categories": ordered, "brands": brands}
     cache_set(ck, out, ttl=600)
     return out
+
+
+# ── Style Library ──────────────────────────────────────────────────────────────
+# This is deliberately not part of all_products_clean or any Odoo/workspace
+# table. It is a small, hand-maintained catalogue for proposed styles.
+STYLE_LIBRARY_BRANDS = ("Vivo", "Safari", "Zoya")
+STYLE_LIBRARY_STATUSES = ("Active", "Retired")
+STYLE_LIBRARY_MAX_PHOTO_BYTES = 5 * 1024 * 1024
+STYLE_LIBRARY_MAX_REQUEST_BYTES = 6 * 1024 * 1024
+STYLE_LIBRARY_MAX_PIXELS = 25_000_000
+STYLE_LIBRARY_TAXONOMY = {
+    "Tops": (
+        "Bodysuits", "Fitted Tops", "Kaftan Tops", "Loose & Oversized Tops",
+        "Loose Tops", "Midriff & Crop Tops", "Relaxed Tops",
+        "T-shirts & Tank Tops",
+    ),
+    "Dresses": (
+        "Kaftan Dresses", "Knee Length Dresses", "Maxi Dresses",
+        "Midi & Capri Dresses", "Short & Mini Dresses",
+    ),
+    "Bottoms": (
+        "Culottes & Capri Pants", "Full Length Pants", "Jumpsuits & Playsuits",
+        "Leggings", "Shorts & Skorts",
+    ),
+    "Outerwear": (
+        "Hoodies & Sweatshirts", "Jackets & Coats", "Sweaters & Ponchos",
+        "Waterfalls & Kimonos",
+    ),
+    "Skirts": (
+        "Knee Length Skirts", "Maxi Skirts", "Midi & Capri Skirts",
+        "Short & Mini Skirts",
+    ),
+    "Men's": ("Men's Tops", "Men's Bottoms", "Men's Outerwear"),
+    "Accessories": (
+        "Accessories", "Bangles & Bracelets", "Belts",
+        "Body Mists & Fragrances", "Earrings", "Necklaces", "Rings", "Scarves",
+    ),
+}
+STYLE_LIBRARY_IMAGE_SIGNATURES = {
+    "image/jpeg": lambda b: b[:3] == b"\xff\xd8\xff",
+    "image/png": lambda b: b[:8] == b"\x89PNG\r\n\x1a\n",
+    "image/webp": lambda b: b[:4] == b"RIFF" and b[8:12] == b"WEBP",
+}
+_STYLE_LIBRARY_SCHEMA_READY = False
+_STYLE_LIBRARY_SCHEMA_LOCK = threading.Lock()
+
+
+def _ensure_style_library_table():
+    global _STYLE_LIBRARY_SCHEMA_READY
+    if _STYLE_LIBRARY_SCHEMA_READY:
+        return
+    with _STYLE_LIBRARY_SCHEMA_LOCK:
+        if _STYLE_LIBRARY_SCHEMA_READY:
+            return
+        conn = get_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS style_library (
+                    id BIGSERIAL PRIMARY KEY,
+                    style_name TEXT NOT NULL,
+                    style_number TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    sub_category TEXT NOT NULL,
+                    fabric TEXT NOT NULL,
+                    brand TEXT NOT NULL CHECK (brand IN ('Vivo', 'Safari', 'Zoya')),
+                    status TEXT NOT NULL CHECK (status IN ('Active', 'Retired')),
+                    launch_date DATE,
+                    adoption_date DATE,
+                    photo_bytes BYTEA NOT NULL,
+                    photo_content_type TEXT NOT NULL,
+                    photo_filename TEXT,
+                    created_by TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+                )
+            """)
+            cur.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS style_library_style_number_uq "
+                "ON style_library (LOWER(TRIM(style_number)))")
+            cur.execute(
+                "CREATE INDEX IF NOT EXISTS style_library_browse_idx "
+                "ON style_library (status, category, sub_category, created_at DESC)")
+            cur.close()
+            _STYLE_LIBRARY_SCHEMA_READY = True
+        finally:
+            conn.close()
+
+
+def _style_library_image_url(style_id):
+    return f"/api/style-library/image/{int(style_id)}"
+
+
+def _style_library_public_row(row, include_audit=False):
+    out = {
+        "id": int(row["id"]),
+        "style_name": row["style_name"],
+        "style_number": row["style_number"],
+        "category": row["category"],
+        "sub_category": row["sub_category"],
+        "fabric": row["fabric"],
+        "brand": row["brand"],
+        "status": row["status"],
+        "launch_date": row["launch_date"].isoformat() if row.get("launch_date") else None,
+        "adoption_date": row["adoption_date"].isoformat() if row.get("adoption_date") else None,
+        "image_url": _style_library_image_url(row["id"]),
+    }
+    if include_audit:
+        out["created_by"] = row.get("created_by")
+        out["created_at"] = row["created_at"].isoformat() if row.get("created_at") else None
+    return out
+
+
+def _style_library_parse_date(value, label):
+    value = (value or "").strip()
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(value)
+    except ValueError:
+        raise HTTPException(status_code=422, detail=f"{label} must be a valid date (YYYY-MM-DD)")
+
+
+def _style_library_validate_fields(style_name, style_number, category, sub_category,
+                                   fabric, brand, status, launch_date, adoption_date):
+    values = {
+        "Style Name": style_name, "Style Number": style_number, "Category": category,
+        "Sub Category": sub_category, "Fabric": fabric,
+    }
+    cleaned = {}
+    for label, value in values.items():
+        text = (value or "").strip()
+        if not text:
+            raise HTTPException(status_code=422, detail=f"{label} is required")
+        if len(text) > 200:
+            raise HTTPException(status_code=422, detail=f"{label} must be 200 characters or fewer")
+        cleaned[label] = text
+    if brand not in STYLE_LIBRARY_BRANDS:
+        raise HTTPException(status_code=422, detail="Brand must be Vivo, Safari or Zoya")
+    if status not in STYLE_LIBRARY_STATUSES:
+        raise HTTPException(status_code=422, detail="Status must be Active or Retired")
+    if category not in STYLE_LIBRARY_TAXONOMY:
+        raise HTTPException(status_code=422, detail="Choose a valid category")
+    if sub_category not in STYLE_LIBRARY_TAXONOMY[category]:
+        raise HTTPException(status_code=422, detail="Sub Category must match the selected Category")
+    launch = _style_library_parse_date(launch_date, "Launch Date")
+    adoption = _style_library_parse_date(adoption_date, "Adoption Date")
+    if launch and adoption and adoption < launch:
+        raise HTTPException(status_code=422, detail="Adoption Date cannot be before Launch Date")
+    return (
+        cleaned["Style Name"], cleaned["Style Number"], category, sub_category,
+        cleaned["Fabric"], brand, status, launch, adoption,
+    )
+
+
+def _style_library_photo_type(upload_type, photo_bytes):
+    detected = None
+    for content_type, check in STYLE_LIBRARY_IMAGE_SIGNATURES.items():
+        if check(photo_bytes):
+            detected = content_type
+            break
+    if not detected:
+        raise HTTPException(status_code=422, detail="Photo must be a valid JPG, PNG or WebP image")
+    supplied = (upload_type or "").lower().split(";", 1)[0].strip()
+    if supplied and supplied not in ("image/jpg", detected):
+        raise HTTPException(status_code=422, detail="Photo type does not match its file contents")
+    return detected
+
+
+def _style_library_normalize_photo(photo_bytes, detected_type):
+    """Fully decode and re-encode an upload, stripping metadata/polyglot bytes."""
+    import io
+    import warnings
+    from PIL import Image, ImageOps
+
+    expected_format = {
+        "image/jpeg": "JPEG", "image/png": "PNG", "image/webp": "WEBP",
+    }[detected_type]
+    try:
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", Image.DecompressionBombWarning)
+            with Image.open(io.BytesIO(photo_bytes)) as opened:
+                if opened.format != expected_format:
+                    raise ValueError("decoded format mismatch")
+                width, height = opened.size
+                if width < 1 or height < 1 or width > 10_000 or height > 10_000:
+                    raise ValueError("invalid image dimensions")
+                if width * height > STYLE_LIBRARY_MAX_PIXELS:
+                    raise ValueError("image pixel count exceeds limit")
+                opened.load()
+                image = ImageOps.exif_transpose(opened)
+                image.seek(0)
+                if detected_type == "image/jpeg":
+                    image = image.convert("RGB")
+                elif image.mode not in ("RGB", "RGBA"):
+                    image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
+                out = io.BytesIO()
+                if detected_type == "image/jpeg":
+                    image.save(out, format="JPEG", quality=90, optimize=True)
+                elif detected_type == "image/png":
+                    image.save(out, format="PNG", optimize=True)
+                else:
+                    image.save(out, format="WEBP", quality=90, method=4)
+    except (Image.UnidentifiedImageError, Image.DecompressionBombError, OSError, ValueError):
+        raise HTTPException(
+            status_code=422,
+            detail="Photo could not be decoded safely; choose a valid JPG, PNG or WebP image")
+    normalized = out.getvalue()
+    if not normalized or len(normalized) > STYLE_LIBRARY_MAX_PHOTO_BYTES:
+        raise HTTPException(
+            status_code=422,
+            detail="Processed photo is too large (maximum 5 MB)")
+    return normalized
+
+
+@_deferred_startup
+def _init_style_library_table():
+    try:
+        _ensure_style_library_table()
+        log.info("Style Library table ensured")
+    except Exception as exc:
+        log.error("Style Library table init failed: %s", type(exc).__name__)
+
+
+@app.get("/api/style-library/facets")
+def get_style_library_facets():
+    _ensure_style_library_table()
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute("""
+            SELECT category, sub_category, fabric, brand, status, COUNT(*) AS count
+            FROM style_library
+            GROUP BY category, sub_category, fabric, brand, status
+            ORDER BY category, sub_category, fabric, brand, status
+        """)
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    cats = {}
+    for row in rows:
+        cat = cats.setdefault(row["category"], {"name": row["category"], "sub_categories": []})
+        sub = next((s for s in cat["sub_categories"] if s["name"] == row["sub_category"]), None)
+        if not sub:
+            sub = {"name": row["sub_category"], "count": 0}
+            cat["sub_categories"].append(sub)
+        sub["count"] += int(row["count"] or 0)
+    return {
+        "categories": list(cats.values()),
+        "fabrics": sorted({row["fabric"] for row in rows}),
+        "brands": list(STYLE_LIBRARY_BRANDS),
+        "statuses": list(STYLE_LIBRARY_STATUSES),
+    }
+
+
+@app.get("/api/style-library/search")
+def search_style_library(
+    q: str = Query(default=""),
+    category: str = Query(default=""),
+    sub_category: str = Query(default=""),
+    fabric: str = Query(default=""),
+    brand: str = Query(default=""),
+    status: str = Query(default=""),
+    limit: int = Query(default=48),
+    offset: int = Query(default=0),
+):
+    _ensure_style_library_table()
+    limit = max(1, min(int(limit or 48), 96))
+    offset = max(0, int(offset or 0))
+    clauses, params = [], []
+    term = (q or "").strip()
+    if term:
+        clauses.append(
+            "(style_name ILIKE %s OR style_number ILIKE %s OR category ILIKE %s "
+            "OR sub_category ILIKE %s OR fabric ILIKE %s OR brand ILIKE %s)")
+        like = f"%{term}%"
+        params.extend([like] * 6)
+    for column, value in (
+        ("category", category), ("sub_category", sub_category),
+        ("fabric", fabric), ("brand", brand), ("status", status),
+    ):
+        if (value or "").strip():
+            clauses.append(f"{column} = %s")
+            params.append(value.strip())
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT id, style_name, style_number, category, sub_category, fabric, brand, "
+            "status, launch_date, adoption_date FROM style_library" + where +
+            " ORDER BY created_at DESC, id DESC LIMIT %s OFFSET %s",
+            params + [limit + 1, offset])
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    has_more = len(rows) > limit
+    return {
+        "items": [_style_library_public_row(row) for row in rows[:limit]],
+        "has_more": has_more, "limit": limit, "offset": offset,
+    }
+
+
+@app.post("/api/style-library")
+async def create_style_library_style(
+    request: Request,
+    style_name: str = Form(...),
+    style_number: str = Form(...),
+    category: str = Form(...),
+    sub_category: str = Form(...),
+    fabric: str = Form(...),
+    brand: str = Form(...),
+    status: str = Form(...),
+    launch_date: str = Form(default=""),
+    adoption_date: str = Form(default=""),
+    photo: UploadFile = File(...),
+):
+    user = getattr(request.state, "user", None) or {}
+    if not _style_library_can_create(user):
+        raise HTTPException(status_code=403, detail="Only Product Development users can add styles")
+    _ensure_style_library_table()
+    fields = _style_library_validate_fields(
+        style_name, style_number, category, sub_category, fabric, brand, status,
+        launch_date, adoption_date)
+    photo_bytes = await photo.read(STYLE_LIBRARY_MAX_PHOTO_BYTES + 1)
+    if not photo_bytes:
+        raise HTTPException(status_code=422, detail="Photo is required")
+    if len(photo_bytes) > STYLE_LIBRARY_MAX_PHOTO_BYTES:
+        raise HTTPException(status_code=422, detail="Photo is too large (maximum 5 MB)")
+    photo_type = _style_library_photo_type(photo.content_type, photo_bytes)
+    photo_bytes = _style_library_normalize_photo(photo_bytes, photo_type)
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        try:
+            cur.execute("""
+                INSERT INTO style_library
+                    (style_name, style_number, category, sub_category, fabric, brand,
+                     status, launch_date, adoption_date, photo_bytes, photo_content_type,
+                     photo_filename, created_by)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                RETURNING id, style_name, style_number, category, sub_category, fabric,
+                          brand, status, launch_date, adoption_date, created_by, created_at
+            """, fields + (
+                psycopg2.Binary(photo_bytes), photo_type,
+                (photo.filename or "")[:255], user.get("id") or user.get("user_id") or "unknown",
+            ))
+            row = cur.fetchone()
+            conn.commit()
+        except psycopg2.errors.UniqueViolation:
+            conn.rollback()
+            raise HTTPException(status_code=409, detail="That Style Number already exists")
+    finally:
+        conn.close()
+    return _style_library_public_row(row, include_audit=True)
+
+
+@app.get("/api/style-library/image/{style_id}")
+def get_style_library_image(style_id: int):
+    _ensure_style_library_table()
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT photo_bytes, photo_content_type FROM style_library WHERE id=%s",
+            (style_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Style Library image not found")
+    return Response(
+        content=bytes(row[0]), media_type=row[1],
+        headers={
+            "Cache-Control": "private, max-age=86400",
+            "X-Content-Type-Options": "nosniff",
+        })
+
+
+@app.get("/api/style-library/{style_id}")
+def get_style_library_style(style_id: int):
+    _ensure_style_library_table()
+    conn = get_conn()
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(
+            "SELECT id, style_name, style_number, category, sub_category, fabric, brand, "
+            "status, launch_date, adoption_date, created_by, created_at "
+            "FROM style_library WHERE id=%s", (style_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        raise HTTPException(status_code=404, detail="Style Library style not found")
+    return _style_library_public_row(row, include_audit=True)
 
 
 # Garment size ladder for the catalogue popup's size table. Unknown sizes sort
