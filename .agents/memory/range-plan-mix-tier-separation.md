@@ -38,3 +38,9 @@ Weekly Order Plan lines must be created only by selecting a confirmed Style Deve
 **Why:** Re-keying style names, numbers, and taxonomy caused missing and conflicting identifiers and made weekly orders impossible to reconcile reliably to the monthly plan.
 
 **How to apply:** Never add free-text style creation to the weekly plan. Missing styles must be created and numbered in Style Development first. Confirming locks only the weekly target; it does not create, date, or roll up an actual order. Generate target references under a locked week row as `W<week><three-digit sequence>`.
+
+Product Workspace must consume shared commercial facts through the BI-owned internal contract, not by reading BI replica tables or duplicating formulas. Style Development history and planning intent remain Workspace-owned.
+
+**Why:** Parallel Workspace calculations drifted from BI lifecycle, stock, trading, order, and COGS definitions while still appearing authoritative.
+
+**How to apply:** Route style master, lifecycle, stock/WIP, sales, revenue, ASP, SOR/sell-through, WOC, full-price %, recency, fabric availability, dated orders, and Input COGS through BI. Fail visibly when BI or a reconciliation is unavailable; never fall back to local calculations. Input COGS uses VAT-exclusive price and blended COGS is weighted by planned units.

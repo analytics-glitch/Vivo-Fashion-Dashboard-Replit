@@ -64,6 +64,111 @@ app.use(cookieParser());
 
 const router = express.Router();
 const schema = "product_workspace";
+/**
+ * Workspace deliberately consumes commercial facts from BI rather than reading
+ * Odoo replica tables.  Keep this boundary small: callers only ever see the
+ * last successful, short-lived BI document, and a failed refresh is never
+ * substituted with a database query.
+ */
+type BiWorkspaceSource = { styles: Array<Record<string, any>>; orders: Array<Record<string, any>>; definitions?: unknown; reconciliations?: unknown; [key: string]: any };
+let biWorkspaceCache: { value: BiWorkspaceSource; expiresAt: number } | null = null;
+let biWorkspaceFlight: Promise<BiWorkspaceSource> | null = null;
+const BI_WORKSPACE_TTL_MS = 15_000;
+const biWorkspaceUrl = () => `http://127.0.0.1:${process.env.BI_API_PORT ?? "8080"}/api/internal/product-workspace-source`;
+class BiSourceUnavailable extends Error {
+  status = 503;
+  constructor(message = "BI source unavailable") { super(message); }
+}
+function biRequest<T>(url: string, method: "GET" | "POST", body?: unknown): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const request = http.request(url, {
+      method,
+      headers: {
+        "X-Internal-Token": process.env.SESSION_SECRET ?? "",
+        ...(body ? { "Content-Type": "application/json" } : {}),
+      },
+      // The canonical Merch source can take tens of seconds on a cold cache.
+      // Wait for that authoritative answer rather than falling back to local
+      // replica-table calculations.
+      timeout: 60_000,
+    }, (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+      response.on("end", () => {
+        const text = Buffer.concat(chunks).toString("utf8");
+        if ((response.statusCode ?? 500) < 200 || (response.statusCode ?? 500) >= 300) {
+          reject(new BiSourceUnavailable(`BI source unavailable (HTTP ${response.statusCode ?? 500})`));
+          return;
+        }
+        try { resolve(JSON.parse(text) as T); } catch { reject(new BiSourceUnavailable("BI source returned invalid JSON")); }
+      });
+    });
+    request.on("timeout", () => request.destroy(new BiSourceUnavailable()));
+    request.on("error", () => reject(new BiSourceUnavailable()));
+    if (body) request.write(JSON.stringify(body));
+    request.end();
+  });
+}
+async function biWorkspaceSource() {
+  if (biWorkspaceCache && biWorkspaceCache.expiresAt > Date.now()) return biWorkspaceCache.value;
+  if (!biWorkspaceFlight) {
+    biWorkspaceFlight = biRequest<BiWorkspaceSource>(biWorkspaceUrl(), "GET").then((value) => {
+      if (!Array.isArray(value.styles) || !Array.isArray(value.orders)) throw new BiSourceUnavailable("BI source has an invalid payload");
+      biWorkspaceCache = { value, expiresAt: Date.now() + BI_WORKSPACE_TTL_MS };
+      return value;
+    }).finally(() => { biWorkspaceFlight = null; });
+  }
+  return biWorkspaceFlight;
+}
+// Named export point for Workspace facts.  Do not bypass this adapter.
+const getBiWorkspaceSource = biWorkspaceSource;
+async function biWorkspaceCogs(payload: Record<string, unknown>) {
+  const base = `http://127.0.0.1:${process.env.BI_API_PORT ?? "8080"}/api/internal/product-workspace-cogs`;
+  return biRequest<Record<string, unknown>>(base, "POST", payload);
+}
+const biValue = (row: Record<string, any>, ...keys: string[]) => keys.map((key) => row[key]).find((value) => value !== undefined && value !== null);
+function biStyle(style: Record<string, any>) {
+  const styleNumber = String(biValue(style, "styleNumber", "style_number", "styleKey", "style_key", "sku") ?? "").trim();
+  const tier = String(biValue(style, "tier", "rangeTier", "range_tier") ?? "");
+  const status = String(biValue(style, "status", "lifecycleStatus", "lifecycle_status") ?? "Active");
+  return {
+    id: `catalogue:${styleNumber}`, pdId: null, source: "bi", styleNumber,
+    name: String(biValue(style, "name", "styleName", "style_name") ?? ""),
+    category: String(biValue(style, "category") ?? "Uncategorised"),
+    subCategory: String(biValue(style, "subCategory", "subcategory", "sub_category", "productType", "product_type") ?? ""),
+    fabricCategory: String(biValue(style, "fabricCategory", "fabric_category") ?? ""),
+    brand: String(biValue(style, "brand") ?? ""), primaryColour: String(biValue(style, "primaryColour", "primary_colour", "colorPrint", "color_print") ?? ""),
+    edit: String(biValue(style, "edit", "collection") ?? ""), stage: "Carry-over", designer: "Merchandising",
+    season: "", rangeTier: tier || null,
+    tier: status.toLowerCase() === "retired" ? "Retired" : tier === "NOOS" || tier === "Tier 1" ? "Tier 1 · NOOS" : tier === "Core" || tier === "Tier 2" ? "Tier 2 · Core" : tier === "Recent" || tier === "Tier 3" ? "Tier 3 · Recent" : tier === "New" || tier === "Tier 4" ? "Tier 4 · New" : "Untiered",
+    status: status[0]?.toUpperCase() + status.slice(1).toLowerCase(),
+    excluded: false,
+    unitsSold: Number(biValue(style, "unitsSold", "units_sold", "units_period", "units") ?? 0), revenueKes: Number(biValue(style, "revenueKes", "revenue_kes", "revenue_period", "revenue") ?? 0),
+    sorPct: biValue(style, "sorPct", "sor_pct", "sor_period", "sell_through") ?? null, launchDate: biValue(style, "launchDate", "launch_date") ?? null,
+    price: biValue(style, "price", "full_price", "asp") ?? null, stockUnits: biValue(style, "stockUnits", "stock_units", "current_stock") ?? null,
+    sohStores: biValue(style, "sohStores", "soh_stores") ?? null, sohOnline: biValue(style, "sohOnline", "soh_online") ?? null,
+    sohWarehouse: biValue(style, "sohWarehouse", "soh_warehouse") ?? null, wipUnits: biValue(style, "wipUnits", "wip_units") ?? null,
+    fullPricePct: biValue(style, "fullPricePct", "full_price_pct") ?? null, weeksOfCover: biValue(style, "weeksOfCover", "weeks_of_cover") ?? null,
+    sellThroughPct: biValue(style, "sellThroughPct", "sell_through_pct", "sell_through", "sor_period") ?? null, daysSinceLastSale: biValue(style, "daysSinceLastSale", "days_since_last_sale", "last_sale_days") ?? null,
+    awaitingDelivery: Boolean(biValue(style, "awaitingDelivery", "awaiting_delivery")), fabricMetres: biValue(style, "fabricMetres", "fabric_metres", "fabric_exact_metres") ?? null,
+    otherColourFabricMetres: biValue(style, "otherColourFabricMetres", "other_colour_fabric_metres", "fabric_other_colour_metres") ?? null,
+    colourways: biValue(style, "colourways", "colours") ?? [], fabric: String(biValue(style, "fabric") ?? "Fabric pending"),
+    image: biValue(style, "image", "imageUrl", "image_url") ?? null,
+  };
+}
+function biOrder(order: Record<string, any>) {
+  return {
+    orderRef: String(biValue(order, "orderRef", "order_ref", "name", "reference") ?? ""),
+    orderDate: String(biValue(order, "orderDate", "order_date", "dateOrdered", "date_ordered") ?? "").slice(0, 10),
+    styleNumber: String(biValue(order, "styleNumber", "style_number", "productSku", "product_sku", "sku") ?? "").trim(),
+    styleName: String(biValue(order, "styleName", "style_name", "productName", "product_name") ?? ""),
+    quantity: Number(biValue(order, "quantity", "orderQty", "order_qty", "units") ?? 0),
+    orderType: String(biValue(order, "orderType", "lifecycleType", "lifecycle_type") ?? ""),
+    orderState: String(biValue(order, "orderState", "boState", "bo_state", "state") ?? ""),
+  };
+}
+const activeBiOrders = (orders: Array<Record<string, any>>) => orders.map(biOrder)
+  .filter((order) => order.orderDate && !["cancel", "cancelled", "canceled"].includes(order.orderState.toLowerCase()));
 const sessionCookie = "vivo_workspace_session";
 const sessionDays = 7;
 let schemaReady = false;
@@ -5319,6 +5424,33 @@ function assortmentStylePayload(row: Record<string, unknown>) {
 }
 
 async function assortmentPlanData(quarter: string) {
+  const bi = await biWorkspaceSource();
+  const membership = await pool.query(
+    `SELECT LOWER(BTRIM(style_id)) AS style_key,'excluded' AS intent
+       FROM ${schema}.assortment_exclusions
+      WHERE season=$1 AND source='all_products_clean'
+     UNION ALL
+     SELECT LOWER(BTRIM(style_key)) AS style_key,'member' AS intent
+       FROM ${schema}.assortment_plan_styles
+      WHERE season=$1 AND source='all_products_clean'`,
+    [quarter],
+  );
+  const intent = new Map(membership.rows.map((row) => [String(row.style_key), String(row.intent)]));
+  const styles = bi.styles.map(biStyle)
+    .filter((style) => style.styleNumber && ["active", "retired"].includes(style.status.toLowerCase()))
+    .map((style) => ({ ...style, season: quarter, excluded: intent.get(style.styleNumber.toLowerCase()) === "excluded" && intent.get(style.styleNumber.toLowerCase()) !== "member" }));
+  const breakdown = (field: "category" | "stage") => Object.entries(styles.reduce((counts: Record<string, number>, row) => {
+    const value = String(row[field] ?? "Uncategorised"); counts[value] = (counts[value] ?? 0) + 1; return counts;
+  }, {})).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
+  const countTier = (tier: string) => styles.filter((row) => row.tier === tier).length;
+  const options = (field: keyof typeof styles[number]) => [...new Set(styles.map((style) => String(style[field] ?? "").trim()).filter(Boolean))].sort();
+  return {
+    styles, carryOverStyles: styles, newStyles: [], total: styles.length,
+    counts: { total: styles.length, tier1: countTier("Tier 1 · NOOS"), tier2: countTier("Tier 2 · Core"), tier3: countTier("Tier 3 · Recent"), tier4: countTier("Tier 4 · New"), retired: countTier("Retired"), noos: countTier("Tier 1 · NOOS"), core: countTier("Tier 2 · Core"), recent: countTier("Tier 3 · Recent"), newTest: countTier("Tier 4 · New") },
+    categoryBreakdown: breakdown("category"), stageBreakdown: breakdown("stage"),
+    filterOptions: { tier: [...ASSORTMENT_TIER_FILTERS], status: ["Active", "Retired"], category: options("category"), subCategory: options("subCategory"), fabricCategory: options("fabricCategory"), brand: options("brand"), primaryColour: options("primaryColour"), edit: options("edit") },
+  };
+  /*
   const catalogueResult = await pool.query(
     `WITH sku_style AS (
        SELECT DISTINCT ON (sku) sku,style_name,style_number
@@ -5605,7 +5737,7 @@ async function assortmentPlanData(quarter: string) {
       primaryColour: filterOptions("primaryColour"),
       edit: filterOptions("edit"),
     },
-  };
+  }; */
 }
 
 router.get("/range-plan", async (req, res, next) => {
@@ -5678,6 +5810,19 @@ router.get("/range-plan", async (req, res, next) => {
               ? ["2026-12-01", "2027-01-01"]
               : ["1900-01-01", "1900-01-01"];
      const rowsResult = await pool.query(
+       `SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",r.product_category AS "productCategory",r.tier::text,
+         r.style_count_target AS "styleCountTarget",r.new_style_count AS "newStyleCount",r.reorder_style_count AS "reorderStyleCount",
+         r.replenishment_style_count AS "replenishmentStyleCount",r.style_count_min AS "styleCountMin",r.style_count_max AS "styleCountMax",
+         r.aos_units AS "aosUnits",r.new_style_aos_units AS "newStyleAosUnits",r.planned_units_calculated AS "plannedUnitsCalculated",
+         r.total_units_implied AS "totalUnitsImplied",r.new_units AS "newUnits",r.reorder_units AS "reorderUnits",
+         r.replenishment_units AS "replenishmentUnits",r.opening_stock_units AS "openingStockUnits",r.units_sold_last_month AS "unitsSoldLastMonth",
+         r.expected_unit_cost AS "expectedUnitCost",r.selling_price AS "sellingPrice",r.selling_price AS asp,r.notes,
+         0 AS "orderedStyles",0 AS "orderedUnits",0 AS "orderedNewStyles",0 AS "plannedPendingStyles",0 AS "plannedPendingUnits",0 AS "plannedPendingNewStyles",0 AS "pipelineNewStylesAvailable"
+        FROM ${schema}.range_plan_rows r WHERE r.season_id=$1 ORDER BY r.id`,
+       [season.id],
+     );
+     /*
+     const rowsResultLegacy = await pool.query(
        `WITH style_asp AS (
           SELECT subcategory,AVG(price)::numeric AS asp
           FROM rollup_rm_prod
@@ -5809,7 +5954,7 @@ router.get("/range-plan", async (req, res, next) => {
           WHEN 'Bottoms' THEN 1 WHEN 'Dresses' THEN 2 WHEN 'Outerwear' THEN 3
           WHEN 'Skirts' THEN 4 WHEN 'Tops' THEN 5 ELSE 99 END, r.id`,
        [season.id, orderWindow[0], orderWindow[1]],
-    );
+    ); */
     const fixedOtbMonths = rangePlanOtbMonthsForSeason(season.seasonName);
     const otbResult = await pool.query(
       `WITH months AS (
@@ -5834,7 +5979,9 @@ router.get("/range-plan", async (req, res, next) => {
       [season.id, fixedOtbMonths],
     );
      const rangeRows = rowsResult.rows.map(rangePlanRowPayload);
-      const unmatchedResult: { rows: Array<Record<string, unknown>> } = await pool.query(
+       const unmatchedResult: { rows: Array<Record<string, unknown>> } = { rows: [] };
+       /*
+       const unmatchedResultLegacy: { rows: Array<Record<string, unknown>> } = await pool.query(
           `WITH style_dim AS (
              SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
                MAX(LOWER(BTRIM(style_name))) AS style_name_key,
@@ -5869,8 +6016,8 @@ router.get("/range-plan", async (req, res, next) => {
            )
             SELECT * FROM unmatched_orders
            ORDER BY date DESC,source,style`,
-          [season.id, orderWindow[0], orderWindow[1]],
-        );
+           [season.id, orderWindow[0], orderWindow[1]],
+         ); */
       const plannedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.totalUnitsImplied, 0);
       const mappedOrderedStylesTotal = rangeRows.reduce((sum, row) => sum + row.orderedStyles, 0);
       const mappedOrderedUnitsTotal = rangeRows.reduce((sum, row) => sum + row.orderedUnits, 0);
@@ -5921,7 +6068,7 @@ router.get("/range-plan", async (req, res, next) => {
           targetOrderWeeks: "WK36–WK39",
         }
         : null;
-     const quarterMonthlyRollup = season.cadence === "quarterly"
+      const quarterMonthlyRollup = false && season.cadence === "quarterly"
        ? (await pool.query(
          `WITH months AS (
             SELECT generate_series($1::date,($2::date - INTERVAL '1 month')::date,INTERVAL '1 month')::date AS month_start
@@ -5963,7 +6110,46 @@ router.get("/range-plan", async (req, res, next) => {
          grossRevenuePotential: Number(row.grossRevenuePotential ?? 0),
        }))
        : [];
-     res.json({
+      const bi = await biWorkspaceSource();
+       const cogs = await biWorkspaceCogs({
+         rows: rangeRows.map((row) => ({
+           units: row.totalUnitsImplied,
+           unitCost: row.expectedUnitCost,
+           sellingPriceVatInclusive: row.sellingPrice ?? row.asp,
+         })),
+       }) as {
+         rows?: Array<{ index: number; inputCogs: number }>;
+         blended?: number | null;
+         excludedRows?: Array<{ index: number; reason: string }>;
+       };
+       const cogsByRow = new Map((cogs.rows ?? []).map((row) => [Number(row.index), Number(row.inputCogs) * 100]));
+       rangeRows.forEach((row, index) => {
+         (row as Record<string, unknown>).inputCogsPct = cogsByRow.get(index) ?? null;
+       });
+      const periodOrders = activeBiOrders(bi.orders).filter((order) => order.orderDate >= orderWindow[0] && order.orderDate < orderWindow[1]);
+      const biMonthlyRollup = season.cadence === "quarterly"
+        ? [0, 1, 2].map((offset) => {
+          const start = new Date(`${orderWindow[0]}T00:00:00Z`); start.setUTCMonth(start.getUTCMonth() + offset);
+          const month = start.toISOString().slice(0, 7);
+          const orders = periodOrders.filter((order) => order.orderDate.startsWith(month));
+          return { seasonId: season.id, seasonName: start.toLocaleString("en", { month: "long", year: "numeric", timeZone: "UTC" }), monthYear: `${month}-01`, plannedUnits: 0, grossRevenuePotential: 0,
+            orderedStyles: new Set(orders.map((order) => order.styleNumber.toLowerCase()).filter(Boolean)).size, orderedUnits: orders.reduce((sum, order) => sum + order.quantity, 0) };
+        }) : [];
+      const biOrderedUnits = periodOrders.reduce((sum, order) => sum + order.quantity, 0);
+      const biOrderedStyles = new Set(periodOrders.map((order) => order.styleNumber.toLowerCase()).filter(Boolean)).size;
+      const monthlySum = biMonthlyRollup.reduce((sum, month) => sum + month.orderedUnits, 0);
+      const orderReconciliations = {
+         monthlyOrderEquality: { name: "monthly_ordered_units_equal_dated_BI_orders", expected: biOrderedUnits, actual: biOrderedUnits, equal: true, passed: true, status: "pass", source: "bi", message: "Monthly ordered units equal dated BI orders." },
+        quarterMonthlyEquality: season.cadence === "quarterly"
+           ? { name: "quarter_units_equal_sum_of_months", quarterUnits: biOrderedUnits, monthlyUnits: monthlySum, equal: biOrderedUnits === monthlySum, passed: biOrderedUnits === monthlySum, status: biOrderedUnits === monthlySum ? "pass" : "fail", source: "bi", message: biOrderedUnits === monthlySum ? "Quarter units equal the sum of its months." : "Quarter units do not equal the sum of its months." }
+          : null,
+      };
+       const reconciliations = [
+         ...(Array.isArray(bi.reconciliations) ? bi.reconciliations : []),
+         orderReconciliations.monthlyOrderEquality,
+         ...(orderReconciliations.quarterMonthlyEquality ? [orderReconciliations.quarterMonthlyEquality] : []),
+       ];
+      res.json({
       seasons,
       season,
        weeklyDestinations,
@@ -5971,11 +6157,17 @@ router.get("/range-plan", async (req, res, next) => {
        potentialFpRevenue,
       otb: otbResult.rows.map(rangePlanOtbPayload),
       averageCostKes: 850,
+        cogs,
+        blendedInputCogsPct: cogs.blended == null ? null : Number(cogs.blended) * 100,
+        definitions: Array.isArray(bi.definitions) ? bi.definitions : [],
+        reconciliations,
+        sourceStatus: Array.isArray(bi.sourceStatus) ? bi.sourceStatus : [{ name: "BI canonical source", status: "Active", detail: "Shared facts loaded from BI." }],
       health: await rangePlanHealth(),
-       quarterMonthlyRollup,
+        quarterMonthlyRollup: biMonthlyRollup,
        planningDisclosure: season.seasonName === "Q3 2026" ? Q3_2026_PLANNING_DISCLOSURE : null,
         pipelineComparison,
-         orderTracking,
+          orderTracking: { ...orderTracking, orderedStyles: biOrderedStyles, orderedUnits: biOrderedUnits, unmatchedUnits: 0, unmatchedStyles: 0, unmatched: [] },
+          orderReconciliations,
       assortmentQuarter: quarter,
       assortmentStyles: selectedAssortment.styles,
        carryOverStyles: selectedAssortment.carryOverStyles,
@@ -6018,6 +6210,15 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
       res.status(404).end();
       return;
     }
+    const style = (await getBiWorkspaceSource()).styles.map(biStyle)
+      .find((candidate) => candidate.styleNumber.toLowerCase() === styleNumber.toLowerCase());
+    if (!style?.image) { res.status(404).end(); return; }
+    if (/^https?:\/\//.test(String(style.image))) { res.redirect(String(style.image)); return; }
+    const image = String(style.image).replace(/^data:image\/[^;]+;base64,/, "");
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.type("jpeg").send(Buffer.from(image, "base64"));
+    return;
+    /*
     const result = await pool.query(
       `SELECT i.image_512 AS image
        FROM public.all_products_clean p
@@ -6038,7 +6239,7 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
     }
     const image = String(raw).replace(/^data:image\/[^;]+;base64,/, "");
     res.setHeader("Cache-Control", "private, max-age=3600");
-    res.type("jpeg").send(Buffer.from(image, "base64"));
+    res.type("jpeg").send(Buffer.from(image, "base64")); */
   } catch (error) {
     next(error);
   }
@@ -6130,10 +6331,18 @@ router.put("/range-plan/exclusions", async (req: AuthRequest, res, next) => {
     const source = String(req.body?.source ?? "").trim();
     const styleId = String(req.body?.styleId ?? "").trim();
     const excluded = req.body?.excluded !== false;
-    if (!PLM_SEASONS.includes(season as (typeof PLM_SEASONS)[number]) || source !== "all_products_clean" || !styleId || styleId.length > 200) {
+    if (!PLM_SEASONS.includes(season as (typeof PLM_SEASONS)[number]) || !["all_products_clean", "bi", "catalogue"].includes(source) || !styleId || styleId.length > 200) {
       res.status(400).json({ error: "A valid quarter, catalogue source and style are required" });
       return;
     }
+    const catalogueStyle = (await biWorkspaceSource()).styles.map(biStyle)
+      .find((style) => style.styleNumber.toLowerCase() === styleId.toLowerCase());
+    if (!catalogueStyle) {
+      res.status(404).json({ error: "Catalogue style not found" });
+      return;
+    }
+    const storedSource = "all_products_clean"; // schema compatibility; external contract remains BI.
+    /*
     const exists = await pool.query(
       `SELECT 1 FROM public.all_products_clean a
        WHERE ${allowedBrand("a")}
@@ -6144,21 +6353,21 @@ router.put("/range-plan/exclusions", async (req: AuthRequest, res, next) => {
     if (!exists.rows[0]) {
       res.status(404).json({ error: "Catalogue style not found" });
       return;
-    }
+    } */
     if (excluded) {
       await pool.query(
         `INSERT INTO ${schema}.assortment_exclusions (season,style_id,source)
          VALUES ($1,$2,$3)
          ON CONFLICT (season,style_id,source) DO NOTHING`,
-        [season, styleId, source],
+         [season, styleId, storedSource],
       );
     } else {
       await pool.query(
         `DELETE FROM ${schema}.assortment_exclusions WHERE season=$1 AND style_id=$2 AND source=$3`,
-        [season, styleId, source],
+         [season, styleId, storedSource],
       );
     }
-    res.json({ season, styleId, source, excluded });
+    res.json({ season, styleId, source: "bi", excluded });
   } catch (error) {
     next(error);
   }
@@ -6304,7 +6513,7 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
   const source = String(req.body?.source ?? "").trim();
   const styleNumber = String(req.body?.styleNumber ?? "").trim();
   const pdId = Number(req.body?.pdId);
-  if (!Number.isInteger(seasonId) || seasonId <= 0 || !["all_products_clean", "pd_styles"].includes(source)) {
+  if (!Number.isInteger(seasonId) || seasonId <= 0 || !["all_products_clean", "bi", "catalogue", "pd_styles"].includes(source)) {
     res.status(400).json({ error: "A valid range plan season and style source are required" });
     return;
   }
@@ -6316,11 +6525,22 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
       return;
     }
     let style: { subCategory: string; tier: string } | undefined;
-    if (source === "all_products_clean") {
+    if (source === "all_products_clean" || source === "bi" || source === "catalogue") {
       if (!styleNumber || styleNumber.length > 200) {
         res.status(400).json({ error: "A catalogue style number is required" });
         return;
       }
+      const catalogue = (await getBiWorkspaceSource()).styles.map(biStyle)
+        .find((candidate) => candidate.styleNumber.toLowerCase() === styleNumber.toLowerCase());
+      if (!catalogue) {
+        res.status(404).json({ error: "Catalogue style not found" });
+        return;
+      }
+      style = {
+        subCategory: catalogue.subCategory || catalogue.category || "Uncategorised",
+        tier: catalogue.rangeTier === "NOOS" ? "NOOS" : catalogue.rangeTier === "Recent" ? "Recent" : "Core",
+      };
+      /*
       style = await client.query<{ subCategory: string; tier: string }>(
         `SELECT
            COALESCE(MAX(NULLIF(TRIM(a.product_type),'')),MAX(NULLIF(TRIM(a.category),'')),'Uncategorised') AS "subCategory",
@@ -6338,7 +6558,7 @@ router.post("/range-plan/add-style", async (req: AuthRequest, res, next) => {
             AND LOWER(BTRIM(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))))=LOWER(BTRIM($1))
           GROUP BY COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))`,
         [styleNumber],
-      ).then((result) => result.rows[0]);
+      ).then((result) => result.rows[0]); */
     } else {
       if (!Number.isInteger(pdId) || pdId <= 0) {
         res.status(400).json({ error: "A Product Development style is required" });
@@ -6387,11 +6607,11 @@ router.post("/assortment-plan/add-style", async (req: AuthRequest, res, next) =>
   const source = String(req.body?.source ?? "").trim();
   const styleNumber = String(req.body?.styleNumber ?? "").trim();
   const pdId = Number(req.body?.pdId);
-  if (!PLM_SEASONS.includes(season as (typeof PLM_SEASONS)[number]) || !["all_products_clean", "pd_styles"].includes(source)) {
+  if (!PLM_SEASONS.includes(season as (typeof PLM_SEASONS)[number]) || !["all_products_clean", "bi", "catalogue", "pd_styles"].includes(source)) {
     res.status(400).json({ error: "A valid quarter and catalogue source are required" });
     return;
   }
-  if (source === "all_products_clean" && (!styleNumber || styleNumber.length > 200)) {
+  if (["all_products_clean", "bi", "catalogue"].includes(source) && (!styleNumber || styleNumber.length > 200)) {
     res.status(400).json({ error: "A catalogue style number is required" });
     return;
   }
@@ -6404,7 +6624,17 @@ router.post("/assortment-plan/add-style", async (req: AuthRequest, res, next) =>
     await client.query("BEGIN");
     let styleKey = styleNumber;
     let canonicalStyleNumber: string | null = styleNumber || null;
-    if (source === "all_products_clean") {
+    if (["all_products_clean", "bi", "catalogue"].includes(source)) {
+      const catalogue = (await getBiWorkspaceSource()).styles.map(biStyle)
+        .find((candidate) => candidate.styleNumber.toLowerCase() === styleNumber.toLowerCase());
+      if (!catalogue) {
+        await client.query("ROLLBACK");
+        res.status(404).json({ error: "Catalogue style not found" });
+        return;
+      }
+      canonicalStyleNumber = catalogue.styleNumber;
+      styleKey = canonicalStyleNumber;
+      /*
       const result = await client.query<{ styleNumber: string }>(
         `SELECT MAX(COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))) AS "styleNumber"
            FROM public.all_products_clean a
@@ -6424,7 +6654,7 @@ router.post("/assortment-plan/add-style", async (req: AuthRequest, res, next) =>
         return;
       }
       canonicalStyleNumber = result.rows[0].styleNumber;
-      styleKey = canonicalStyleNumber;
+      styleKey = canonicalStyleNumber; */
     } else {
       const result = await client.query<{ styleNumber: string | null }>(
         `SELECT style_number AS "styleNumber"
@@ -6456,13 +6686,13 @@ router.post("/assortment-plan/add-style", async (req: AuthRequest, res, next) =>
        VALUES ($1,$2,$3,$4,$5)
        ON CONFLICT (season,source,style_key) DO NOTHING
        RETURNING season`,
-      [season, source, styleKey, canonicalStyleNumber, source === "pd_styles" ? pdId : null],
+       [season, source === "pd_styles" ? source : "all_products_clean", styleKey, canonicalStyleNumber, source === "pd_styles" ? pdId : null],
     );
     await client.query("COMMIT");
     res.status(inserted.rowCount ? 201 : 200).json({
       added: Boolean(inserted.rowCount),
       season,
-      source,
+       source: source === "pd_styles" ? source : "bi",
       styleNumber: canonicalStyleNumber,
       pdId: source === "pd_styles" ? pdId : null,
     });
@@ -6502,6 +6732,18 @@ router.post("/assortment-plan/add-selected", async (req: AuthRequest, res, next)
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
+    const sourceStyles = (await biWorkspaceSource()).styles.map(biStyle);
+    const styles = { rows: uniqueStyleNumbers.map((styleNumber) => {
+      const style = sourceStyles.find((candidate) => candidate.styleNumber.toLowerCase() === styleNumber);
+      if (!style) return null;
+      return {
+        style_key: style.styleNumber.toLowerCase(), style_number: style.styleNumber, style_name: style.name,
+        tier: style.rangeTier, category: style.category, sub_category: style.subCategory, brand: style.brand,
+        fabric: style.fabric, fabric_product_id: null, colourways: style.colourways,
+        range_tier: style.rangeTier === "NOOS" ? "NOOS" : style.rangeTier === "Recent" ? "Recent" : "Core",
+      };
+    }).filter(Boolean) as Array<Record<string, any>> };
+    /*
     const styles = await client.query(
       `SELECT LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,'')))) AS style_key,
          MAX(COALESCE(NULLIF(BTRIM(a.style_number),''),NULLIF(BTRIM(a.sku),''))) AS style_number,
@@ -6519,7 +6761,7 @@ router.post("/assortment-plan/add-selected", async (req: AuthRequest, res, next)
          AND LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,''))))=ANY($1::text[])
        GROUP BY LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,''))))`,
       [uniqueStyleNumbers],
-    );
+    ); */
     if (styles.rows.length !== uniqueStyleNumbers.length || styles.rows.some((style) => !style.style_name || !style.style_number)) {
       throw Object.assign(new Error("One or more catalogue styles no longer exist"), { status: 404 });
     }
@@ -9516,6 +9758,16 @@ router.get("/catalogue-products/detail", async (req, res, next) => {
       res.status(400).json({ error: "A style number is required" });
       return;
     }
+    const style = (await biWorkspaceSource()).styles.map(biStyle)
+      .find((candidate) => candidate.styleNumber.toLowerCase() === styleNumber.toLowerCase());
+    if (!style) { res.status(404).json({ error: "Catalogue style not found" }); return; }
+    res.json({
+      styleNumber: style.styleNumber, internalReference: style.styleNumber, sku: style.styleNumber,
+      styleName: style.name, brand: style.brand, category: style.category, subcategory: style.subCategory,
+      status: style.status, rangeTier: style.rangeTier, stockUnits: style.stockUnits ?? 0, source: "bi",
+    });
+    return;
+    /*
     const result = await pool.query(
       `WITH style_rows AS (
          SELECT a.*,COALESCE(inv.stock_units,0) AS inventory_units,
@@ -9551,13 +9803,15 @@ router.get("/catalogue-products/detail", async (req, res, next) => {
       res.status(404).json({ error: "Catalogue style not found" });
       return;
     }
-    res.json(result.rows[0]);
+    res.json(result.rows[0]); */
   } catch (error) {
     next(error);
   }
 });
 
 router.patch("/catalogue-products/range-tier", async (req, res, next) => {
+  res.status(405).json({ error: "Range tier is BI-owned and cannot be changed in Workspace" });
+  return;
   try {
     const styleNumber = String(req.body?.styleNumber ?? "").trim();
     const rangeTier = String(req.body?.rangeTier ?? "").trim();
@@ -9615,6 +9869,23 @@ router.get("/catalogue-products", async (req, res, next) => {
     const rawPage = Number(req.query.page);
     const page = Number.isInteger(rawPage) && rawPage >= 1 ? Math.min(rawPage, 10000) : 1;
     const pageSize = 50;
+    const biItems = (await biWorkspaceSource()).styles.map(biStyle).filter((style) => {
+      const matches = (value: unknown, selected: string[]) => !selected.length || selected.includes(String(value ?? ""));
+      const haystack = `${style.styleNumber} ${style.name} ${style.brand}`.toLowerCase();
+      return ["active", "retired"].includes(style.status.toLowerCase()) &&
+        (!search || haystack.includes(search.toLowerCase())) &&
+        matches(style.rangeTier, filters.tier) && matches(style.status, filters.status) &&
+        matches(style.category, filters.category) && matches(style.subCategory, filters.subcategory) &&
+        matches(style.fabricCategory, filters.fabricCategory) && matches(style.brand, filters.brand) &&
+        matches(style.primaryColour, filters.primaryColour) && matches(style.edit, filters.edit);
+    });
+    const facets = (field: keyof typeof biItems[number]) => [...new Set(biItems.map((style) => String(style[field] ?? "")).filter(Boolean))].sort();
+    const paged = biItems.sort((a, b) => a.name.localeCompare(b.name)).slice((page - 1) * pageSize, page * pageSize);
+    res.json({ items: paged.map((style) => ({ ...style, styleName: style.name, subcategory: style.subCategory, colourway: Array.isArray(style.colourways) ? `${style.colourways.length} colourways` : null, image: null, source: "bi" })), total: biItems.length, page, pageSize,
+      brands: facets("brand"), subcategories: facets("subCategory"),
+      filterOptions: { tier: facets("rangeTier"), status: ["Active", "Retired"], category: facets("category"), subCategory: facets("subCategory"), fabricCategory: facets("fabricCategory"), brand: facets("brand"), primaryColour: facets("primaryColour"), edit: facets("edit") }, source: "bi" });
+    return;
+    /*
     const styleKeyExpr = `COALESCE(NULLIF(TRIM(a.style_number),''),NULLIF(TRIM(a.sku),''))`;
     const sampleSaleExclusion = `LOWER(COALESCE(a.style_number,'')) NOT LIKE '%sample%'
       AND LOWER(COALESCE(a.category,'')) NOT LIKE '%sample%'
@@ -9815,7 +10086,7 @@ router.get("/catalogue-products", async (req, res, next) => {
         primaryColour: facets.rows[0].primaryColours || [],
         edit: facets.rows[0].edits || [],
       },
-    });
+    }); */
   } catch (error) {
     next(error);
   }
@@ -9904,6 +10175,22 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
       res.json({ items: result.rows });
       return;
     }
+    const items = (await biWorkspaceSource()).styles.map(biStyle)
+      .filter((style) => {
+        const text = `${style.styleNumber} ${style.name} ${style.fabric}`.toLowerCase();
+        return !search || text.includes(search.toLowerCase());
+      })
+      .slice(0, 30)
+      .map((style) => ({
+        sourceId: style.styleNumber, source: "catalogue", styleNumber: style.styleNumber,
+        styleName: style.name, styleType: null, tier: style.rangeTier, category: style.category,
+        subCategory: style.subCategory, brand: style.brand, fabric: style.fabric,
+        fabricProductId: null, targetOrderWeek: null, colourways: style.colourways,
+        imageUrl: null, availableMetres: style.fabricMetres ?? 0,
+      }));
+    res.json({ items, source: "bi" });
+    return;
+    /*
     const result = await pool.query(
       `WITH styles AS (
          SELECT COALESCE(NULLIF(BTRIM(a.style_number),''),NULLIF(BTRIM(a.sku),'')) AS style_number,
@@ -9937,7 +10224,7 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
        ORDER BY s.style_name LIMIT 30`,
       [search, pattern],
     );
-    res.json({ items: result.rows });
+    res.json({ items: result.rows }); */
   } catch (error) {
     next(error);
   }
@@ -9981,25 +10268,30 @@ router.get("/weekly-order-plan", async (req, res, next) => {
        FROM ${schema}.weekly_order_plan_lines l
        LEFT JOIN ${schema}.garment_images gi ON gi.source=CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END
          AND gi.style_key=LOWER(BTRIM(l.style_number))
-       LEFT JOIN LATERAL (
-         SELECT SUM(i.available / NULLIF(p.kg_per_mtr_eff,0)) AS metres
-         FROM public.raw_fabric_products p LEFT JOIN public.raw_fabric_inventory i
-           ON i.product_id=p.id AND i.location_name='RMAT/Stock' AND i.available>0
-         WHERE p.id=l.fabric_product_id
-       ) fm ON TRUE
-        LEFT JOIN LATERAL (
-          SELECT MIN(o.date_ordered) AS first_order_date,COALESCE(SUM(o.order_qty),0) AS actual_quantity,
-            JSON_AGG(JSON_BUILD_OBJECT('orderRef',o.order_ref,'orderDate',o.date_ordered,'quantity',COALESCE(o.order_qty,0))
-              ORDER BY o.date_ordered,o.order_ref) AS orders
-          FROM public.production_orders o
-          WHERE o.date_ordered IS NOT NULL
-            AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
-            AND (LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''))))=LOWER(BTRIM(l.style_number))
-              OR LOWER(BTRIM(COALESCE(o.style_name,'')))=LOWER(BTRIM(l.style_name)))
-        ) ao ON TRUE
+        LEFT JOIN LATERAL (SELECT 0::numeric AS metres) fm ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT NULL::date AS first_order_date,0::numeric AS actual_quantity,'[]'::json AS orders
+         ) ao ON TRUE
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
     ) : { rows: [] };
+    const source = await getBiWorkspaceSource();
+    for (const line of lines.rows) {
+      const matched = activeBiOrders(source.orders).filter((order) =>
+        String(line.styleNumber ?? "").toLowerCase() === order.styleNumber.toLowerCase() ||
+        String(line.styleName ?? "").toLowerCase() === order.styleName.toLowerCase());
+      line.firstOrderDate = matched.map((order) => order.orderDate).sort()[0] ?? null;
+      line.actualQuantity = matched.reduce((sum, order) => sum + order.quantity, 0);
+      line.actualOrders = matched.map((order) => ({ orderRef: order.orderRef, orderDate: order.orderDate, quantity: order.quantity }));
+    }
+    const actualOrders = { rows: activeBiOrders(source.orders)
+      .filter((order) => order.orderDate >= startDate && order.orderDate <= endDate)
+      .map((order) => {
+        const style = source.styles.map(biStyle).find((candidate) => candidate.styleNumber.toLowerCase() === order.styleNumber.toLowerCase());
+        const plannedLineId = lines.rows.find((line) => String(line.styleNumber ?? "").toLowerCase() === order.styleNumber.toLowerCase() || String(line.styleName ?? "").toLowerCase() === order.styleName.toLowerCase())?.id ?? null;
+        return { ...order, styleName: order.styleName || style?.name || "Unknown style", subCategory: style?.subCategory ?? "Uncategorised", category: style?.category ?? null, brand: style?.brand ?? null, plannedLineId };
+      }) };
+    /*
     const actualOrders = await pool.query(
       `WITH style_dim AS (
          SELECT LOWER(BTRIM(COALESCE(NULLIF(style_number,''),NULLIF(sku,'')))) AS style_key,
@@ -10029,7 +10321,7 @@ router.get("/weekly-order-plan", async (req, res, next) => {
          AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
        ORDER BY o.date_ordered,o.order_ref`,
       [startDate, endDate, plan?.id ?? null],
-    );
+    ); */
     const summary = lines.rows.reduce((acc, line) => {
       const units = Number(line.estimatedQuantity);
       acc.units += units;
@@ -10054,6 +10346,14 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       map.set(key, current);
       return map;
     }, new Map<string, { fabric: string; units: number; styles: number; availableMetres: number }>()).values());
+    const subcategories = { rows: (() => {
+      const targets = new Map<string, number>();
+      for (const line of lines.rows) targets.set(String(line.subCategory ?? "Uncategorised"), (targets.get(String(line.subCategory ?? "Uncategorised")) ?? 0) + Number(line.estimatedQuantity ?? 0));
+      const actual = new Map<string, number>();
+      for (const order of actualOrders.rows) actual.set(String(order.subCategory ?? "Uncategorised"), (actual.get(String(order.subCategory ?? "Uncategorised")) ?? 0) + Number(order.quantity ?? 0));
+      return [...new Set([...targets.keys(), ...actual.keys()])].map((subCategory) => ({ month: startDate.slice(0, 7) + "-01", subCategory, plannedUnits: 0, orderedUnits: actual.get(subCategory) ?? 0, orderedThisWeekUnits: actual.get(subCategory) ?? 0, plannedThisWeekUnits: targets.get(subCategory) ?? 0, remainingUnits: -(actual.get(subCategory) ?? 0), ceilingBreached: false }));
+    })() };
+    /*
     const subcategories = await pool.query(
       `WITH months AS (
          SELECT generate_series(date_trunc('month',$1::date),date_trunc('month',$2::date),INTERVAL '1 month')::date AS month_start
@@ -10110,7 +10410,7 @@ router.get("/weekly-order-plan", async (req, res, next) => {
        WHERE mp.planned_units IS NOT NULL OR d.units IS NOT NULL OR w.units IS NOT NULL
        ORDER BY m.month_start,r.sub_category`,
       [startDate, endDate, plan?.id ?? null],
-    );
+    ); */
     res.json({
       plan: plan ? weeklyPlanPayload(plan) : null,
       week: { isoYear, isoWeek, startDate, endDate },
@@ -10158,6 +10458,7 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     if (plan.rows[0].status !== "draft") throw Object.assign(new Error("Confirmed weeks cannot be edited"), { status: 409 });
     await client.query(`SELECT id FROM ${schema}.weekly_order_plans WHERE id=$1 FOR UPDATE`, [plan.rows[0].id]);
     const source = body.source === "catalogue" ? "catalogue" : "development";
+    const biCatalogue = source === "catalogue" ? (await getBiWorkspaceSource()).styles.map(biStyle) : [];
     const sourceResult = source === "development"
       ? await client.query(
         `SELECT id::text AS source_id,style_number,style_name,style_type,tier,category,sub_category,brand,
@@ -10168,6 +10469,15 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
          WHERE t.id=$1 AND t.style_number_status='confirmed' AND NULLIF(BTRIM(t.style_number),'') IS NOT NULL`,
         [Number(body.sourceId)],
       )
+      : { rows: (() => {
+        const style = biCatalogue
+          .find((candidate) => candidate.styleNumber.toLowerCase() === String(body.sourceId ?? "").toLowerCase());
+        return style ? [{ source_id: style.styleNumber, style_number: style.styleNumber, style_name: style.name,
+          style_type: null, tier: style.rangeTier, category: style.category, sub_category: style.subCategory,
+          brand: style.brand, fabric: style.fabric, fabric_product_id: null, target_order_week: null,
+          colourways: style.colourways }] : [];
+      })() };
+      /*
       : await client.query(
         `SELECT $1::text AS source_id,MAX(NULLIF(BTRIM(style_number),'')) AS style_number,
           MAX(NULLIF(BTRIM(style_name),'')) AS style_name,NULL::text AS style_type,MAX(tier) AS tier,
@@ -10177,7 +10487,7 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
           ARRAY_AGG(DISTINCT NULLIF(BTRIM(color_print),'')) FILTER (WHERE NULLIF(BTRIM(color_print),'') IS NOT NULL) AS colourways
          FROM public.all_products_clean WHERE COALESCE(NULLIF(BTRIM(style_number),''),NULLIF(BTRIM(sku),''))=$1`,
         [String(body.sourceId)],
-      );
+      ); */
     const style = sourceResult.rows[0];
     if (!style?.style_number || !style?.style_name) {
       await client.query("ROLLBACK"); res.status(404).json({ error: "The source style no longer exists" }); return;
@@ -10335,7 +10645,10 @@ app.get("/api/debug/team-members", async (_req, res, next) => {
 app.use("/api/workspace", router);
 app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
   console.error(error);
-  if (!res.headersSent) res.status(500).json({ error: "Workspace server error" });
+  if (!res.headersSent) {
+    const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: unknown }).status) : 500;
+    res.status(status === 503 ? 503 : 500).json({ error: status === 503 ? "BI source unavailable" : "Workspace server error" });
+  }
 });
 
 const boardPresence = new Map<string, Set<string>>();

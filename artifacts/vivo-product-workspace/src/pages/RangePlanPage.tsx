@@ -65,6 +65,8 @@ type RangePlanRow = {
   sellingPrice: number | null;
   asp: number | null;
   potentialFpRevenue: number;
+  weeksOfCover: number | null;
+  inputCogsPct: number | null;
   notes: string;
 };
 type RangePlanOtb = {
@@ -145,6 +147,10 @@ type RangePlanResponse = {
   planningDisclosure: PlanningDisclosure | null;
   pipelineComparison: PipelineComparison | null;
   orderTracking: OrderTracking | null;
+  blendedInputCogsPct?: number | null;
+  reconciliations?: Array<{ status?: string; passed?: boolean; name?: string; metric?: string; label?: string; error?: string; message?: string; detail?: string }>;
+  definitions?: Array<{ metric?: string; name?: string; formula?: string; source?: string }>;
+  sourceStatus?: unknown;
 };
 
 const monthlyCategoryOrder = ['Bottoms', 'Dresses', 'Outerwear', 'Skirts', 'Tops'];
@@ -320,16 +326,14 @@ function RangePlanPage() {
     const effectiveNewAos = allNewStyles > 0
       ? rows.reduce((sum, row) => sum + row.newStyleCount * row.newStyleAosUnits, 0) / allNewStyles
       : rows.length ? rows.reduce((sum, row) => sum + row.newStyleAosUnits, 0) / rows.length : 300;
-    const costedRows = visibleRows.filter((row) => row.expectedUnitCost !== null && row.sellingPrice !== null && row.sellingPrice > 0);
-    const estimatedCogs = costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * Number(row.expectedUnitCost), 0);
+     const costedRows = visibleRows.filter((row) => row.expectedUnitCost !== null);
+     const estimatedCogs = costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * Number(row.expectedUnitCost), 0);
     const potentialFpRevenue = visibleRows.reduce((sum, row) => sum + row.potentialFpRevenue, 0);
-    const costedNetRevenue = costedRows.reduce((sum, row) => sum + row.totalUnitsImplied * (Number(row.sellingPrice) / 1.16), 0);
-    const cogsPct = costedNetRevenue > 0 ? (estimatedCogs / costedNetRevenue) * 100 : 0;
     const capacityPct = season?.factoryCapacityUnits ? (totalUnits / season.factoryCapacityUnits) * 100 : 0;
     const newnessPct = totalUnits > 0 ? newUnits / totalUnits * 100 : 0;
     const requiredNewUnits = (season?.factoryCapacityUnits ?? 0) * ((season?.newnessFloorPct ?? 0) / 100);
     const impliedNewStyles = effectiveNewAos > 0 ? Math.round(requiredNewUnits / effectiveNewAos) : 0;
-    return { totalStyles, totalUnits, newStyles, newUnits, newnessPct, effectiveNewAos, requiredNewUnits, impliedNewStyles, estimatedCogs, cogsPct, capacityPct, potentialFpRevenue, costedRowCount: costedRows.length };
+     return { totalStyles, totalUnits, newStyles, newUnits, newnessPct, effectiveNewAos, requiredNewUnits, impliedNewStyles, estimatedCogs, capacityPct, potentialFpRevenue, costedRowCount: costedRows.length };
   }, [visibleRows, rows, season]);
 
   const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'newStyleCount' | 'reorderStyleCount' | 'replenishmentStyleCount' | 'newStyleAosUnits' | 'aosUnits' | 'openingStockUnits' | 'unitsSoldLastMonth' | 'expectedUnitCost' | 'sellingPrice' | 'notes', value: string) => {
@@ -360,11 +364,7 @@ function RangePlanPage() {
     if (!season) return;
      const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'New Styles Planned', 'Pipeline New Styles WK36-WK39', 'New Style Gap', 'Reorder Styles', 'Replenishment Styles', 'New Style AOS', 'Reorder / Replenishment AOS', 'New Units', 'Reorder Units', 'Replenishment Units', 'Total Units', 'Share of Units', 'Styles Ordered by Date', 'Styles Planned Not Raised', 'Style Balance to Ordered', 'Units Ordered by Date', 'Units Planned Not Raised', 'Unit Balance to Ordered', 'Projected Units', 'Ceiling Status', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %'];
      const lines = visibleRows.map((row) => {
-        const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
-          ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
-          : null;
-       const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
-         const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, weeksOfCover, row.styleCountTarget, row.newStyleCount, row.pipelineNewStylesAvailable, row.newStylesGap, row.reorderStyleCount, row.replenishmentStyleCount, row.newStyleAosUnits, row.aosUnits, row.newUnits, row.reorderUnits, row.replenishmentUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.orderedStyles, row.plannedPendingStyles, row.balanceStyles, row.orderedUnits, row.plannedPendingUnits, row.balanceUnits, row.projectedUnits, row.ceilingBreached ? 'Ceiling breached' : 'Within ceiling', row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, inputCogs];
+          const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, row.weeksOfCover, row.styleCountTarget, row.newStyleCount, row.pipelineNewStylesAvailable, row.newStylesGap, row.reorderStyleCount, row.replenishmentStyleCount, row.newStyleAosUnits, row.aosUnits, row.newUnits, row.reorderUnits, row.replenishmentUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.orderedStyles, row.plannedPendingStyles, row.balanceStyles, row.orderedUnits, row.plannedPendingUnits, row.balanceUnits, row.projectedUnits, row.ceilingBreached ? 'Ceiling breached' : 'Within ceiling', row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, row.inputCogsPct];
        return values.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',');
      });
     const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -380,7 +380,9 @@ function RangePlanPage() {
   if (rangePlan.isError || !payload || !season) return <section className="page"><div className="range-plan-error"><Target size={22} /><h2>Range Plan is unavailable</h2><p>We could not reach the planning data. Your saved plan is safe.</p><button className="button button-dark" onClick={() => rangePlan.refetch()}><RefreshCw size={15} /> Try again</button></div></section>;
 
   const capacityTone = totals.capacityPct <= 100 ? 'success' : totals.capacityPct <= 110 ? 'warning' : 'danger';
-  const displayedCogsPct = planningDisclosure?.actualCogsPct ?? (totals.costedRowCount ? totals.cogsPct : null);
+   const reconciliationFailures = (payload.reconciliations ?? []).filter((item) => item.passed === false || ['fail', 'failed', 'error', 'blocked', 'untrusted'].includes(String(item.status).toLowerCase()));
+   const biTrusted = reconciliationFailures.length === 0;
+   const displayedCogsPct = payload.blendedInputCogsPct ?? planningDisclosure?.actualCogsPct ?? null;
   const cogsTone = displayedCogsPct !== null && displayedCogsPct <= season.cogsBudgetPct ? 'success' : 'danger';
   const budgetCeiling = season.revenueTargetKes * (season.cogsBudgetPct / 100);
   const quarterMonthlyUnits = payload.quarterMonthlyRollup.reduce((sum, month) => sum + month.plannedUnits, 0);
@@ -418,6 +420,11 @@ function RangePlanPage() {
           </div>
         </div>
       </div>
+      {!biTrusted && <div className="range-trust-blocked" role="alert" data-testid="status-range-plan-reconciliation-failure"><AlertTriangle size={19} /><div><strong>Not trusted — BI reconciliation failed</strong><span>{reconciliationFailures.map((item) => item.name ?? item.metric ?? item.label ?? item.error ?? item.message ?? 'Unspecified reconciliation').join(' · ')}</span></div></div>}
+      <aside className="range-trust-panel" data-testid="panel-range-definitions">
+        <div><span className="range-eyebrow">Definitions &amp; reconciliation</span><strong>{biTrusted ? 'BI-owned metrics verified' : 'BI-owned metrics blocked'}</strong><small>{biTrusted ? 'Shared metric definitions and formulae are governed by BI. Style Development remains the product-development exception.' : 'Do not use BI-owned headline figures until the failed reconciliation is resolved.'}</small></div>
+        <div className="range-trust-definitions">{(payload.definitions ?? []).slice(0, 3).map((definition, index) => <span key={`${definition.metric ?? definition.name ?? 'definition'}-${index}`}><b>{definition.metric ?? definition.name ?? 'Shared metric'}</b>{definition.formula ? ` · ${definition.formula}` : ''}</span>)}</div>
+      </aside>
 
       {planningDisclosure && (
         <div className="range-plan-disclosure" role="note">
@@ -484,7 +491,7 @@ function RangePlanPage() {
             <StatTile label={isActualPlusPlan ? 'Quarter units' : 'Total units implied'} value={numberFormat(totals.totalUnits)} detail={`${totals.capacityPct.toFixed(0)}% of ${numberFormat(season.factoryCapacityUnits)} factory capacity`} tone={capacityTone} icon={totals.capacityPct > 100 ? <TrendingUp size={16} /> : <TrendingDown size={16} />} />
             <StatTile label="Estimated COGS" value={kesMillions(totals.estimatedCogs)} detail={`${totals.costedRowCount} costed rows`} icon={<TrendingDown size={16} />} />
             <StatTile label="Gross revenue potential" value={kesMillions(totals.potentialFpRevenue)} detail="Total units × selling price" tone="success" icon={<TrendingUp size={16} />} />
-            <StatTile label="COGS vs budget" value={displayedCogsPct !== null ? `${displayedCogsPct.toFixed(1)}%` : '—'} detail={isActualPlusPlan ? `Blended input COGS achieved to date · ${season.cogsBudgetPct}% ceiling` : `Blended across ${totals.costedRowCount} costed rows · ${season.cogsBudgetPct}% ceiling`} tone={cogsTone} icon={<Save size={16} />} />
+             <StatTile label="COGS vs budget" value={biTrusted && displayedCogsPct !== null ? `${displayedCogsPct.toFixed(1)}%` : 'Not trusted'} detail={biTrusted ? `Server-provided blended input COGS · ${season.cogsBudgetPct}% ceiling` : 'Reconciliation failed — resolve the data trust error'} tone={biTrusted ? cogsTone : 'danger'} icon={<Save size={16} />} />
             <StatTile label={isActualPlusPlan ? 'September new units' : 'New units'} value={numberFormat(totals.newUnits)} detail={`${numberFormat(totals.newStyles)} Tier 4 styles × ${numberFormat(totals.effectiveNewAos)} average units`} icon={<Target size={16} />} />
             <StatTile label={isActualPlusPlan ? 'September newness in Q3' : 'Newness'} value={totals.totalUnits ? `${totals.newnessPct.toFixed(1)}%` : '—'} detail={isActualPlusPlan ? 'September planned new units as a share of the whole quarter' : `${numberFormat(totals.requiredNewUnits)} units floor · ≈${numberFormat(totals.impliedNewStyles)} new styles required`} tone={isActualPlusPlan || totals.newnessPct >= season.newnessFloorPct ? 'success' : 'danger'} icon={<Target size={16} />} />
              {pipelineComparison && <StatTile label="Pipeline shortfall" value={`${numberFormat(pipelineComparison.shortfall)} styles`} detail={`${numberFormat(pipelineComparison.availableNewStyles)} available · ${numberFormat(pipelineComparison.surplus)} surplus elsewhere`} tone={pipelineComparison.shortfall ? 'danger' : 'success'} icon={<Target size={16} />} />}
@@ -509,11 +516,9 @@ function RangePlanPage() {
                       <Fragment key={category}>
                         <tr className="range-tier-heading range-category-heading"><td colSpan={28}><strong>{category}</strong><span>{categoryRows.length} sub-categories</span></td></tr>
                         {categoryRows.map((row) => {
-                          const weeksOfCover = row.openingStockUnits !== null && row.unitsSoldLastMonth !== null && row.unitsSoldLastMonth > 0
-                            ? row.openingStockUnits / (row.unitsSoldLastMonth / 4.33)
-                            : null;
+                           const weeksOfCover = row.weeksOfCover;
                           const shareOfUnits = totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits * 100 : 0;
-                          const inputCogs = row.expectedUnitCost !== null && row.sellingPrice ? row.expectedUnitCost / (row.sellingPrice / 1.16) * 100 : null;
+                           const inputCogs = row.inputCogsPct;
                            const pacingFloor = row.totalUnitsImplied * Math.max(0, (orderTracking?.elapsedPct ?? 0) / 100 - 0.15);
                             const significantlyUnderOrdered = row.orderedUnits < pacingFloor;
                            const orderStatus = row.ceilingBreached ? 'CEILING BREACH' : significantlyUnderOrdered ? 'UNDER ORDER' : 'On track';
@@ -554,7 +559,7 @@ function RangePlanPage() {
                       </Fragment>
                     );
                   })}
-                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={2} /><td>{numberFormat(totals.totalStyles)}</td><td>{numberFormat(totals.newStyles)}</td><td>{numberFormat(pipelineComparison?.availableNewStyles ?? 0)}</td><td className={pipelineComparison?.shortfall ? 'range-pipeline-gap shortfall' : ''}>{pipelineComparison ? `${numberFormat(pipelineComparison.shortfall)} short` : '—'}</td><td colSpan={4} /><td>{numberFormat(totals.totalUnits)}</td><td>{numberFormat(totals.newUnits)}</td><td colSpan={2} /><td>{totals.totalUnits ? '100.0%' : '—'}</td><td>{numberFormat(orderTracking?.orderedStyles)}</td><td>{numberFormat(orderTracking?.plannedPendingStyles)}</td><td>{numberFormat(orderTracking?.balanceStyles)}</td><td>{numberFormat(orderTracking?.orderedUnits)}</td><td>{numberFormat(orderTracking?.plannedPendingUnits)}</td><td>{numberFormat(orderTracking?.balanceUnits)}</td><td>{numberFormat(orderTracking?.projectedUnits)}</td><td>{orderTracking?.ceilingBreached ? 'CEILING BREACH' : orderTracking?.significantlyUnderOrdered ? 'UNDER ORDER' : orderTracking ? 'On track' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{totals.costedRowCount && totals.totalUnits ? `${totals.cogsPct.toFixed(1)}%` : '—'}</td></tr>
+                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={2} /><td>{numberFormat(totals.totalStyles)}</td><td>{numberFormat(totals.newStyles)}</td><td>{numberFormat(pipelineComparison?.availableNewStyles ?? 0)}</td><td className={pipelineComparison?.shortfall ? 'range-pipeline-gap shortfall' : ''}>{pipelineComparison ? `${numberFormat(pipelineComparison.shortfall)} short` : '—'}</td><td colSpan={4} /><td>{numberFormat(totals.totalUnits)}</td><td>{numberFormat(totals.newUnits)}</td><td colSpan={2} /><td>{totals.totalUnits ? '100.0%' : '—'}</td><td>{numberFormat(orderTracking?.orderedStyles)}</td><td>{numberFormat(orderTracking?.plannedPendingStyles)}</td><td>{numberFormat(orderTracking?.balanceStyles)}</td><td>{numberFormat(orderTracking?.orderedUnits)}</td><td>{numberFormat(orderTracking?.plannedPendingUnits)}</td><td>{numberFormat(orderTracking?.balanceUnits)}</td><td>{numberFormat(orderTracking?.projectedUnits)}</td><td>{orderTracking?.ceilingBreached ? 'CEILING BREACH' : orderTracking?.significantlyUnderOrdered ? 'UNDER ORDER' : orderTracking ? 'On track' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{biTrusted && displayedCogsPct !== null ? `${displayedCogsPct.toFixed(1)}%` : 'Not trusted'}</td></tr>
                 </tbody>
               </table>
             </div>

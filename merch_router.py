@@ -36,7 +36,8 @@ Registered via register_merch_routes(app, api_pg_module) from api_pg.py.
 import logging
 import os
 import re
-from datetime import date, timedelta
+from datetime import date, timedelta, datetime, timezone
+from decimal import Decimal, InvalidOperation
 from typing import Optional
 
 log = logging.getLogger("merch_router")
@@ -5307,6 +5308,167 @@ WHERE %(include_retired)s
     }
 
 
+# ── BI-owned Product Workspace canonical source ──────────────────────────────
+
+def _product_workspace_leaf_index(stock_mix):
+    """Index existing Stock Mix style nodes without altering its raw tree."""
+    indexed = {}
+    for category in (stock_mix or {}).get("categories", []):
+        for subcategory in category.get("subcategories", []):
+            for style in subcategory.get("styles", []):
+                key = style.get("style_number") or style.get("name")
+                if key:
+                    indexed[str(key)] = style
+    return indexed
+
+
+def _product_workspace_styles(styles, stock_mix):
+    """Add Product Workspace aliases from canonical Merch outputs only.
+
+    Fabric is intentionally retained at colourway grain: summing it to a style
+    would double-count a shared supplier fabric.  The raw Stock Mix tree remains
+    separately available to consumers that need its full drill-down.
+    """
+    leaves = _product_workspace_leaf_index(stock_mix)
+    result = []
+    for source in styles:
+        style = dict(source)
+        leaf = leaves.get(str(style.get("style_number") or style.get("style_name") or ""))
+        lifecycle_tier = style.get("tier")
+        lifecycle_status = (
+            "Active" if lifecycle_tier in _ACTIVE_LIFECYCLE_BUCKETS
+            else "Retired" if lifecycle_tier == "Retired"
+            else "Archived" if lifecycle_tier == "Archived"
+            else "Excluded"
+        )
+        # These aliases make the intended contract explicit while retaining all
+        # established Merch keys for existing BI consumers.
+        style["style_master"] = {
+            "style_number": style.get("style_number"),
+            "style_name": style.get("style_name"),
+            "brand": style.get("brand"),
+            "category": style.get("category"),
+            "subcategory": style.get("subcategory"),
+            "status": lifecycle_status,
+            "tier": style.get("tier"),
+            "colour_count": style.get("colour_count"),
+            "full_price": style.get("full_price"),
+            "launch_date": style.get("launch_date"),
+        }
+        style["status"] = lifecycle_status
+        style["lifecycle_status"] = lifecycle_status
+        style["price"] = style.get("full_price")
+        style["stock"] = {
+            "stores": style.get("soh_stores"),
+            "online": style.get("soh_online"),
+            "warehouse": style.get("soh_warehouse"),
+        }
+        style["wip_units"] = leaf.get("wip_units") if leaf else 0
+        style["units"] = style.get("units_period")
+        style["revenue"] = style.get("revenue_period")
+        style["asp"] = style.get("avg_selling_price")
+        style["sell_through"] = style.get("sor_period")
+        style["sor"] = style.get("sor_6m")
+        style["weeks_of_cover"] = style.get("woc")
+        style["last_sale_days"] = style.get("last_sale_days")
+        # Exact/other-colour metres are authoritative only for a colourway.
+        style["fabric_by_colour"] = [
+            {
+                "colour": colour.get("name"),
+                "exact_metres": colour.get("fabric_stock_metres"),
+                "other_colour_metres": colour.get("fabric_other_colour_stock_metres"),
+            }
+            for colour in (leaf or {}).get("colours", [])
+            if (colour.get("fabric_stock_metres") is not None
+                or colour.get("fabric_other_colour_stock_metres") is not None)
+        ]
+        # A style-level fabric number is only meaningful when there is exactly
+        # one attributable colourway; otherwise consumers must use the explicit
+        # colour list above rather than a fabricated/double-counted total.
+        if len(style["fabric_by_colour"]) == 1:
+            fabric = style["fabric_by_colour"][0]
+            style["fabric_exact_metres"] = fabric["exact_metres"]
+            style["fabric_other_colour_metres"] = fabric["other_colour_metres"]
+        else:
+            style["fabric_exact_metres"] = None
+            style["fabric_other_colour_metres"] = None
+        result.append(style)
+    return result
+
+
+def _product_workspace_reconciliations(styles, summary, stock_mix):
+    stock_actual = (stock_mix or {}).get("totals", {}).get("stock_units", 0)
+    stock_expected = (summary or {}).get("active_stock_units", 0)
+    active_actual = len({
+        (s.get("style_number") or s.get("style_name"))
+        for s in styles
+        if s.get("tier") in _ACTIVE_LIFECYCLE_BUCKETS
+    })
+    active_expected = (summary or {}).get("active_styles_all_count", 0)
+    def check(name, expected, actual):
+        passed = expected == actual
+        return {
+            "name": name, "status": "pass" if passed else "fail",
+            "passed": passed,
+            "expected": expected, "actual": actual,
+            "message": ("Values reconcile." if passed
+                        else f"Expected {expected}; canonical source returned {actual}."),
+        }
+    return [
+        check("stockMix_total_equals_summary_active_stock", stock_expected, stock_actual),
+        check("active_style_count_equals_summary_kpi", active_expected, active_actual),
+    ]
+
+
+def _product_workspace_cogs(rows):
+    """Pure COGS calculator; invalid/missing rows are explicitly excluded."""
+    included, excluded = [], []
+    numerator = denominator = Decimal("0")
+    for index, row in enumerate(rows or []):
+        try:
+            if not isinstance(row, dict):
+                raise ValueError("row must be an object")
+            units = Decimal(str(row.get("units")))
+            cost = Decimal(str(row.get("unitCost")))
+            vat_price = Decimal(str(row.get("sellingPriceVatInclusive")))
+            net_price = vat_price / Decimal("1.16")
+            if not all(v.is_finite() and v > 0 for v in (units, cost, vat_price)):
+                raise ValueError("units, unitCost, and sellingPriceVatInclusive must be positive")
+            input_cogs = cost / net_price
+        except (InvalidOperation, TypeError, ValueError, ArithmeticError) as exc:
+            excluded.append({"index": index, "reason": str(exc) or "invalid row"})
+            continue
+        numerator += units * cost
+        denominator += units * net_price
+        included.append({
+            "index": index, "units": float(units), "unitCost": float(cost),
+            "sellingPriceNet": float(net_price), "inputCogs": float(input_cogs),
+        })
+    return {
+        "rows": included,
+        "includedRowCount": len(included),
+        "excludedRowCount": len(excluded),
+        "excludedRows": excluded,
+        "blended": float(numerator / denominator) if denominator else None,
+    }
+
+
+_PRODUCT_WORKSPACE_DEFINITIONS = [
+    {"metric": "Stock / SOH", "formula": "Sellable stores + Online + Warehouse Finished Goods; WIP excluded.", "source": "BI Merch styles and Stock Mix"},
+    {"metric": "WIP", "formula": "Open buying-order pre-warehouse balance, capped at ordered quantity and aged no more than 60 days.", "source": "BI Stock Mix"},
+    {"metric": "Units and revenue", "formula": "Selected-period sale/order units and canonical net revenue.", "source": "BI sales semantic layer"},
+    {"metric": "ASP", "formula": "Selected-period realised net revenue divided by selected-period units.", "source": "BI Merch styles"},
+    {"metric": "Sell-through / SOR", "formula": "Units divided by units plus sellable SOH.", "source": "BI Merch styles"},
+    {"metric": "Weeks of cover", "formula": "Sellable SOH divided by trailing-six-month units divided by 26.", "source": "BI Merch styles"},
+    {"metric": "Full-price %", "formula": "Selected-period full-price sales value as a percentage of modal full-price value.", "source": "BI Merch styles"},
+    {"metric": "Last-sale recency", "formula": "Days from today to the canonical all-history last sale date.", "source": "BI Merch styles"},
+    {"metric": "Fabric metres", "formula": "Exact-colour and other-colour supplier-fabric metres; shared fabrics are not summed to style.", "source": "BI Stock Mix"},
+    {"metric": "Style master", "formula": "Canonical style identity, category, lifecycle, tier, colours, price and launch date.", "source": "BI product semantic layer"},
+    {"metric": "Buying orders", "formula": "Dated, non-cancelled Odoo buying/production order records.", "source": "BI production orders"},
+    {"metric": "Input COGS", "formula": "Unit cost / (VAT-inclusive selling price / 1.16); blended by planned units.", "source": "BI Product Workspace COGS"},
+]
+
+
 # ── Online Performance (channel split: online vs retail) ─────────────────────
 # Online = all_sales.channel = 'Online' OR pos_location_name ILIKE '%online%'
 # (the junk online locations are already excluded by _BASE_FILTERS, so the
@@ -6257,13 +6419,117 @@ def register_merch_routes(app, api_pg_module):
     global A
     A = api_pg_module
 
-    from fastapi import Request, Query
+    from fastapi import Request, Query, Body, HTTPException
     from fastapi.responses import JSONResponse
 
     _TTL = 600  # seconds
 
     # Ensure the tier-overrides table exists on first registration.
     _ensure_tier_overrides_table()
+
+    def _product_workspace_orders(date_from=None, date_to=None):
+        """Read the BI-owned order ledger, avoiding optional-column assumptions."""
+        sql = """
+            SELECT
+                COALESCE(po.source, j->>'source', 'odoo') AS source,
+                po.order_ref AS reference,
+                po.style_number,
+                COALESCE(po.style_name, j->>'style_name', po.product_name,
+                         j->>'product_name') AS style_name,
+                pm.category,
+                pm.subcategory,
+                po.order_qty,
+                po.date_ordered,
+                COALESCE(
+                    po.cost_price_kes,
+                    CASE WHEN btrim(j->>'unitCost') ~ '^[0-9]+(\\.[0-9]+)?$'
+                         THEN (j->>'unitCost')::numeric END,
+                    CASE WHEN btrim(j->>'unit_cost') ~ '^[0-9]+(\\.[0-9]+)?$'
+                         THEN (j->>'unit_cost')::numeric END
+                ) AS unit_cost,
+                pm.selling_price
+            FROM public.production_orders po
+            CROSS JOIN LATERAL to_jsonb(po) j
+            LEFT JOIN LATERAL (
+                SELECT
+                    mode() WITHIN GROUP (ORDER BY p.category) AS category,
+                    mode() WITHIN GROUP (ORDER BY p.product_type) AS subcategory,
+                    mode() WITHIN GROUP (ORDER BY p.price)
+                        FILTER (WHERE p.price > 0) AS selling_price
+                FROM all_products_clean p
+                WHERE (po.style_number IS NOT NULL AND p.style_number = po.style_number)
+                   OR (COALESCE(po.style_name, j->>'style_name', po.product_name)
+                       IS NOT NULL
+                       AND p.style_name = COALESCE(po.style_name, j->>'style_name',
+                                                   po.product_name))
+            ) pm ON TRUE
+            WHERE po.date_ordered IS NOT NULL
+              AND COALESCE(LOWER(j->>'bo_state'), '') NOT IN ('cancel', 'cancelled')
+              AND COALESCE(LOWER(j->>'state'), '') NOT IN ('cancel', 'cancelled')
+              AND (%(date_from)s IS NULL OR po.date_ordered >= %(date_from)s::date)
+              AND (%(date_to)s IS NULL OR po.date_ordered <= %(date_to)s::date)
+            ORDER BY po.date_ordered DESC, po.order_ref
+        """
+        raw = _db_exec(sql, {"date_from": date_from, "date_to": date_to}, fetch=True)
+        return [{
+            "source": r.get("source"), "reference": r.get("reference"),
+            "style_number": r.get("style_number"), "style_name": r.get("style_name"),
+            "category": r.get("category"), "subcategory": r.get("subcategory"),
+            "order_qty": float(r["order_qty"]) if r.get("order_qty") is not None else None,
+            "date_ordered": str(r["date_ordered"]) if r.get("date_ordered") else None,
+            "unit_cost": float(r["unit_cost"]) if r.get("unit_cost") is not None else None,
+            "selling_price": (float(r["selling_price"])
+                              if r.get("selling_price") is not None else None),
+        } for r in (raw or [])]
+
+    @app.get("/api/internal/product-workspace-source")
+    async def product_workspace_source(
+        request: Request,
+        date_from: Optional[str] = Query(None),
+        date_to: Optional[str] = Query(None),
+    ):
+        """Single internal canonical source for the BI Product Workspace."""
+        canonical_styles = await _styles_async(
+            from_date=date_from, to_date=date_to, ttl=_TTL)
+        # Use the same stock-tree implementation as Merch, not a second stock
+        # formula.  It is synchronous/database-bound, so run it off-loop.
+        from starlette.concurrency import run_in_threadpool
+        stock_mix_key = (
+            f"merch_stock_mix_v8|None|None|None|{date_from}|{date_to}|"
+            "None|None|False"
+        )
+        stock_mix = await run_in_threadpool(
+            _cached, stock_mix_key, _TTL,
+            lambda: _fetch_stock_mix(
+                brand=None, subcategory=None, tier=None,
+                from_date=date_from, to_date=date_to,
+                country=None, pos_location=None, include_retired=False))
+        styles = _product_workspace_styles(canonical_styles, stock_mix)
+        summary = _compute_summary(canonical_styles)
+        orders = await run_in_threadpool(_product_workspace_orders, date_from, date_to)
+        return JSONResponse({
+            "styles": styles,
+            "summary": summary,
+            "stockMix": stock_mix,
+            "orders": orders,
+            "definitions": _PRODUCT_WORKSPACE_DEFINITIONS,
+            "sourceStatus": [
+                {"name": "BI merchandising semantic layer", "status": "Active",
+                 "detail": "Canonical shared style, stock, sales, WIP and trading metrics."},
+                {"name": "BI production orders", "status": "Active",
+                 "detail": "Canonical dated, non-cancelled Odoo buying orders."},
+            ],
+            "reconciliations": _product_workspace_reconciliations(
+                canonical_styles, summary, stock_mix),
+            "generatedAt": datetime.now(timezone.utc).isoformat(),
+        })
+
+    @app.post("/api/internal/product-workspace-cogs")
+    def product_workspace_cogs(request: Request, payload: dict = Body(...)):
+        rows = payload.get("rows") if isinstance(payload, dict) else None
+        if not isinstance(rows, list):
+            raise HTTPException(status_code=422, detail="rows must be an array")
+        return JSONResponse(_product_workspace_cogs(rows))
 
     # NOTE: read endpoints here must never run heavy blocking SQL on the event
     # loop (the async-def originals serialized the Overview tab's five parallel
