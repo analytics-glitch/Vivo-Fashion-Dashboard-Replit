@@ -336,7 +336,7 @@ function Progress({ value = 0 }: { value?: number | null }) { const safe = Math.
 function StatusPill({ value }: { value: unknown }) { const label = fmt(value, 'In progress'); return <span className={`status-pill status-${label.toLowerCase().replaceAll(' ', '-')}`}><i />{label}</span>; }
 
 type FocusWeek = { isoYear: number; isoWeek: number; stylesCommitted: number; unitsCommitted: number; weeklyPaceUnits: number; monthlyPlanUnits: number; monthLabel: string; varianceUnits: number; status: string };
-type FocusNewness = { newUnits: number; totalUnits: number; pct: number; monthlyFloorPct: number; scorecardGoalPct: number; meetsMonthlyFloor: boolean; meetsScorecardGoal: boolean; discrepancy: string };
+type FocusNewness = { newUnits: number; totalUnits: number; pct: number; targetUnits: number; targetPctOfCapacity: number; plannedNewStyles: number; impliedStyles: number; shortfallUnits: number; shortfallStyles: number; meetsTarget: boolean; monthLabel: string; explanation: string };
 type FocusGap = { subCategory: string; plannedNewStyles: number; availableNewStyles: number; balance: number; status: string };
 type FocusWaiting = { sampleApprovals: number; setSampleApprovals: number; fabricBlocks: number; total: number };
 type FocusScorecard = { key: string; owner: string; measurable: string; goal: string; value: number | null; uom: string; onTrack: boolean | null; available: boolean; note?: string };
@@ -417,15 +417,17 @@ function Dashboard() {
                 <Sparkles size={14} />
               </h3>
               <div className="dash-tile-main">
-                <span className="dash-tile-value">{focus.newness.pct.toFixed(1)}%</span>
-                <span className="dash-tile-sub">{Math.round(focus.newness.newUnits).toLocaleString()} of {Math.round(focus.newness.totalUnits).toLocaleString()} committed units</span>
+                <span className="dash-tile-value">{Math.round(focus.newness.newUnits).toLocaleString()} / {Math.round(focus.newness.targetUnits).toLocaleString()}</span>
+                <span className="dash-tile-sub">new units planned · {focus.newness.pct.toFixed(1)}% of {Math.round(focus.newness.totalUnits).toLocaleString()} total units</span>
               </div>
-              <div className={`dash-tile-status ${!focus.newness.meetsMonthlyFloor ? 'danger' : !focus.newness.meetsScorecardGoal ? 'warning' : 'success'}`}>
-                {!focus.newness.meetsMonthlyFloor ? <CircleAlert size={14} /> : <Check size={14} />}
+              <div className={`dash-tile-status ${focus.newness.meetsTarget ? 'success' : 'danger'}`}>
+                {focus.newness.meetsTarget ? <Check size={14} /> : <CircleAlert size={14} />}
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
-                  <span>{focus.newness.meetsMonthlyFloor ? 'Meets' : 'Misses'} {focus.newness.monthlyFloorPct}% floor</span>
+                  <span>{focus.newness.meetsTarget ? 'Meets' : 'Misses'} {focus.newness.monthLabel} unit commitment</span>
                   <span style={{ fontSize: 10, color: 'var(--color-muted-foreground)', fontWeight: 500 }}>
-                    L10 goal is {focus.newness.scorecardGoalPct}% — five points below the monthly floor
+                    {focus.newness.meetsTarget
+                      ? `${focus.newness.plannedNewStyles} planned styles · ${focus.newness.targetPctOfCapacity.toFixed(1)}% of capacity is the derived target share`
+                      : `${Math.round(focus.newness.shortfallUnits).toLocaleString()} units · ${focus.newness.shortfallStyles} styles short`}
                   </span>
                 </div>
               </div>

@@ -40,6 +40,11 @@ import {
   rangePlanAosDefault,
   rangePlanAosDefaultMigrationSql,
 } from "./range-plan-defaults.js";
+import {
+  DEFAULT_NEW_STYLE_ORDER_UNITS,
+  calculateNewnessCommitment,
+  weeklyNewnessTarget,
+} from "./range-plan-newness.js";
 
 const { Pool } = pg;
 const databaseUrl = process.env.VIVO_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -197,10 +202,10 @@ const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
 const RANGE_PLAN_SEASON_SEEDS = [
   { seasonName: "Q3 2026", revenueTarget: 0, factoryCapacityUnits: 83000, cadence: "quarterly" as const, otbMonths: ["2026-07-01", "2026-08-01", "2026-09-01"] as const },
   { seasonName: "Q4 2026", revenueTarget: 450000000, factoryCapacityUnits: 90000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
-  { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 25000, cadence: "monthly" as const, otbMonth: "2026-09-01" },
-  { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-10-01" },
-  { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-11-01" },
-  { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, cadence: "monthly" as const, otbMonth: "2026-12-01" },
+  { seasonName: "September 2026", revenueTarget: 30000000, factoryCapacityUnits: 25000, newnessTargetUnits: 10500, cadence: "monthly" as const, otbMonth: "2026-09-01" },
+  { seasonName: "October 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, newnessTargetUnits: 10500, cadence: "monthly" as const, otbMonth: "2026-10-01" },
+  { seasonName: "November 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, newnessTargetUnits: 10500, cadence: "monthly" as const, otbMonth: "2026-11-01" },
+  { seasonName: "December 2026", revenueTarget: 30000000, factoryCapacityUnits: 30000, newnessTargetUnits: 10500, cadence: "monthly" as const, otbMonth: "2026-12-01" },
 ] as const;
 const Q3_2026_JUL_AUG_ACTUALS = [
   ["Dresses", "Maxi Dresses", 32, 10306],
@@ -232,7 +237,7 @@ const Q3_2026_JUL_AUG_ACTUALS = [
 const Q3_2026_ACTUAL_ORDER_COUNT = 182;
 const Q3_2026_ACTUAL_UNITS = 60631;
 const Q3_2026_CAPACITY_UNITS = 83000;
-const Q3_2026_PLAN_UNITS = 25000;
+const Q3_2026_PLAN_UNITS = 25300;
 const Q3_2026_ACTUAL_COGS_PCT = 30.9;
 const Q3_2026_PLANNING_DISCLOSURE = {
   headline: "Q3 = July–August actuals + September plan",
@@ -257,7 +262,7 @@ const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
   ["Bottoms", "Culottes & Capri Pants", 0, 400, 2375, null, 1, 0, 0, "No September styles planned after the August sell-through and cover review."],
   ["Bottoms", "Shorts & Skorts", 0, 400, 2714, null, 53, 0, 0, "No September styles planned after the August sell-through and cover review."],
   ["Dresses", "Knee Length Dresses", 6, 400, 5801, 1594, 3576, 2, 4, "Business-need plan: two new and four repeat styles. Pipeline availability is shown separately."],
-  ["Dresses", "Maxi Dresses", 13, 400, 6877, 1830, 3087, 7, 6, "Business-need plan: seven new and six repeat styles. Pipeline availability is shown separately."],
+  ["Dresses", "Maxi Dresses", 14, 400, 6877, 1830, 3087, 8, 6, "Business-need plan: eight new and six repeat styles. The extra new style closes the 10,500-unit newness commitment while leaving the capacity tension visible."],
   ["Dresses", "Midi & Capri Dresses", 0, 400, 5932, null, 495, 0, 0, "No September styles planned; pipeline availability remains visible as potential surplus."],
   ["Dresses", "Short & Mini Dresses", 0, 400, 4900, 1448, 192, 0, 0, "No September styles planned after the August sell-through and cover review."],
   ["Dresses", "Kaftan Dresses", 4, 400, 5500, 1435, 491, 2, 2, "Business-need plan: two new and two repeat styles. Pipeline availability is shown separately."],
@@ -278,7 +283,7 @@ const SEPTEMBER_2026_MONTHLY_ROW_SEEDS = [
   ["Tops", "Midriff & Crop Tops", 0, 400, 2524, null, 120, 0, 0, "No September styles planned after the August sell-through and cover review."],
 ] as const;
 const SEPTEMBER_2026_PLAN_NOTES =
-  "September plan expresses the business requirement: 34 new and 37 repeat styles within the 25,000-unit capacity. New-style pipeline availability for target order weeks 36–39 is compared live and does not cap the plan.";
+  "September holds the absolute 10,500-unit newness commitment: 35 new and 37 repeat styles. The resulting 25,300-unit plan is 300 units above the reduced 25,000-unit capacity; that tension is intentional and visible.";
 const STYLE_DEVELOPMENT_TRACKER_SEEDS = [
   ["V0826023", "Vivo Pleated Wide Leg Pants in Twill", "NEW", "Set Sampling", "Bottoms", "Full Length Pants", "WK36", "YIHAO 681112 Light Polyester Crepe"],
   ["V0826080", "Vivo Mistari 3/4 Sleeve Kaftan Dress in Twill", "NEW", "Pattern", "Dresses", "Kaftan Dresses", "WK36", "YIHAO 57 2345"],
@@ -1499,6 +1504,64 @@ async function ensureStyleDevelopmentTrackerData() {
   }
 }
 
+async function ensureRangePlanNewnessData() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${schema}.range_plan_seed_migrations (
+      migration_key TEXT PRIMARY KEY,
+      applied_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    ALTER TABLE ${schema}.range_plan_seasons
+      ADD COLUMN IF NOT EXISTS newness_target_units INTEGER
+  `);
+  const client = await pool.connect();
+  try {
+    await client.query("BEGIN");
+    const targetClaim = await client.query(
+      `INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+       VALUES ('monthly-newness-unit-target-v1')
+       ON CONFLICT DO NOTHING
+       RETURNING migration_key`,
+    );
+    if (targetClaim.rows[0]) {
+      await client.query(
+        `UPDATE ${schema}.range_plan_seasons
+            SET newness_target_units=10500
+          WHERE season_year=2026 AND season_name NOT LIKE 'Q%'`,
+      );
+      await client.query(
+        `UPDATE ${schema}.range_plan_rows r
+            SET style_count_target=14,
+                new_style_count=8,
+                new_units=2400,
+                notes='Business-need plan: eight new and six repeat styles. The extra new style closes the 10,500-unit newness commitment while leaving the capacity tension visible.'
+           FROM ${schema}.range_plan_seasons s
+          WHERE s.id=r.season_id
+            AND s.season_name='September 2026'
+            AND s.season_year=2026
+            AND r.sub_category='Maxi Dresses'`,
+      );
+      await client.query(
+        `UPDATE ${schema}.range_plan_otb o
+            SET planned_units=25300,
+                new_styles_count=35,
+                notes=$1
+           FROM ${schema}.range_plan_seasons s
+          WHERE s.id=o.season_id
+            AND s.season_name='September 2026'
+            AND s.season_year=2026
+            AND o.month_year='2026-09-01'`,
+        [SEPTEMBER_2026_PLAN_NOTES],
+      );
+    }
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
 async function ensureRangePlanData() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS ${schema}.range_plan_seed_migrations (
@@ -1532,15 +1595,24 @@ async function ensureRangePlanData() {
     `ALTER TABLE ${schema}.range_plan_seasons
      ALTER COLUMN cogs_budget_pct SET DEFAULT 32`,
   );
+  await pool.query(
+    `ALTER TABLE ${schema}.range_plan_seasons
+     ADD COLUMN IF NOT EXISTS newness_target_units INTEGER`,
+  );
   await pool.query(rangePlanAosDefaultMigrationSql(schema));
   for (const seasonSeed of RANGE_PLAN_SEASON_SEEDS) {
     const seasonResult = await pool.query<{ id: number }>(
       `INSERT INTO ${schema}.range_plan_seasons
-        (season_name,season_year,revenue_target_kes,cogs_budget_pct,factory_capacity_units,status)
-       VALUES ($1,2026,$2,32,$3,'active')
+        (season_name,season_year,revenue_target_kes,cogs_budget_pct,factory_capacity_units,newness_target_units,status)
+       VALUES ($1,2026,$2,32,$3,$4,'active')
        ON CONFLICT (season_name,season_year) DO NOTHING
        RETURNING id`,
-      [seasonSeed.seasonName, seasonSeed.revenueTarget, seasonSeed.factoryCapacityUnits],
+      [
+        seasonSeed.seasonName,
+        seasonSeed.revenueTarget,
+        seasonSeed.factoryCapacityUnits,
+        seasonSeed.cadence === "monthly" ? seasonSeed.newnessTargetUnits : null,
+      ],
     );
     const seasonId = seasonResult.rows[0]?.id ?? (await pool.query<{ id: number }>(
       `SELECT id FROM ${schema}.range_plan_seasons WHERE season_name=$1 AND season_year=2026`,
@@ -1826,7 +1898,7 @@ async function ensureRangePlanData() {
         await septemberAllocationClient.query(
           `INSERT INTO ${schema}.range_plan_otb
             (season_id,month_year,revenue_target,planned_units,new_styles_count,notes)
-           VALUES ($1,'2026-09-01',30000000,25000,34,$2)
+           VALUES ($1,'2026-09-01',30000000,25300,35,$2)
            ON CONFLICT (season_id,month_year) DO UPDATE SET
              planned_units=EXCLUDED.planned_units,
              new_styles_count=EXCLUDED.new_styles_count,
@@ -1842,6 +1914,7 @@ async function ensureRangePlanData() {
   } finally {
     septemberAllocationClient.release();
   }
+  await ensureRangePlanNewnessData();
   const q3ActualPlanClient = await pool.connect();
   try {
     await q3ActualPlanClient.query("BEGIN");
@@ -1960,8 +2033,26 @@ async function runBestEffortMigration(label: string, text: string) {
 
 async function ensureRecentWorkspaceMigrations() {
   const migrations: Array<[string, string]> = [
+    ["weekly order plan movement audit", `
+      CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_plan_line_moves (
+        id BIGSERIAL PRIMARY KEY,
+        line_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plan_lines(id) ON DELETE CASCADE,
+        from_plan_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plans(id) ON DELETE RESTRICT,
+        to_plan_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plans(id) ON DELETE RESTRICT,
+        from_iso_year INTEGER NOT NULL,
+        from_iso_week INTEGER NOT NULL CHECK (from_iso_week BETWEEN 1 AND 53),
+        to_iso_year INTEGER NOT NULL,
+        to_iso_week INTEGER NOT NULL CHECK (to_iso_week BETWEEN 1 AND 53),
+        moved_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+        moved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (from_plan_id <> to_plan_id)
+      );
+      CREATE INDEX IF NOT EXISTS weekly_order_plan_line_moves_line_idx
+        ON ${schema}.weekly_order_plan_line_moves (line_id, moved_at, id);
+    `],
     ["range plan newness and commitment columns", `
       ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_floor_pct NUMERIC NOT NULL DEFAULT 40;
+      ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_target_units INTEGER;
       ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS product_category TEXT;
       ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS opening_stock_units INTEGER;
       ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS units_sold_last_month INTEGER;
@@ -2661,8 +2752,23 @@ async function ensureSchema() {
       UNIQUE (plan_id, source, source_id),
       UNIQUE (plan_id, sequence_no)
     );
+    CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_plan_line_moves (
+      id BIGSERIAL PRIMARY KEY,
+      line_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plan_lines(id) ON DELETE CASCADE,
+      from_plan_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plans(id) ON DELETE RESTRICT,
+      to_plan_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plans(id) ON DELETE RESTRICT,
+      from_iso_year INTEGER NOT NULL,
+      from_iso_week INTEGER NOT NULL CHECK (from_iso_week BETWEEN 1 AND 53),
+      to_iso_year INTEGER NOT NULL,
+      to_iso_week INTEGER NOT NULL CHECK (to_iso_week BETWEEN 1 AND 53),
+      moved_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      moved_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      CHECK (from_plan_id <> to_plan_id)
+    );
     CREATE INDEX IF NOT EXISTS weekly_order_plan_lines_plan_idx
       ON ${schema}.weekly_order_plan_lines (plan_id, sub_category, fabric);
+    CREATE INDEX IF NOT EXISTS weekly_order_plan_line_moves_line_idx
+      ON ${schema}.weekly_order_plan_line_moves (line_id, moved_at, id);
     CREATE TABLE IF NOT EXISTS ${schema}.garment_images (
       id SERIAL PRIMARY KEY,
       source TEXT NOT NULL CHECK (source IN ('catalogue','plm')),
@@ -2921,6 +3027,7 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS expected_unit_cost NUMERIC;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS selling_price NUMERIC;
     ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_floor_pct NUMERIC NOT NULL DEFAULT 40;
+    ALTER TABLE ${schema}.range_plan_seasons ADD COLUMN IF NOT EXISTS newness_target_units INTEGER;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_style_count INTEGER NOT NULL DEFAULT 0;
       ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS new_style_aos_units INTEGER NOT NULL DEFAULT 300;
     ALTER TABLE ${schema}.range_plan_rows ADD COLUMN IF NOT EXISTS reorder_style_count INTEGER NOT NULL DEFAULT 0;
@@ -5286,6 +5393,7 @@ function rangePlanSeasonPayload(row: Record<string, unknown>) {
     revenueTargetKes: Number(row.revenueTargetKes ?? 0),
     cogsBudgetPct: Number(row.cogsBudgetPct ?? 0),
     factoryCapacityUnits: Number(row.factoryCapacityUnits ?? 0),
+    newnessTargetUnits: row.newnessTargetUnits == null ? null : Number(row.newnessTargetUnits),
     newnessFloorPct: Number(row.newnessFloorPct ?? 40),
     status: String(row.status ?? "active"),
     cadence: seasonName.startsWith("Q") ? "quarterly" : "monthly",
@@ -5745,7 +5853,8 @@ router.get("/range-plan", async (req, res, next) => {
     const seasonsResult = await pool.query(
       `SELECT id,season_name AS "seasonName",season_year AS "seasonYear",
          revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
-         factory_capacity_units AS "factoryCapacityUnits",newness_floor_pct AS "newnessFloorPct",status
+         factory_capacity_units AS "factoryCapacityUnits",newness_target_units AS "newnessTargetUnits",
+         newness_floor_pct AS "newnessFloorPct",status
        FROM ${schema}.range_plan_seasons
        ORDER BY CASE season_name
            WHEN 'Q3 2026' THEN 1
@@ -6068,36 +6177,32 @@ router.get("/range-plan", async (req, res, next) => {
           targetOrderWeeks: "WK36–WK39",
         }
         : null;
-      const quarterMonthlyRollup = false && season.cadence === "quarterly"
+      const quarterMonthlyRollup = season.cadence === "quarterly"
        ? (await pool.query(
          `WITH months AS (
             SELECT generate_series($1::date,($2::date - INTERVAL '1 month')::date,INTERVAL '1 month')::date AS month_start
           ),
           monthly_plans AS (
-            SELECT LOWER(s.season_name) AS season_name,s.id,
+             SELECT LOWER(s.season_name) AS season_name,s.id,
               COALESCE(SUM(r.planned_units_calculated),0)::int AS planned_units,
-              COALESCE(SUM(r.planned_units_calculated * COALESCE(r.selling_price,0)),0)::numeric AS gross_revenue
+               CASE
+                 WHEN COUNT(r.id) = 0 OR COUNT(*) FILTER (WHERE r.selling_price IS NULL) > 0 THEN NULL
+                 ELSE COALESCE(SUM(r.planned_units_calculated * r.selling_price),0)::numeric
+               END AS gross_revenue
             FROM ${schema}.range_plan_seasons s
             LEFT JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
-            WHERE s.season_year=$3 AND s.season_name NOT LIKE 'Q%'
+             WHERE s.season_year=$3
+               AND LOWER(s.season_name) IN (
+                 SELECT LOWER(to_char(month_start,'FMMonth YYYY')) FROM months
+               )
             GROUP BY s.id,s.season_name
-          ),
-          dated_orders AS (
-            SELECT date_trunc('month',o.date_ordered)::date AS month_start,
-              COUNT(DISTINCT LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''),NULLIF(o.style_name,''),o.order_ref))))::int AS ordered_styles,
-              COALESCE(SUM(o.order_qty),0)::numeric AS ordered_units
-            FROM public.production_orders o
-            WHERE o.date_ordered >= $1::date AND o.date_ordered < $2::date
-              AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
-            GROUP BY date_trunc('month',o.date_ordered)::date
           )
           SELECT COALESCE(mp.id,$4::int) AS "seasonId",to_char(m.month_start,'FMMonth YYYY') AS "seasonName",
             m.month_start::text AS "monthYear",COALESCE(mp.planned_units,0) AS "plannedUnits",
-            COALESCE(mp.gross_revenue,0) AS "grossRevenuePotential",
-            COALESCE(o.ordered_styles,0) AS "orderedStyles",COALESCE(o.ordered_units,0) AS "orderedUnits"
+             mp.gross_revenue AS "grossRevenuePotential",
+             mp.id IS NOT NULL AS "hasMonthlyPlan"
           FROM months m
           LEFT JOIN monthly_plans mp ON mp.season_name=LOWER(to_char(m.month_start,'FMMonth YYYY'))
-          LEFT JOIN dated_orders o ON o.month_start=m.month_start
           ORDER BY m.month_start`,
          [orderWindow[0], orderWindow[1], season.seasonYear, season.id],
        )).rows.map((row) => ({
@@ -6105,9 +6210,8 @@ router.get("/range-plan", async (req, res, next) => {
          seasonName: String(row.seasonName),
          monthYear: String(row.monthYear),
          plannedUnits: Number(row.plannedUnits ?? 0),
-         orderedStyles: Number(row.orderedStyles ?? 0),
-         orderedUnits: Number(row.orderedUnits ?? 0),
-         grossRevenuePotential: Number(row.grossRevenuePotential ?? 0),
+          grossRevenuePotential: row.grossRevenuePotential == null ? null : Number(row.grossRevenuePotential),
+          hasMonthlyPlan: Boolean(row.hasMonthlyPlan),
        }))
        : [];
       const bi = await biWorkspaceSource();
@@ -6163,7 +6267,7 @@ router.get("/range-plan", async (req, res, next) => {
         reconciliations,
         sourceStatus: Array.isArray(bi.sourceStatus) ? bi.sourceStatus : [{ name: "BI canonical source", status: "Active", detail: "Shared facts loaded from BI." }],
       health: await rangePlanHealth(),
-        quarterMonthlyRollup: biMonthlyRollup,
+        quarterMonthlyRollup,
        planningDisclosure: season.seasonName === "Q3 2026" ? Q3_2026_PLANNING_DISCLOSURE : null,
         pipelineComparison,
           orderTracking: { ...orderTracking, orderedStyles: biOrderedStyles, orderedUnits: biOrderedUnits, unmatchedUnits: 0, unmatchedStyles: 0, unmatched: [] },
@@ -6251,11 +6355,13 @@ router.put("/range-plan/seasons/:seasonId", async (req, res, next) => {
     const revenueTargetKes = req.body?.revenueTargetKes === undefined ? null : Number(req.body.revenueTargetKes);
     const cogsBudgetPct = req.body?.cogsBudgetPct === undefined ? null : Number(req.body.cogsBudgetPct);
     const factoryCapacityUnits = req.body?.factoryCapacityUnits === undefined ? null : Number(req.body.factoryCapacityUnits);
+    const newnessTargetUnits = req.body?.newnessTargetUnits === undefined ? null : Number(req.body.newnessTargetUnits);
     const newnessFloorPct = req.body?.newnessFloorPct === undefined ? null : Number(req.body.newnessFloorPct);
     if (!Number.isInteger(seasonId) || seasonId <= 0 ||
       (revenueTargetKes !== null && (!Number.isFinite(revenueTargetKes) || revenueTargetKes < 0)) ||
       (cogsBudgetPct !== null && (!Number.isFinite(cogsBudgetPct) || cogsBudgetPct < 0 || cogsBudgetPct > 100)) ||
       (newnessFloorPct !== null && (!Number.isFinite(newnessFloorPct) || newnessFloorPct < 0 || newnessFloorPct > 100)) ||
+      (newnessTargetUnits !== null && (!Number.isInteger(newnessTargetUnits) || newnessTargetUnits < 0)) ||
       (factoryCapacityUnits !== null && (!Number.isInteger(factoryCapacityUnits) || factoryCapacityUnits < 0))) {
       res.status(400).json({ error: "Invalid season assumptions" });
       return;
@@ -6265,12 +6371,14 @@ router.put("/range-plan/seasons/:seasonId", async (req, res, next) => {
        SET revenue_target_kes=COALESCE($2,revenue_target_kes),
            cogs_budget_pct=COALESCE($3,cogs_budget_pct),
             factory_capacity_units=COALESCE($4,factory_capacity_units),
-            newness_floor_pct=COALESCE($5,newness_floor_pct)
+            newness_floor_pct=COALESCE($5,newness_floor_pct),
+            newness_target_units=COALESCE($6,newness_target_units)
        WHERE id=$1
        RETURNING id,season_name AS "seasonName",season_year AS "seasonYear",
          revenue_target_kes AS "revenueTargetKes",cogs_budget_pct AS "cogsBudgetPct",
-          factory_capacity_units AS "factoryCapacityUnits",newness_floor_pct AS "newnessFloorPct",status`,
-      [seasonId, revenueTargetKes, cogsBudgetPct, factoryCapacityUnits, newnessFloorPct],
+           factory_capacity_units AS "factoryCapacityUnits",newness_target_units AS "newnessTargetUnits",
+           newness_floor_pct AS "newnessFloorPct",status`,
+      [seasonId, revenueTargetKes, cogsBudgetPct, factoryCapacityUnits, newnessFloorPct, newnessTargetUnits],
     );
     if (!result.rows[0]) {
       res.status(404).json({ error: "Planning season not found" });
@@ -8159,7 +8267,8 @@ async function workspaceHomeFocus() {
       actualUnits: number; pendingUnits: number; actualNewUnits: number;
       pendingNewUnits: number; actualNewStyles: number; replenishmentUnits: number;
       reorderUnits: number; productionOrders: number; monthlyPlanUnits: number;
-      monthLabel: string;
+      monthLabel: string; monthlyNewnessTargetUnits: number; monthlyPlannedNewUnits: number;
+      monthlyPlannedNewStyles: number; monthlyPlannedTotalUnits: number;
     }>(`
       WITH bounds AS (
         SELECT TO_CHAR(CURRENT_DATE,'IYYY')::int AS iso_year,
@@ -8195,9 +8304,15 @@ async function workspaceHomeFocus() {
         )
       ),
       monthly_plan AS (
-        SELECT s.factory_capacity_units::numeric AS units
+        SELECT s.factory_capacity_units::numeric AS units,
+          COALESCE(s.newness_target_units,0)::numeric AS newness_target_units,
+          COALESCE(SUM(r.new_style_count*r.new_style_aos_units),0)::numeric AS planned_new_units,
+          COALESCE(SUM(r.new_style_count),0)::int AS planned_new_styles,
+          COALESCE(SUM(r.planned_units_calculated),0)::numeric AS planned_total_units
         FROM ${schema}.range_plan_seasons s
+        LEFT JOIN ${schema}.range_plan_rows r ON r.season_id=s.id
         WHERE LOWER(s.season_name)=LOWER(TO_CHAR(CURRENT_DATE,'FMMonth YYYY'))
+        GROUP BY s.id
         ORDER BY s.id DESC LIMIT 1
       )
       SELECT b.iso_year AS "isoYear",b.iso_week AS "isoWeek",
@@ -8214,6 +8329,10 @@ async function workspaceHomeFocus() {
         COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) IN ('re-order','reorder','repeat','rr')),0)::float AS "reorderUnits",
         COALESCE((SELECT SUM(orders) FROM actual_by_style),0)::int AS "productionOrders",
         COALESCE((SELECT units FROM monthly_plan),0)::float AS "monthlyPlanUnits",
+        COALESCE((SELECT newness_target_units FROM monthly_plan),0)::float AS "monthlyNewnessTargetUnits",
+        COALESCE((SELECT planned_new_units FROM monthly_plan),0)::float AS "monthlyPlannedNewUnits",
+        COALESCE((SELECT planned_new_styles FROM monthly_plan),0)::int AS "monthlyPlannedNewStyles",
+        COALESCE((SELECT planned_total_units FROM monthly_plan),0)::float AS "monthlyPlannedTotalUnits",
         TO_CHAR(CURRENT_DATE,'FMMonth YYYY') AS "monthLabel"
       FROM bounds b
     `),
@@ -8293,15 +8412,21 @@ async function workspaceHomeFocus() {
   const waiting = waitingResult.rows[0];
   const unitsCommitted = Number(week.actualUnits) + Number(week.pendingUnits);
   const stylesCommitted = Number(week.actualStyles) + Number(week.pendingStyles);
-  const newUnits = Number(week.actualNewUnits) + Number(week.pendingNewUnits);
   const weeklyPaceUnits = Number(week.monthlyPlanUnits) / 4;
-  const newnessPct = unitsCommitted > 0 ? newUnits / unitsCommitted * 100 : 0;
+  const monthlyNewness = calculateNewnessCommitment({
+    targetUnits: Number(week.monthlyNewnessTargetUnits),
+    plannedNewUnits: Number(week.monthlyPlannedNewUnits),
+    plannedTotalUnits: Number(week.monthlyPlannedTotalUnits),
+    capacityUnits: Number(week.monthlyPlanUnits),
+    orderSizeUnits: DEFAULT_NEW_STYLE_ORDER_UNITS,
+    plannedNewStyles: Number(week.monthlyPlannedNewStyles),
+  });
   const scorecardByName = new Map(scorecardRows.rows.map((row) => [row.measurable.toLowerCase(), row]));
   const scorecardDefinition = [
     { key: "in_house_units", measurable: "Total In-house Units Ordered", value: Number(week.actualUnits), note: "Dated in-house production orders this week" },
     { key: "input_cogs", measurable: "Vivo Input COGS", value: cogsResult.rows[0]?.value ?? null, note: `${cogsResult.rows[0]?.costedRows ?? 0}/${cogsResult.rows[0]?.totalRows ?? 0} ${week.monthLabel} plan rows costed` },
     { key: "average_order_size", measurable: "Avg Vivo Production Order Size", value: Number(week.productionOrders) ? Number(week.actualUnits) / Number(week.productionOrders) : null, note: "Dated in-house production orders this week" },
-    { key: "new_units_pct", measurable: "% of NEW units ordered vs TOTAL", value: Number(week.actualUnits) ? Number(week.actualNewUnits) / Number(week.actualUnits) * 100 : null, note: "L10 goal is 35%; monthly plan floor is 40%" },
+    { key: "new_units_pct", measurable: "% of NEW units ordered vs TOTAL", value: Number(week.actualUnits) ? Number(week.actualNewUnits) / Number(week.actualUnits) * 100 : null, note: `${week.monthLabel} holds an absolute ${monthlyNewness.targetUnits.toLocaleString()}-unit newness commitment; this percentage is an outcome.` },
     { key: "replenishment_units", measurable: "No. of Replenishment Units Ordered", value: Number(week.replenishmentUnits), note: "Dated in-house production orders this week" },
     { key: "reorder_units", measurable: "No. of Reorder Units Ordered", value: Number(week.reorderUnits), note: "Dated in-house production orders this week" },
     { key: "new_styles_ordered", measurable: "No. of New Styles Ordered", value: Number(week.actualNewStyles), note: "Distinct dated new styles this week" },
@@ -8335,10 +8460,12 @@ async function workspaceHomeFocus() {
       status: unitsCommitted >= weeklyPaceUnits ? "on_track" : "off_track",
     },
     newness: {
-      newUnits, totalUnits: unitsCommitted, pct: newnessPct,
-      monthlyFloorPct: 40, scorecardGoalPct: 35,
-      meetsMonthlyFloor: newnessPct >= 40, meetsScorecardGoal: newnessPct > 35,
-      discrepancy: "The September Range Plan requires at least 40% new units; the L10 scorecard goal remains above 35%.",
+      ...monthlyNewness,
+      pct: monthlyNewness.outcomePct,
+      totalUnits: monthlyNewness.plannedTotalUnits,
+      newUnits: monthlyNewness.plannedNewUnits,
+      monthLabel: week.monthLabel,
+      explanation: "The unit commitment stays fixed when capacity changes; the percentage moves as the honest outcome.",
     },
     gaps: gapResult.rows.map((row) => ({
       ...row,
@@ -10450,14 +10577,32 @@ router.get("/weekly-order-plan", async (req, res, next) => {
         l.estimated_quantity AS "estimatedQuantity",l.order_type AS "orderType",l.order_stage AS "orderStage",
         COALESCE(fm.metres,0)::float AS "availableMetres",
         ao.first_order_date::text AS "firstOrderDate",COALESCE(ao.actual_quantity,0)::float AS "actualQuantity",
-        COALESCE(ao.orders,'[]'::json) AS "actualOrders"
+         COALESCE(ao.orders,'[]'::json) AS "actualOrders",
+         COALESCE(mv.move_count,0)::int AS "moveCount",
+         COALESCE(mv.original_iso_year,p.iso_year)::int AS "originalIsoYear",
+         COALESCE(mv.original_iso_week,p.iso_week)::int AS "originalIsoWeek",
+         COALESCE(mv.history,'[]'::json) AS "moveHistory"
        FROM ${schema}.weekly_order_plan_lines l
+        JOIN ${schema}.weekly_order_plans p ON p.id=l.plan_id
        LEFT JOIN ${schema}.garment_images gi ON gi.source=CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END
          AND gi.style_key=LOWER(BTRIM(l.style_number))
         LEFT JOIN LATERAL (SELECT 0::numeric AS metres) fm ON TRUE
          LEFT JOIN LATERAL (
            SELECT NULL::date AS first_order_date,0::numeric AS actual_quantity,'[]'::json AS orders
          ) ao ON TRUE
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int AS move_count,
+             (ARRAY_AGG(h.from_iso_year ORDER BY h.moved_at,h.id))[1] AS original_iso_year,
+             (ARRAY_AGG(h.from_iso_week ORDER BY h.moved_at,h.id))[1] AS original_iso_week,
+             JSON_AGG(JSON_BUILD_OBJECT(
+               'fromIsoYear',h.from_iso_year,'fromIsoWeek',h.from_iso_week,
+               'toIsoYear',h.to_iso_year,'toIsoWeek',h.to_iso_week,
+               'movedAt',h.moved_at,'movedBy',COALESCE(NULLIF(BTRIM(u.name),''),'Workspace user')
+             ) ORDER BY h.moved_at,h.id) AS history
+           FROM ${schema}.weekly_order_plan_line_moves h
+           LEFT JOIN ${schema}.users u ON u.id=h.moved_by
+           WHERE h.line_id=l.id
+         ) mv ON TRUE
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
     ) : { rows: [] };
@@ -10524,6 +10669,32 @@ router.get("/weekly-order-plan", async (req, res, next) => {
     const unplannedOrders = actualOrders.rows.filter((order) => order.plannedLineId == null);
     const unplannedStyleKeys = new Set(unplannedOrders.map((order) =>
       `${String(order.styleNumber ?? "").trim().toLowerCase()}|${String(order.styleName ?? "").trim().toLowerCase()}`));
+    const monthlyNewnessResult = await pool.query<{
+      monthStart: string; monthLabel: string; targetUnits: number;
+    }>(
+      `SELECT month_start::text AS "monthStart",TO_CHAR(month_start,'FMMonth YYYY') AS "monthLabel",
+         COALESCE(s.newness_target_units,0)::float AS "targetUnits"
+       FROM (
+         SELECT generate_series(date_trunc('month',$1::date),date_trunc('month',$2::date),INTERVAL '1 month')::date AS month_start
+       ) months
+       JOIN ${schema}.range_plan_seasons s
+         ON LOWER(s.season_name)=LOWER(TO_CHAR(month_start,'FMMonth YYYY'))
+       ORDER BY month_start`,
+      [startDate, endDate],
+    );
+    const weeklyNewness = weeklyNewnessTarget(startDate, endDate, monthlyNewnessResult.rows.map((row) => ({
+      monthStart: String(row.monthStart).slice(0, 10),
+      monthLabel: String(row.monthLabel),
+      targetUnits: Number(row.targetUnits),
+    })));
+    const actualNewUnits = actualOrders.rows
+      .filter((order) => String(order.orderType ?? "").trim().toLowerCase() === "new")
+      .reduce((sum, order) => sum + Number(order.quantity ?? 0), 0);
+    const pendingNewUnits = lines.rows
+      .filter((line) => !line.firstOrderDate && String(line.orderType ?? "").trim().toLowerCase() === "new")
+      .reduce((sum, line) => sum + Number(line.estimatedQuantity ?? 0), 0);
+    const committedNewUnits = actualNewUnits + pendingNewUnits;
+    const newnessShortfallUnits = Math.max(0, weeklyNewness.targetUnits - committedNewUnits);
     const fabricSummary = Array.from(lines.rows.reduce((map, line) => {
       const key = String(line.fabric || "Fabric pending");
       const current = map.get(key) ?? { fabric: key, units: 0, styles: 0, availableMetres: Number(line.availableMetres || 0) };
@@ -10605,7 +10776,14 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       summary: {
         ...summary,
         newnessPct: summary.units ? 100 * summary.newUnits / summary.units : 0,
-        newnessFloorPct: 40,
+        newUnitsCommitted: committedNewUnits,
+        actualNewUnits,
+        pendingNewUnits,
+        newnessTargetUnits: weeklyNewness.targetUnits,
+        newnessTargetComponents: weeklyNewness.components,
+        newnessShortfallUnits,
+        newnessShortfallStyles: Math.ceil(newnessShortfallUnits / DEFAULT_NEW_STYLE_ORDER_UNITS),
+        newStyleOrderSizeUnits: DEFAULT_NEW_STYLE_ORDER_UNITS,
         orderedStyles: actualStyleKeys.size,
         orderedUnits: actualOrders.rows.reduce((sum, order) => sum + Number(order.quantity ?? 0), 0),
         unplannedStyles: unplannedStyleKeys.size,
@@ -10725,6 +10903,109 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
     if (!result.rows.length) { res.status(409).json({ error: "Confirmed weeks cannot be edited" }); return; }
     res.json({ ok: true });
   } catch (error) { next(error); }
+});
+
+router.post("/weekly-order-plan/lines/:id/move", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    const lineId = Number(req.params.id);
+    const toIsoYear = Number(req.body?.isoYear);
+    const toIsoWeek = Number(req.body?.isoWeek);
+    if (!Number.isInteger(lineId) || lineId <= 0 || !Number.isInteger(toIsoYear)
+      || !Number.isInteger(toIsoWeek) || toIsoWeek < 1 || toIsoWeek > 53) {
+      res.status(400).json({ error: "A valid line and destination week are required" }); return;
+    }
+    await client.query("BEGIN");
+    const lineResult = await client.query(
+      `SELECT l.id,l.plan_id,l.source,l.source_id,p.iso_year,p.iso_week
+       FROM ${schema}.weekly_order_plan_lines l
+       JOIN ${schema}.weekly_order_plans p ON p.id=l.plan_id
+       WHERE l.id=$1
+       FOR UPDATE OF l`,
+      [lineId],
+    );
+    const line = lineResult.rows[0];
+    if (!line) {
+      await client.query("ROLLBACK"); res.status(404).json({ error: "Planned style was not found" }); return;
+    }
+    if (Number(line.iso_year) === toIsoYear && Number(line.iso_week) === toIsoWeek) {
+      await client.query("ROLLBACK"); res.status(400).json({ error: "Choose a different destination week" }); return;
+    }
+    await client.query(
+      `INSERT INTO ${schema}.weekly_order_plans (iso_year,iso_week)
+       VALUES ($1,$2) ON CONFLICT (iso_year,iso_week) DO NOTHING`,
+      [toIsoYear, toIsoWeek],
+    );
+    const destinationResult = await client.query(
+      `SELECT id FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
+      [toIsoYear, toIsoWeek],
+    );
+    const destinationPlanId = Number(destinationResult.rows[0].id);
+    const lockedPlans = await client.query(
+      `SELECT id,iso_year,iso_week,status
+       FROM ${schema}.weekly_order_plans
+       WHERE id=ANY($1::int[])
+       ORDER BY id
+       FOR UPDATE`,
+      [[Number(line.plan_id), destinationPlanId]],
+    );
+    const sourcePlan = lockedPlans.rows.find((plan) => Number(plan.id) === Number(line.plan_id));
+    const destinationPlan = lockedPlans.rows.find((plan) => Number(plan.id) === destinationPlanId);
+    if (!sourcePlan || !destinationPlan) throw new Error("Weekly plan lock failed");
+    if (sourcePlan.status !== "draft" || destinationPlan.status !== "draft") {
+      await client.query("ROLLBACK");
+      res.status(409).json({ error: "Styles can move only between draft weeks" });
+      return;
+    }
+    const duplicate = await client.query(
+      `SELECT id FROM ${schema}.weekly_order_plan_lines
+       WHERE plan_id=$1 AND source=$2 AND source_id=$3 AND id<>$4`,
+      [destinationPlanId, line.source, line.source_id, lineId],
+    );
+    if (duplicate.rows.length) {
+      await client.query("ROLLBACK");
+      res.status(409).json({ error: "This style is already in the destination week" });
+      return;
+    }
+    const sequenceResult = await client.query(
+      `SELECT COALESCE(MAX(sequence_no),0)+1 AS sequence
+       FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$1`,
+      [destinationPlanId],
+    );
+    const sequence = Number(sequenceResult.rows[0].sequence);
+    await client.query(
+      `UPDATE ${schema}.weekly_order_plan_lines
+       SET plan_id=$1,sequence_no=$2,order_number=$3,updated_at=NOW()
+       WHERE id=$4`,
+      [destinationPlanId, sequence, `W${toIsoWeek}${String(sequence).padStart(3, "0")}`, lineId],
+    );
+    await client.query(
+      `INSERT INTO ${schema}.weekly_order_plan_line_moves
+       (line_id,from_plan_id,to_plan_id,from_iso_year,from_iso_week,to_iso_year,to_iso_week,moved_by)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      [lineId, Number(line.plan_id), destinationPlanId, Number(line.iso_year), Number(line.iso_week),
+        toIsoYear, toIsoWeek, req.workspaceUser?.id ?? null],
+    );
+    await client.query(
+      `UPDATE ${schema}.weekly_order_plans SET updated_at=NOW() WHERE id=ANY($1::int[])`,
+      [[Number(line.plan_id), destinationPlanId]],
+    );
+    await client.query("COMMIT");
+    res.json({
+      ok: true,
+      lineId,
+      from: { isoYear: Number(line.iso_year), isoWeek: Number(line.iso_week) },
+      to: { isoYear: toIsoYear, isoWeek: toIsoWeek },
+    });
+  } catch (error: any) {
+    await client.query("ROLLBACK");
+    if (error?.code === "23505") {
+      res.status(409).json({ error: "This style is already in the destination week" }); return;
+    }
+    next(error);
+  } finally {
+    client.release();
+  }
 });
 
 router.delete("/weekly-order-plan/lines/:id", async (req, res, next) => {
@@ -10873,6 +11154,7 @@ httpServer.listen(port, "0.0.0.0", () => {
     })
     .catch(async (error) => {
       console.error("Unable to initialise workspace database", error);
+      await ensureRangePlanNewnessData();
       await ensureRecentWorkspaceMigrations();
       await ensureStyleDevelopmentTrackerData();
       schemaReady = await isDatabaseReachable();

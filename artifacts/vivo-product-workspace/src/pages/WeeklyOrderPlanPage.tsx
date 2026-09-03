@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { AlertTriangle, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3, Image as ImageIcon, Plus, Search, Trash2, X } from 'lucide-react';
+import { AlertTriangle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3, History, Image as ImageIcon, Plus, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 type SourceStyle = {
@@ -13,6 +13,11 @@ type PlanLine = SourceStyle & {
   estimatedQuantity: number; orderType: string; orderStage: string;
   firstOrderDate: string | null; actualQuantity: number;
   actualOrders: { orderRef: string; orderDate: string; quantity: number }[];
+  originalIsoYear: number; originalIsoWeek: number; moveCount: number;
+  moveHistory: Array<{
+    fromIsoYear: number; fromIsoWeek: number; toIsoYear: number; toIsoWeek: number;
+    movedAt: string; movedBy: string;
+  }>;
 };
 type ActualOrder = {
   orderRef: string; orderDate: string; styleNumber: string; styleName: string; quantity: number;
@@ -25,7 +30,11 @@ type PlanPayload = {
   lines: PlanLine[];
   actualOrders: ActualOrder[];
   summary: {
-    units: number; styles: number; newUnits: number; newnessPct: number; newnessFloorPct: number;
+    units: number; styles: number; newUnits: number; newnessPct: number;
+    newUnitsCommitted: number; actualNewUnits: number; pendingNewUnits: number;
+    newnessTargetUnits: number; newnessShortfallUnits: number; newnessShortfallStyles: number;
+    newStyleOrderSizeUnits: number;
+    newnessTargetComponents: Array<{ monthLabel: string; monthlyTargetUnits: number; sharePct: number; targetUnits: number }>;
     notRaisedStyles: number; notRaisedUnits: number; orderedStyles: number; orderedUnits: number;
     unplannedStyles: number; unplannedUnits: number;
   };
@@ -120,6 +129,8 @@ function EditableLine({ line, locked, week, startDate, endDate }: { line: PlanLi
   const [quantity, setQuantity] = useState(String(line.estimatedQuantity));
   const [orderType, setOrderType] = useState(line.orderType);
   const [orderStage, setOrderStage] = useState(line.orderStage);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [destinationWeek, setDestinationWeek] = useState(week < 53 ? week + 1 : week - 1);
   const save = useMutation({
     mutationFn: () => jsonFetch(`/api/workspace/weekly-order-plan/lines/${line.id}`, { method: 'PATCH', body: JSON.stringify({ estimatedQuantity: Number(quantity), orderType, orderStage, selectedColourways: line.selectedColourways }) }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['weekly-order-plan', week] }),
@@ -127,6 +138,18 @@ function EditableLine({ line, locked, week, startDate, endDate }: { line: PlanLi
   const remove = useMutation({
     mutationFn: () => jsonFetch(`/api/workspace/weekly-order-plan/lines/${line.id}`, { method: 'DELETE' }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['weekly-order-plan', week] }),
+  });
+  const move = useMutation({
+    mutationFn: () => jsonFetch<{ to: { isoYear: number; isoWeek: number } }>(
+      `/api/workspace/weekly-order-plan/lines/${line.id}/move`,
+      { method: 'POST', body: JSON.stringify({ isoYear: 2026, isoWeek: destinationWeek }) },
+    ),
+    onSuccess: (result) => {
+      client.invalidateQueries({ queryKey: ['weekly-order-plan', week] });
+      client.invalidateQueries({ queryKey: ['weekly-order-plan', result.to.isoWeek] });
+      client.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
+      setMoveOpen(false);
+    },
   });
   const raisedThisWeek = line.actualOrders.some((order) => dateOnly(order.orderDate) >= startDate && dateOnly(order.orderDate) <= endDate);
   const raisedAfterWeek = line.actualOrders.some((order) => dateOnly(order.orderDate) > endDate);
@@ -141,7 +164,29 @@ function EditableLine({ line, locked, week, startDate, endDate }: { line: PlanLi
     <td><span className={`weekly-raised-status ${status === 'Not raised' ? 'pending' : status === 'Raised this week' ? 'raised' : 'shifted'}`}>{status}</span>{line.actualOrders.length > 0 && <small className="weekly-order-detail">{line.actualOrders.map((order) => `${order.orderRef} · ${formatDate(order.orderDate)} · ${Number(order.quantity).toLocaleString()}`).join(' | ')}</small>}</td>
     <td><select disabled={locked} value={orderType} onChange={(event) => setOrderType(event.target.value)} onBlur={() => orderType !== line.orderType && save.mutate()}>{orderTypes.map((value) => <option key={value}>{value}</option>)}</select></td>
     <td><select disabled={locked} value={orderStage} onChange={(event) => setOrderStage(event.target.value)} onBlur={() => orderStage !== line.orderStage && save.mutate()}>{stages.map((value) => <option key={value}>{value}</option>)}</select></td>
-    <td>{!locked && <button className="icon-button" onClick={() => remove.mutate()}><Trash2 size={15} /></button>}</td>
+    <td>
+      <div className="weekly-line-controls">
+        {line.moveCount > 0 && <details className="weekly-move-history">
+          <summary><History size={13} /> W{line.originalIsoWeek} · {line.moveCount} move{line.moveCount === 1 ? '' : 's'}</summary>
+          <ol>{line.moveHistory.map((item, index) => <li key={`${item.movedAt}-${index}`}>
+            <strong>W{item.fromIsoWeek} <ArrowRight size={11} /> W{item.toIsoWeek}</strong>
+            <span>{new Date(item.movedAt).toLocaleString('en-GB', { dateStyle: 'medium', timeStyle: 'short' })} · {item.movedBy}</span>
+          </li>)}</ol>
+        </details>}
+        {!locked && (moveOpen ? <div className="weekly-move-control">
+          <label>Move to
+            <select value={destinationWeek} onChange={(event) => setDestinationWeek(Number(event.target.value))}>
+              {Array.from({ length: 53 }, (_, index) => index + 1).filter((value) => value !== week)
+                .map((value) => <option key={value} value={value}>Week {value}</option>)}
+            </select>
+          </label>
+          <button className="button button-gold" disabled={move.isPending} onClick={() => move.mutate()}>{move.isPending ? 'Moving…' : 'Move'}</button>
+          <button className="icon-button" onClick={() => setMoveOpen(false)} aria-label="Cancel move"><X size={14} /></button>
+          {move.error && <span className="form-error">{move.error.message}</span>}
+        </div> : <button className="weekly-move-button" onClick={() => setMoveOpen(true)}><ArrowRight size={13} /> Move week</button>)}
+        {!locked && <button className="icon-button" onClick={() => remove.mutate()} aria-label={`Delete ${line.styleName}`}><Trash2 size={15} /></button>}
+      </div>
+    </td>
   </tr>;
 }
 
@@ -160,7 +205,10 @@ export default function WeeklyOrderPlanPage() {
   });
   const data = plan.data;
   const locked = data?.plan?.status === 'confirmed';
-  const underNewness = Boolean(data?.summary?.units && (data.summary.newnessPct < data.summary.newnessFloorPct));
+  const underNewness = Boolean(data?.summary && data.summary.newnessShortfallUnits > 0);
+  const newnessTargetDetail = data?.summary?.newnessTargetComponents
+    ?.map((component) => `${component.sharePct.toFixed(0)}% share of ${component.monthLabel}'s ${component.monthlyTargetUnits.toLocaleString()} units`)
+    .join(' + ');
   return <section className="page weekly-order-page">
     <header className="weekly-header"><div><span className="range-eyebrow">Buying / 2026 order calendar</span><h1>Weekly Order Plan</h1><p>The weekly target guides daily buying orders. Dated orders are the actual record and roll up independently into their calendar month.</p>{data?.week && <div className="weekly-date-range"><CalendarDays size={16} /><strong>Week {week}, {formatWeekRange(data.week)}</strong></div>}</div><div className="weekly-week-control"><button className="icon-button" onClick={() => setWeek((value) => Math.max(1, value - 1))}><ChevronLeft /></button><div><span>Order week</span><strong>Week {week}</strong></div><button className="icon-button" onClick={() => setWeek((value) => Math.min(53, value + 1))}><ChevronRight /></button></div></header>
     {plan.isLoading ? <div className="tracker-empty-state">Loading weekly plan…</div> : plan.isError ? <div className="empty-state error-state"><AlertTriangle /><h3>Could not load the weekly plan</h3><p>{plan.error.message}</p></div> : <>
@@ -169,12 +217,12 @@ export default function WeeklyOrderPlanPage() {
         <article className="good"><span>Orders raised</span><strong>{data?.summary.orderedStyles || 0} styles</strong><small>{(data?.summary.orderedUnits || 0).toLocaleString()} dated units this week</small></article>
         <article className={data?.summary.notRaisedStyles ? 'warning' : 'good'}><span>Still to raise</span><strong>{data?.summary.notRaisedStyles || 0} styles</strong><small>{(data?.summary.notRaisedUnits || 0).toLocaleString()} planned units without an order</small></article>
         <article className={data?.summary.unplannedStyles ? 'warning' : ''}><span>Unplanned orders</span><strong>{data?.summary.unplannedStyles || 0} styles</strong><small>{(data?.summary.unplannedUnits || 0).toLocaleString()} real units raised outside the target</small></article>
-        <article className={underNewness ? 'warning' : 'good'}><span>Newness split</span><strong>{(data?.summary?.newnessPct || 0).toFixed(1)}%</strong><small>{underNewness ? 'Below the 40% monthly floor' : 'At or above the 40% floor'}</small></article>
+        <article className={underNewness ? 'warning' : 'good'}><span>New units vs target</span><strong>{(data?.summary?.newUnitsCommitted || 0).toLocaleString()} / {(data?.summary?.newnessTargetUnits || 0).toLocaleString()}</strong><small>{newnessTargetDetail || 'No monthly new-unit target for this week'} · {(data?.summary?.newnessPct || 0).toFixed(1)}% weekly mix outcome</small></article>
       </div>
-      {underNewness && <div className="weekly-alert warning"><AlertTriangle size={18} /><div><strong>Newness is below 40%</strong><span>Add new styles or rebalance quantities before confirming this week.</span></div></div>}
+      {underNewness && <div className="weekly-alert warning"><AlertTriangle size={18} /><div><strong>Weekly newness is short by {(data?.summary?.newnessShortfallUnits || 0).toLocaleString()} units</strong><span>Add {(data?.summary?.newnessShortfallStyles || 0).toLocaleString()} new style{data?.summary?.newnessShortfallStyles === 1 ? '' : 's'} at the default {(data?.summary?.newStyleOrderSizeUnits || 300).toLocaleString()}-unit order size to meet this week’s share of the monthly commitment.</span></div></div>}
       <div className="weekly-actions"><div>{locked ? <span className="weekly-confirmed"><CheckCircle2 size={17} /> Weekly target confirmed and locked</span> : <span>Confirming locks the target. It never creates or dates an actual order.</span>}</div>{!locked && <><button className="button button-outline" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add style</button><button className="button button-dark" disabled={!data?.lines.length || confirm.isPending} onClick={() => { if (window.confirm(`Confirm Week ${week}? Its target styles and estimates will be locked. Actual orders will still appear from their real dates.`)) confirm.mutate(); }}>{confirm.isPending ? 'Confirming…' : 'Confirm target'}</button></>}</div>
       <div className="weekly-section-heading"><div><span className="range-eyebrow">Target</span><h2>Styles intended for Week {week}</h2></div><p>Order status follows the first real dated order, even when it is raised in a later week.</p></div>
-      <div className="weekly-table-wrap"><table className="weekly-table"><thead><tr><th>Plan #</th><th>Source style</th><th>Range</th><th>Fabric</th><th>Target units</th><th>Colourways</th><th>Raised status</th><th>Order type</th><th>Stage</th><th /></tr></thead><tbody>{data?.lines.map((line) => <EditableLine key={line.id} line={line} locked={locked} week={week} startDate={data.week.startDate} endDate={data.week.endDate} />)}{!data?.lines.length && <tr><td colSpan={10}><div className="weekly-no-lines"><strong>No target styles in Week {week}</strong><p>Real dated orders will still appear below, flagged as unplanned.</p>{!locked && <button className="button button-gold" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add first style</button>}</div></td></tr>}</tbody></table></div>
+       <div className="weekly-table-wrap"><table className="weekly-table"><thead><tr><th>Plan #</th><th>Source style</th><th>Range</th><th>Fabric</th><th>Target units</th><th>Colourways</th><th>Raised status</th><th>Order type</th><th>Stage</th><th>Move / history</th></tr></thead><tbody>{data?.lines.map((line) => <EditableLine key={line.id} line={line} locked={locked} week={week} startDate={data.week.startDate} endDate={data.week.endDate} />)}{!data?.lines.length && <tr><td colSpan={10}><div className="weekly-no-lines"><strong>No target styles in Week {week}</strong><p>Real dated orders will still appear below, flagged as unplanned.</p>{!locked && <button className="button button-gold" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add first style</button>}</div></td></tr>}</tbody></table></div>
       <div className="weekly-section-heading weekly-actual-heading"><div><span className="range-eyebrow">Actual record</span><h2>Orders raised from {formatWeekRange(data?.week)}</h2></div><p>Each row is assigned here by its order date, never by the target week.</p></div>
       <div className="weekly-table-wrap"><table className="weekly-table weekly-actual-table"><thead><tr><th>Order date</th><th>Odoo order</th><th>Style</th><th>Sub-category</th><th>Actual units</th><th>Weekly target</th></tr></thead><tbody>{data?.actualOrders.map((order) => <tr className={order.unplanned ? 'weekly-unplanned-order' : ''} key={`${order.orderRef}-${order.styleNumber}`}><td><strong>{formatDate(order.orderDate, true)}</strong></td><td><span className="weekly-order-no">{order.orderRef}</span><small>{order.orderState || '—'}</small></td><td><strong>{order.styleName}</strong><span>{order.styleNumber} · {order.brand || '—'}</span></td><td>{order.subCategory || 'Uncategorised'}</td><td><strong>{Number(order.quantity).toLocaleString()}</strong></td><td>{order.unplanned ? <span className="weekly-raised-status unplanned"><AlertTriangle size={12} /> Unplanned</span> : <span className="weekly-raised-status raised"><CheckCircle2 size={12} /> Planned</span>}</td></tr>)}{!data?.actualOrders.length && <tr><td colSpan={6}><div className="weekly-no-lines"><Clock3 size={20} /><strong>No orders raised in this date range yet</strong><p>The target remains visible above until dated orders arrive from Odoo.</p></div></td></tr>}</tbody></table></div>
       <div className="weekly-analysis-grid">
