@@ -1,0 +1,251 @@
+--- artifacts/vivo-product-workspace/src/index.css
++++ artifacts/vivo-product-workspace/src/index.css
+@@ -2323,3 +2323,121 @@
+     --color-sidebar-ring: hsl(var(--sidebar-ring));
+   }
+ }
++
++/* Monday Operating Brief Dashboard */
++.dash-brief {
++  display: flex;
++  flex-direction: column;
++  gap: 24px;
++}
++.dash-brief-header {
++  margin-bottom: 8px;
++}
++.dash-action-grid {
++  display: grid;
++  grid-template-columns: repeat(4, minmax(0, 1fr));
++  gap: 16px;
++  margin-bottom: 24px;
++}
++.dash-action-tile {
++  background: #fff;
++  border: 1px solid var(--color-border);
++  border-radius: 8px;
++  padding: 20px;
++  display: flex;
++  flex-direction: column;
++  gap: 12px;
++  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
++  transition: box-shadow 0.2s, transform 0.2s, border-color 0.2s;
++  text-decoration: none;
++  color: inherit;
++}
++.dash-action-tile:hover {
++  box-shadow: 0 6px 16px rgba(0,0,0,0.06);
++  transform: translateY(-2px);
++  border-color: var(--color-primary);
++}
++.dash-action-tile:hover h3 {
++  color: var(--color-primary);
++}
++.dash-tile-title {
++  font-family: var(--app-font-sans);
++  font-size: 13px;
++  font-weight: 700;
++  color: var(--color-muted-foreground);
++  text-transform: uppercase;
++  letter-spacing: 0.05em;
++  margin: 0;
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++}
++.dash-tile-main {
++  display: flex;
++  flex-direction: column;
++  gap: 4px;
++}
++.dash-tile-value {
++  font-family: var(--app-font-serif);
++  font-size: 32px;
++  font-weight: 600;
++  color: var(--color-foreground);
++  line-height: 1;
++}
++.dash-tile-sub {
++  font-family: var(--app-font-mono);
++  font-size: 12px;
++  color: var(--color-muted-foreground);
++}
++.dash-tile-status {
++  margin-top: auto;
++  padding-top: 12px;
++  border-top: 1px dashed var(--color-border);
++  font-size: 12px;
++  font-weight: 500;
++  display: flex;
++  align-items: center;
++  gap: 6px;
++}
++.dash-tile-status.danger { color: #d94b38; }
++.dash-tile-status.success { color: #2e7d32; }
++.dash-tile-status.warning { color: #b28a45; }
++
++.dash-gap-list {
++  display: flex;
++  flex-direction: column;
++  gap: 6px;
++  margin-top: 8px;
++  max-height: 120px;
++  overflow-y: auto;
++}
++.dash-gap-item {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  font-size: 12px;
++  padding: 4px 8px;
++  border-radius: 4px;
++  background: #fbfaf8;
++  border: 1px solid var(--color-border);
++}
++.dash-gap-item.shortfall {
++  background: #fdf3f2;
++  border-color: #fad2cd;
++  color: #c93b2a;
++}
++.dash-gap-item.surplus {
++  background: #f4fbf5;
++  border-color: #d1ecd6;
++  color: #276a2b;
++}
++.dash-gap-item span { font-weight: 500; }
++.dash-gap-item strong { font-family: var(--app-font-mono); }
++
++.dash-waiting-list {
++  display: flex;
++  flex-direction: column;
++  gap: 8px;
++}
++.dash-waiting-item {
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++  font-size: 13px;
++  padding: 8px 12px;
++  background: #fff;
++  border: 1px solid var(--color-border);
++  border-radius: 6px;
++}
++.dash-waiting-item strong {
++  font-family: var(--app-font-mono);
++  color: var(--color-foreground);
++  font-size: 14px;
++}
++.dash-waiting-item.critical {
++  border-color: #fad2cd;
++  background: #fdf3f2;
++}
++.dash-waiting-item.critical strong {
++  color: #c93b2a;
++}
++
++.dash-scorecard-section {
++  background: #fff;
++  border: 1px solid var(--color-border);
++  border-radius: 8px;
++  overflow: hidden;
++  box-shadow: 0 1px 3px rgba(0,0,0,0.02);
++  margin-bottom: 24px;
++}
++.dash-scorecard-header {
++  padding: 16px 20px;
++  border-bottom: 1px solid var(--color-border);
++  background: #fbfaf8;
++  display: flex;
++  justify-content: space-between;
++  align-items: center;
++}
++.dash-scorecard-header h3 {
++  margin: 0;
++  font-family: var(--app-font-serif);
++  font-size: 18px;
++  font-weight: 600;
++  color: var(--color-foreground);
++}
++.dash-scorecard-meta {
++  font-size: 12px;
++  color: var(--color-muted-foreground);
++  font-family: var(--app-font-mono);
++  display: flex;
++  gap: 12px;
++}
++.dash-scorecard-table {
++  width: 100%;
++  border-collapse: collapse;
++}
++.dash-scorecard-table th, .dash-scorecard-table td {
++  padding: 12px 20px;
++  text-align: left;
++  border-bottom: 1px solid var(--color-border);
++  font-size: 13px;
++}
++.dash-scorecard-table th {
++  font-family: var(--app-font-mono);
++  font-size: 11px;
++  text-transform: uppercase;
++  color: var(--color-muted-foreground);
++  letter-spacing: 0.05em;
++  background: #faf9f7;
++}
++.dash-scorecard-table tr:last-child td {
++  border-bottom: none;
++}
++.dash-scorecard-table td.measurable {
++  font-weight: 600;
++  color: var(--color-foreground);
++}
++.dash-scorecard-table td.owner {
++  color: var(--color-muted-foreground);
++}
++.dash-scorecard-table td.value {
++  font-family: var(--app-font-mono);
++  font-weight: 600;
++}
++.dash-scorecard-table td.goal {
++  font-family: var(--app-font-mono);
++  color: var(--color-muted-foreground);
++}
++.dash-scorecard-status {
++  display: inline-flex;
++  align-items: center;
++  gap: 6px;
++  padding: 4px 8px;
++  border-radius: 4px;
++  font-size: 11px;
++  font-weight: 600;
++  text-transform: uppercase;
++  letter-spacing: 0.05em;
++}
++.dash-scorecard-status.on-track {
++  background: #f4fbf5;
++  color: #276a2b;
++}
++.dash-scorecard-status.off-track {
++  background: #fdf3f2;
++  color: #c93b2a;
++}
++.dash-scorecard-status.unavailable {
++  background: #f0ebe1;
++  color: #8c8375;
++}
++
++@media (max-width: 1024px) {
++  .dash-action-grid {
++    grid-template-columns: repeat(2, minmax(0, 1fr));
++  }
++}
++@media (max-width: 640px) {
++  .dash-action-grid {
++    grid-template-columns: 1fr;
++  }
++  .dash-scorecard-table th, .dash-scorecard-table td {
++    padding: 12px;
++  }
++  .dash-scorecard-table td.owner, .dash-scorecard-table th.owner {
++    display: none;
++  }
++}

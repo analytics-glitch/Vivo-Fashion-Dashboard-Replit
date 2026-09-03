@@ -8151,61 +8151,235 @@ router.get("/plm/meta", async (_req, res, next) => {
   }
 });
 
+async function workspaceHomeFocus() {
+  const [weekResult, gapResult, waitingResult, cogsResult, scorecardRows] = await Promise.all([
+    pool.query<{
+      isoYear: number; isoWeek: number; startDate: string; endDate: string;
+      planStyles: number; actualStyles: number; pendingStyles: number;
+      actualUnits: number; pendingUnits: number; actualNewUnits: number;
+      pendingNewUnits: number; actualNewStyles: number; replenishmentUnits: number;
+      reorderUnits: number; productionOrders: number; monthlyPlanUnits: number;
+      monthLabel: string;
+    }>(`
+      WITH bounds AS (
+        SELECT TO_CHAR(CURRENT_DATE,'IYYY')::int AS iso_year,
+          TO_CHAR(CURRENT_DATE,'IW')::int AS iso_week,
+          date_trunc('week',CURRENT_DATE)::date AS start_date,
+          (date_trunc('week',CURRENT_DATE)::date + 6) AS end_date
+      ),
+      selected_plan AS (
+        SELECT p.id FROM ${schema}.weekly_order_plans p,bounds b
+        WHERE p.iso_year=b.iso_year AND p.iso_week=b.iso_week
+        ORDER BY p.id DESC LIMIT 1
+      ),
+      actual_by_style AS (
+        SELECT
+          LOWER(BTRIM(COALESCE(NULLIF(o.style_number,''),NULLIF(o.product_sku,''),NULLIF(o.style_name,'')))) AS style_key,
+          LOWER(BTRIM(COALESCE(o.style_name,''))) AS style_name_key,
+          SUM(COALESCE(o.order_qty,0))::numeric AS units,
+          MAX(COALESCE(o.lifecycle_type,'')) AS lifecycle_type,
+          COUNT(DISTINCT o.order_ref)::int AS orders
+        FROM public.production_orders o,bounds b
+        WHERE o.date_ordered>=b.start_date AND o.date_ordered<=b.end_date
+          AND LOWER(COALESCE(o.bo_state,'')) NOT IN ('cancel','cancelled','canceled')
+          AND LOWER(COALESCE(o.production_type,'main production')) IN ('main production','in-house','in house')
+        GROUP BY 1,2
+      ),
+      pending_plan AS (
+        SELECT l.* FROM ${schema}.weekly_order_plan_lines l
+        JOIN selected_plan p ON p.id=l.plan_id
+        WHERE NOT EXISTS (
+          SELECT 1 FROM actual_by_style a
+          WHERE a.style_key=LOWER(BTRIM(COALESCE(NULLIF(l.style_number,''),l.style_name)))
+             OR (a.style_name_key<>'' AND a.style_name_key=LOWER(BTRIM(COALESCE(l.style_name,''))))
+        )
+      ),
+      monthly_plan AS (
+        SELECT s.factory_capacity_units::numeric AS units
+        FROM ${schema}.range_plan_seasons s
+        WHERE LOWER(s.season_name)=LOWER(TO_CHAR(CURRENT_DATE,'FMMonth YYYY'))
+        ORDER BY s.id DESC LIMIT 1
+      )
+      SELECT b.iso_year AS "isoYear",b.iso_week AS "isoWeek",
+        b.start_date::text AS "startDate",b.end_date::text AS "endDate",
+        (SELECT COUNT(*)::int FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id) AS "planStyles",
+        (SELECT COUNT(*)::int FROM actual_by_style) AS "actualStyles",
+        (SELECT COUNT(*)::int FROM pending_plan) AS "pendingStyles",
+        COALESCE((SELECT SUM(units) FROM actual_by_style),0)::float AS "actualUnits",
+        COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan),0)::float AS "pendingUnits",
+        COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type)='new'),0)::float AS "actualNewUnits",
+        COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan WHERE LOWER(order_type)='new'),0)::float AS "pendingNewUnits",
+        (SELECT COUNT(*)::int FROM actual_by_style WHERE LOWER(lifecycle_type)='new') AS "actualNewStyles",
+        COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) LIKE 'replen%'),0)::float AS "replenishmentUnits",
+        COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) IN ('re-order','reorder','repeat','rr')),0)::float AS "reorderUnits",
+        COALESCE((SELECT SUM(orders) FROM actual_by_style),0)::int AS "productionOrders",
+        COALESCE((SELECT units FROM monthly_plan),0)::float AS "monthlyPlanUnits",
+        TO_CHAR(CURRENT_DATE,'FMMonth YYYY') AS "monthLabel"
+      FROM bounds b
+    `),
+    pool.query<{
+      subCategory: string; plannedNewStyles: number;
+      availableNewStyles: number; balance: number;
+    }>(`
+      WITH month_plan AS (
+        SELECT r.sub_category,SUM(COALESCE(r.new_style_count,0))::int AS planned_new_styles
+        FROM ${schema}.range_plan_rows r
+        JOIN ${schema}.range_plan_seasons s ON s.id=r.season_id
+        WHERE LOWER(s.season_name)=LOWER(TO_CHAR(CURRENT_DATE,'FMMonth YYYY'))
+        GROUP BY r.sub_category
+      ),
+      pipeline AS (
+        SELECT COALESCE(NULLIF(BTRIM(t.sub_category),''),'Uncategorised') AS sub_category,
+          COUNT(*)::int AS available_new_styles
+        FROM ${schema}.style_development_tracker t
+        WHERE UPPER(COALESCE(t.style_type,''))='NEW'
+          AND COALESCE(t.exit_status,'active')='active'
+          AND NULLIF(SUBSTRING(UPPER(COALESCE(t.target_order_week,'')) FROM '([0-9]{1,2})$'),'')::int
+            BETWEEN TO_CHAR(CURRENT_DATE,'IW')::int AND TO_CHAR(CURRENT_DATE,'IW')::int + 3
+        GROUP BY 1
+      )
+      SELECT COALESCE(m.sub_category,p.sub_category) AS "subCategory",
+        COALESCE(m.planned_new_styles,0)::int AS "plannedNewStyles",
+        COALESCE(p.available_new_styles,0)::int AS "availableNewStyles",
+        (COALESCE(p.available_new_styles,0)-COALESCE(m.planned_new_styles,0))::int AS balance
+      FROM month_plan m FULL JOIN pipeline p USING (sub_category)
+      WHERE COALESCE(m.planned_new_styles,0)<>0 OR COALESCE(p.available_new_styles,0)<>0
+      ORDER BY balance,COALESCE(m.sub_category,p.sub_category)
+    `),
+    pool.query<{
+      sampleApprovals: number; setSampleApprovals: number; fabricBlocks: number;
+      inDevelopment: number; adoptedStylesPipeline: number;
+    }>(`
+      SELECT
+        COUNT(*) FILTER (WHERE UPPER(COALESCE(status,''))='SAMPLE REVIEW')::int AS "sampleApprovals",
+        COUNT(*) FILTER (WHERE UPPER(COALESCE(status,''))='SET SAMPLE REVIEW')::int AS "setSampleApprovals",
+        COUNT(*) FILTER (
+          WHERE UPPER(COALESCE(status,''))='WAITING FOR FABRIC'
+             OR (blocked AND LOWER(COALESCE(blocker_reason,'')) LIKE '%fabric%')
+        )::int AS "fabricBlocks",
+        COUNT(*) FILTER (WHERE COALESCE(exit_status,'active')='active')::int AS "inDevelopment",
+        COUNT(*) FILTER (
+          WHERE COALESCE(exit_status,'active')='active'
+            AND UPPER(COALESCE(style_type,''))='NEW'
+        )::int AS "adoptedStylesPipeline"
+      FROM ${schema}.style_development_tracker
+    `),
+    pool.query<{ value: number | null; costedRows: number; totalRows: number }>(`
+      SELECT ROUND(100.0 * SUM(planned_units_calculated*expected_unit_cost)
+          / NULLIF(SUM(planned_units_calculated*(selling_price/1.16)),0),1)::float AS value,
+        COUNT(*) FILTER (WHERE expected_unit_cost IS NOT NULL AND selling_price IS NOT NULL)::int AS "costedRows",
+        COUNT(*)::int AS "totalRows"
+      FROM ${schema}.range_plan_rows r
+      JOIN ${schema}.range_plan_seasons s ON s.id=r.season_id
+      WHERE LOWER(s.season_name)=LOWER(TO_CHAR(CURRENT_DATE,'FMMonth YYYY'))
+    `),
+    pool.query<{
+      owner: string; measurable: string; goal: string; uom: string;
+      latestValue: number | null;
+    }>(`
+      SELECT m.owner,m.measurable,m.goal,m.uom,latest.value::float AS "latestValue"
+      FROM ${schema}.l10_scorecard_metrics m
+      LEFT JOIN LATERAL (
+        SELECT e.value FROM ${schema}.l10_scorecard_entries e
+        JOIN ${schema}.l10_meetings meeting ON meeting.id=e.meeting_id
+        WHERE e.metric_id=m.id AND e.value IS NOT NULL
+        ORDER BY meeting.meeting_date DESC,e.updated_at DESC LIMIT 1
+      ) latest ON TRUE
+      WHERE m.active
+    `),
+  ]);
+
+  const week = weekResult.rows[0];
+  const waiting = waitingResult.rows[0];
+  const unitsCommitted = Number(week.actualUnits) + Number(week.pendingUnits);
+  const stylesCommitted = Number(week.actualStyles) + Number(week.pendingStyles);
+  const newUnits = Number(week.actualNewUnits) + Number(week.pendingNewUnits);
+  const weeklyPaceUnits = Number(week.monthlyPlanUnits) / 4;
+  const newnessPct = unitsCommitted > 0 ? newUnits / unitsCommitted * 100 : 0;
+  const scorecardByName = new Map(scorecardRows.rows.map((row) => [row.measurable.toLowerCase(), row]));
+  const scorecardDefinition = [
+    { key: "in_house_units", measurable: "Total In-house Units Ordered", value: Number(week.actualUnits), note: "Dated in-house production orders this week" },
+    { key: "input_cogs", measurable: "Vivo Input COGS", value: cogsResult.rows[0]?.value ?? null, note: `${cogsResult.rows[0]?.costedRows ?? 0}/${cogsResult.rows[0]?.totalRows ?? 0} ${week.monthLabel} plan rows costed` },
+    { key: "average_order_size", measurable: "Avg Vivo Production Order Size", value: Number(week.productionOrders) ? Number(week.actualUnits) / Number(week.productionOrders) : null, note: "Dated in-house production orders this week" },
+    { key: "new_units_pct", measurable: "% of NEW units ordered vs TOTAL", value: Number(week.actualUnits) ? Number(week.actualNewUnits) / Number(week.actualUnits) * 100 : null, note: "L10 goal is 35%; monthly plan floor is 40%" },
+    { key: "replenishment_units", measurable: "No. of Replenishment Units Ordered", value: Number(week.replenishmentUnits), note: "Dated in-house production orders this week" },
+    { key: "reorder_units", measurable: "No. of Reorder Units Ordered", value: Number(week.reorderUnits), note: "Dated in-house production orders this week" },
+    { key: "new_styles_ordered", measurable: "No. of New Styles Ordered", value: Number(week.actualNewStyles), note: "Distinct dated new styles this week" },
+    { key: "adopted_styles_pipeline", measurable: "No. of Adopted Styles in the pipeline", value: Number(waiting.adoptedStylesPipeline), note: "Canonical Q3 tracker styles marked NEW" },
+    { key: "samples_per_approved_style", measurable: "No. of samples per approved style", value: scorecardByName.get("no. of samples per approved style")?.latestValue ?? null, note: "Latest L10 entry until sample-round events are recorded" },
+  ] as const;
+  const scorecard = scorecardDefinition.map((definition) => {
+    const source = scorecardByName.get(definition.measurable.toLowerCase());
+    const value = definition.value === null || !Number.isFinite(Number(definition.value)) ? null : Number(definition.value);
+    const goal = source?.goal ?? "";
+    return {
+      key: definition.key,
+      owner: source?.owner ?? "Unassigned",
+      measurable: source?.measurable ?? definition.measurable,
+      goal,
+      value,
+      uom: source?.uom ?? "",
+      onTrack: value === null ? null : l10GoalStatus(value, goal),
+      available: value !== null,
+      note: definition.note,
+    };
+  });
+
+  return {
+    week: {
+      isoYear: Number(week.isoYear), isoWeek: Number(week.isoWeek),
+      startDate: week.startDate, endDate: week.endDate,
+      planStyles: Number(week.planStyles), stylesCommitted, unitsCommitted,
+      weeklyPaceUnits, monthlyPlanUnits: Number(week.monthlyPlanUnits),
+      monthLabel: week.monthLabel, varianceUnits: unitsCommitted - weeklyPaceUnits,
+      status: unitsCommitted >= weeklyPaceUnits ? "on_track" : "off_track",
+    },
+    newness: {
+      newUnits, totalUnits: unitsCommitted, pct: newnessPct,
+      monthlyFloorPct: 40, scorecardGoalPct: 35,
+      meetsMonthlyFloor: newnessPct >= 40, meetsScorecardGoal: newnessPct > 35,
+      discrepancy: "The September Range Plan requires at least 40% new units; the L10 scorecard goal remains above 35%.",
+    },
+    gaps: gapResult.rows.map((row) => ({
+      ...row,
+      plannedNewStyles: Number(row.plannedNewStyles),
+      availableNewStyles: Number(row.availableNewStyles),
+      balance: Number(row.balance),
+      status: Number(row.balance) < 0 ? "shortfall" : Number(row.balance) > 0 ? "surplus" : "matched",
+    })),
+    waiting: {
+      sampleApprovals: Number(waiting.sampleApprovals),
+      setSampleApprovals: Number(waiting.setSampleApprovals),
+      fabricBlocks: Number(waiting.fabricBlocks),
+      total: Number(waiting.sampleApprovals) + Number(waiting.setSampleApprovals) + Number(waiting.fabricBlocks),
+    },
+    scorecard,
+    canonicalStyleCount: Number(waiting.inDevelopment),
+  };
+}
+
 router.get("/dashboard", async (_req, res, next) => {
   try {
-    const [styles, boards, plans, recent, snapshotStats, stageBreakdown] = await Promise.all([
+    const [styles, boards, plans, recent, focus, stageBreakdown] = await Promise.all([
       pool.query<{ status: string; count: string }>(`SELECT status,COUNT(*)::int AS count FROM ${schema}.styles s WHERE ${allowedBrand("s")} GROUP BY status ORDER BY count DESC`),
       pool.query<{ id: number; title: string; description: string }>(`SELECT id,title,description FROM ${schema}.boards ORDER BY id`),
       pool.query<{ count: string; avg_progress: string; avg_margin: string }>(`SELECT COUNT(*)::int AS count,COALESCE(AVG(s.progress),0)::float AS avg_progress,COALESCE(AVG(c.margin),0)::float AS avg_margin FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id LEFT JOIN ${schema}.cost_estimates c ON c.style_id=s.id WHERE ${allowedBrand("s")}`),
       pool.query(`SELECT 'Plan' AS type,'Q3 2026 assortment plan is live' AS title,'15 styles are in the decision room' AS detail,'2026-08-15T09:24:00.000Z' AS time UNION ALL SELECT 'PLM','Mara Column Dress moved to fit review','Proto round 2 is due 18 Aug','2026-08-14T15:10:00.000Z' UNION ALL SELECT 'Board','Aisha left a note on Leadership review','The retail edit is ready for a read','2026-08-13T11:42:00.000Z'`),
-      pool.query<{
-        asOfDate: string;
-        planningPeriod: string;
-        inDevelopment: number;
-        dueThisWeek: number;
-        atRisk: number;
-      }>(`
-        WITH source AS (
-          SELECT
-            s.*,
-            NULLIF(SUBSTRING(UPPER(COALESCE(s.target_order_week, '')) FROM '([0-9]{1,2})$'), '')::int AS target_week_num
-          FROM public.pd_styles s
-          WHERE ${allowedBrand("s")}
-        )
-        SELECT
-          TO_CHAR(CURRENT_DATE, 'YYYY-MM-DD') AS "asOfDate",
-          'Q' || EXTRACT(QUARTER FROM CURRENT_DATE)::int || ' ' || EXTRACT(YEAR FROM CURRENT_DATE)::int || ' Planning' AS "planningPeriod",
-          COUNT(*) FILTER (
-            WHERE LOWER(COALESCE(s.status, 'active')) <> 'completed'
-              AND LOWER(COALESCE(s.current_stage, '')) NOT IN ('launched', 'dropped', 'on hold', 'on_hold')
-          )::int AS "inDevelopment",
-          COUNT(*) FILTER (
-            WHERE s.target_week_num = EXTRACT(WEEK FROM CURRENT_DATE)::int
-          )::int AS "dueThisWeek",
-          COUNT(*) FILTER (
-            WHERE s.target_week_num < EXTRACT(WEEK FROM CURRENT_DATE)::int
-              AND LOWER(COALESCE(s.status, 'active')) <> 'completed'
-          )::int AS "atRisk"
-        FROM source s
-      `),
+      workspaceHomeFocus(),
       pool.query<{ stage: string; count: number }>(`
-        SELECT COALESCE(p.stage_name, INITCAP(REPLACE(s.current_stage, '_', ' ')), 'Unstaged') AS stage, COUNT(*)::int AS count
-        FROM public.pd_styles s
-        LEFT JOIN public.pd_stages p ON p.stage_key = s.current_stage
-        WHERE ${allowedBrand("s")}
-          AND LOWER(COALESCE(s.status, 'active')) <> 'completed'
-          AND LOWER(COALESCE(s.current_stage, '')) NOT IN ('launched', 'dropped', 'on hold', 'on_hold')
-        GROUP BY COALESCE(p.stage_name, INITCAP(REPLACE(s.current_stage, '_', ' ')), 'Unstaged')
-        ORDER BY count DESC, stage ASC
+        SELECT INITCAP(COALESCE(NULLIF(BTRIM(status),''),'Unstaged')) AS stage,COUNT(*)::int AS count
+        FROM ${schema}.style_development_tracker
+        WHERE COALESCE(exit_status,'active')='active'
+        GROUP BY 1 ORDER BY count DESC,stage
       `),
     ]);
     const countByStatus = Object.fromEntries(styles.rows.map((row) => [row.status.toLowerCase().replaceAll(" ", "_"), row.count]));
-    const snapshot = snapshotStats.rows[0] ?? {
+    const snapshot = {
       asOfDate: new Date().toISOString().slice(0, 10),
-      planningPeriod: "Current planning period",
-      inDevelopment: 0,
-      dueThisWeek: 0,
-      atRisk: 0,
+      planningPeriod: `Week ${focus.week.isoWeek} · ${focus.week.monthLabel}`,
+      inDevelopment: focus.canonicalStyleCount,
+      dueThisWeek: focus.week.stylesCommitted,
+      atRisk: focus.waiting.total,
     };
     res.json({
       snapshot: {
@@ -8228,6 +8402,7 @@ router.get("/dashboard", async (_req, res, next) => {
         { day: "21", month: "AUG", title: "Q3 leadership read", detail: "Leadership team · Review" },
         { day: "26", month: "AUG", title: "High Summer fabric lock", detail: "Merchandising team · Material" },
       ],
+      focus,
       boards: boards.rows,
     });
   } catch (error) {
@@ -8239,7 +8414,18 @@ router.get("/styles", async (req, res, next) => {
   try {
     if (String(req.query.source ?? "") === "pd") {
       const values: string[] = [];
-       const clauses = [allowedBrand("s"), `LOWER(s.status) = 'active'`];
+       const clauses = [
+         `EXISTS (
+           SELECT 1 FROM ${schema}.style_development_tracker canonical
+           WHERE NULLIF(LOWER(BTRIM(canonical.style_number)),'')=NULLIF(LOWER(BTRIM(s.style_number)),'')
+              OR LOWER(BTRIM(canonical.style_name))=LOWER(BTRIM(s.style_name))
+         )`,
+         `s.id=(
+           SELECT MIN(candidate.id) FROM public.pd_styles candidate
+           WHERE NULLIF(LOWER(BTRIM(candidate.style_number)),'')=NULLIF(LOWER(BTRIM(s.style_number)),'')
+              OR LOWER(BTRIM(candidate.style_name))=LOWER(BTRIM(s.style_name))
+         )`,
+       ];
       const brand = String(req.query.brand ?? "").trim();
       const status = String(req.query.status ?? "").trim();
       const search = String(req.query.search ?? "").trim();
