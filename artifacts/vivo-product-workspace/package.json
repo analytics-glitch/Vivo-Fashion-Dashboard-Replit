@@ -16,6 +16,7 @@
     "test:plm-grouping": "tsx --test src/lib/plmGrouping.test.ts",
     "test:product-taxonomy": "tsx --test src/lib/productTaxonomy.test.ts",
     "test:feedback": "tsx --test server/feedback-policy.test.ts",
+    "test:style-assignment": "tsx --test server/style-development-assignments.test.ts server/style-development-reassignment.test.ts",
     "test:range-plan": "tsx --test server/range-plan-defaults.test.ts server/range-plan-defaults.pg.test.ts"
   },
   "devDependencies": {

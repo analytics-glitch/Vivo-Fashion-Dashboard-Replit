@@ -17,6 +17,10 @@ import {
   STYLE_DEVELOPMENT_PATTERN_MAKER_ASSIGNMENT_IMPORT_KEY,
 } from "./style-development-assignments.js";
 import {
+  isAssignablePatternMaker,
+  planPatternMakerChanges,
+} from "./style-development-reassignment.js";
+import {
   FEEDBACK_IMAGE_MAX_FILES,
   FEEDBACK_IMAGE_MAX_BYTES,
   FEEDBACK_IMAGE_UPLOAD_RATE_LIMIT,
@@ -1355,6 +1359,16 @@ async function ensureStyleDevelopmentTrackerData() {
     );
     CREATE INDEX IF NOT EXISTS style_development_history_style_idx
       ON ${schema}.style_development_history (tracker_style_id, occurred_at DESC, id DESC);
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_pattern_makers (
+      id SERIAL PRIMARY KEY,
+      name TEXT NOT NULL UNIQUE,
+      kind TEXT NOT NULL DEFAULT 'person' CHECK (kind IN ('person','team','supplier')),
+      effective_capacity NUMERIC,
+      active BOOLEAN NOT NULL DEFAULT TRUE,
+      display_order INTEGER NOT NULL DEFAULT 100,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
   `);
   const client = await pool.connect();
   try {
@@ -1510,6 +1524,24 @@ async function ensureStyleDevelopmentTrackerData() {
           [patternMaker, styleNumbers],
         );
       }
+    }
+    const defaultPatternMakerOptions = [
+      ["Wanjohi", "person", 1, 10],
+      ["Mercy", "person", 1, 20],
+      ["Victoria", "person", 1, 30],
+      ["Florence", "person", 0.5, 40],
+      ["Abigail", "person", null, 50],
+      ["CAD", "team", null, 60],
+      ["Ken Knit", "supplier", null, 70],
+    ] as const;
+    for (const [name, kind, effectiveCapacity, displayOrder] of defaultPatternMakerOptions) {
+      await client.query(
+        `INSERT INTO ${schema}.style_development_pattern_makers
+          (name,kind,effective_capacity,display_order)
+         VALUES ($1,$2,$3,$4)
+         ON CONFLICT (name) DO NOTHING`,
+        [name, kind, effectiveCapacity, displayOrder],
+      );
     }
     await client.query(
       `INSERT INTO ${schema}.style_development_history
@@ -5070,14 +5102,35 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
   });
 }
 
+async function loadStyleDevelopmentPatternMakers(includeInactive = false) {
+  const result = await pool.query(
+    `SELECT pm.id,pm.name,pm.kind,pm.effective_capacity::float AS "effectiveCapacity",
+       pm.active,pm.display_order AS "displayOrder",
+       COUNT(t.id) FILTER (WHERE COALESCE(t.exit_status,'active')='active')::int AS load,
+       COUNT(t.id) FILTER (
+         WHERE COALESCE(t.exit_status,'active')='active' AND LOWER(BTRIM(t.status))='pattern'
+       )::int AS "patternStageCount"
+     FROM ${schema}.style_development_pattern_makers pm
+     LEFT JOIN ${schema}.style_development_tracker t ON BTRIM(t.pattern_maker)=pm.name
+     ${includeInactive ? "" : "WHERE pm.active"}
+     GROUP BY pm.id
+     ORDER BY pm.display_order,LOWER(pm.name)`,
+  );
+  return result.rows;
+}
+
 router.get("/style-development-tracker", async (_req, res, next) => {
   try {
-    const items = await loadStyleDevelopmentTracker();
+    const [items, patternMakers] = await Promise.all([
+      loadStyleDevelopmentTracker(),
+      loadStyleDevelopmentPatternMakers(),
+    ]);
     const unique = (key: string) => Array.from(new Set(items.map((item) => String((item as Record<string, unknown>)[key] ?? "")).filter(Boolean))).sort();
     res.json({
       items,
       stages: STYLE_DEVELOPMENT_STAGES,
       stageStandards: STYLE_DEVELOPMENT_STAGE_STANDARD_DAYS,
+      patternMakers,
       facets: {
         targetOrderWeek: unique("targetOrderWeek"),
         subCategory: unique("subCategory"),
@@ -5212,6 +5265,116 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
   } catch (error) { next(error); }
 });
 
+router.get("/style-development-tracker/pattern-makers", async (_req, res, next) => {
+  try {
+    res.json({ items: await loadStyleDevelopmentPatternMakers(true) });
+  } catch (error) { next(error); }
+});
+
+router.post("/style-development-tracker/pattern-makers", async (req: AuthRequest, res, next) => {
+  try {
+    const name = String(req.body?.name ?? "").trim();
+    const kind = String(req.body?.kind ?? "person").trim();
+    if (!name || name.toLowerCase() === "unassigned") {
+      res.status(400).json({ error: "Enter a pattern maker or routing-team name" }); return;
+    }
+    if (!["person", "team", "supplier"].includes(kind)) {
+      res.status(400).json({ error: "Unsupported assignment type" }); return;
+    }
+    const duplicate = await pool.query(
+      `SELECT id FROM ${schema}.style_development_pattern_makers WHERE LOWER(name)=LOWER($1)`,
+      [name],
+    );
+    if (duplicate.rows[0]) {
+      res.status(409).json({ error: "That assignment option already exists" }); return;
+    }
+    await pool.query(
+      `INSERT INTO ${schema}.style_development_pattern_makers (name,kind,display_order)
+       VALUES ($1,$2,(SELECT COALESCE(MAX(display_order),0)+10 FROM ${schema}.style_development_pattern_makers))`,
+      [name, kind],
+    );
+    res.status(201).json({ items: await loadStyleDevelopmentPatternMakers(true) });
+  } catch (error) { next(error); }
+});
+
+router.patch("/style-development-tracker/pattern-makers/:id", async (req: AuthRequest, res, next) => {
+  try {
+    const active = Boolean(req.body?.active);
+    const result = await pool.query(
+      `UPDATE ${schema}.style_development_pattern_makers
+          SET active=$2,updated_at=NOW()
+        WHERE id=$1 RETURNING id`,
+      [Number(req.params.id), active],
+    );
+    if (!result.rows[0]) { res.status(404).json({ error: "Assignment option not found" }); return; }
+    res.json({ items: await loadStyleDevelopmentPatternMakers(true) });
+  } catch (error) { next(error); }
+});
+
+router.post("/style-development-tracker/bulk-pattern-maker", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    const styleIds: number[] = [...new Set<number>((Array.isArray(req.body?.styleIds) ? req.body.styleIds : []).map((value: unknown) => Number(value)))]
+      .filter((id) => Number.isInteger(id) && id > 0);
+    const patternMaker = String(req.body?.patternMaker ?? "").trim();
+    if (!styleIds.length || styleIds.length > 200) {
+      res.status(400).json({ error: "Select between 1 and 200 styles" }); return;
+    }
+    if (patternMaker) {
+      const option = await client.query(
+        `SELECT name FROM ${schema}.style_development_pattern_makers WHERE active AND name=$1`,
+        [patternMaker],
+      );
+      if (!isAssignablePatternMaker(patternMaker, option.rows.map((row) => String(row.name)))) {
+        res.status(400).json({ error: "Choose an active pattern maker" }); return;
+      }
+    }
+    await client.query("BEGIN");
+    const current = await client.query(
+      `SELECT id,pattern_maker FROM ${schema}.style_development_tracker
+        WHERE id=ANY($1::int[]) FOR UPDATE`,
+      [styleIds],
+    );
+    if (current.rows.length !== styleIds.length) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "One or more selected styles no longer exist" }); return;
+    }
+    const changes = planPatternMakerChanges(
+      current.rows.map((row) => ({ id: Number(row.id), patternMaker: row.pattern_maker })),
+      patternMaker,
+    );
+    const changed = changes.map((change) => change.id);
+    if (changed.length) {
+      await client.query(
+        `UPDATE ${schema}.style_development_tracker
+            SET pattern_maker=$2,updated_at=NOW()
+          WHERE id=ANY($1::int[])`,
+        [changed, patternMaker],
+      );
+      for (const change of changes) {
+        await client.query(
+          `INSERT INTO ${schema}.style_development_history
+            (tracker_style_id,entry_type,note,old_value,new_value,recorded_by)
+           VALUES ($1,'pattern_maker_changed','Pattern maker reassigned',$2,$3,$4)`,
+          [
+            change.id,
+            change.oldMaker,
+            change.newMaker,
+            req.workspaceUser?.id ?? null,
+          ],
+        );
+      }
+    }
+    await client.query("COMMIT");
+    res.json({ updated: changed.length });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
 router.get("/style-development-tracker/:id", async (req, res, next) => {
   try {
     const items = await loadStyleDevelopmentTracker(Number(req.params.id));
@@ -5281,6 +5444,15 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
       else value = String(value ?? "").trim();
       const oldValue = current.rows[0][column];
       if (String(oldValue ?? "") === String(value ?? "")) continue;
+      if (key === "patternMaker" && value) {
+        const option = await client.query(
+          `SELECT name FROM ${schema}.style_development_pattern_makers WHERE active AND name=$1`,
+          [value],
+        );
+        if (!isAssignablePatternMaker(String(value), option.rows.map((row) => String(row.name)))) {
+          throw new Error("Choose an active pattern maker");
+        }
+      }
       if (key === "type" && !["NEW", "RR"].includes(String(value))) throw new Error("Type must be NEW or RR");
       if (key === "tier" && !["Tier 3", "Tier 4"].includes(String(value))) throw new Error("Tier must be Tier 3 or Tier 4");
        if (key === "exitStatus" && !["active", "on_hold", "cancelled"].includes(String(value))) throw new Error("Exit status must be active, on_hold, or cancelled");
@@ -5330,10 +5502,10 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
          VALUES ($1,$2,$3,$4,$5,$6)`,
         [
           styleId,
-           change.key === "targetOrderWeek" ? "target_week_changed" : change.key === "exitStatus" || change.key === "exitReason" || change.key === "reason" ? "exit_changed" : change.key === "blocked" || change.key === "blockerReason" ? "blocker_changed" : "master_data_changed",
-           change.key === "exitStatus" ? `Exit recorded at ${current.rows[0].status}` : `${change.key} updated`,
-          change.oldValue === null ? null : String(change.oldValue),
-          change.newValue === null ? null : String(change.newValue),
+           change.key === "patternMaker" ? "pattern_maker_changed" : change.key === "targetOrderWeek" ? "target_week_changed" : change.key === "exitStatus" || change.key === "exitReason" || change.key === "reason" ? "exit_changed" : change.key === "blocked" || change.key === "blockerReason" ? "blocker_changed" : "master_data_changed",
+            change.key === "patternMaker" ? "Pattern maker reassigned" : change.key === "exitStatus" ? `Exit recorded at ${current.rows[0].status}` : `${change.key} updated`,
+           change.key === "patternMaker" ? String(change.oldValue ?? "").trim() || "Unassigned" : change.oldValue === null ? null : String(change.oldValue),
+           change.key === "patternMaker" ? String(change.newValue ?? "").trim() || "Unassigned" : change.newValue === null ? null : String(change.newValue),
           req.workspaceUser?.id ?? null,
         ],
       );

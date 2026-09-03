@@ -60,7 +60,7 @@ type TrackerStyle = {
 
 type HistoryEntry = {
   id: number;
-  entryType: 'event' | 'note' | 'update';
+  entryType: 'event' | 'note' | 'update' | 'pattern_maker_changed';
   eventType: string | null;
   outcome: string | null;
   note: string | null;
@@ -74,10 +74,22 @@ type HistoryEntry = {
 
 type TrackerDetailPayload = TrackerStyle & { history: HistoryEntry[] };
 
+type PatternMakerOption = {
+  id: number;
+  name: string;
+  kind: 'person' | 'team' | 'supplier';
+  effectiveCapacity: number | null;
+  active: boolean;
+  displayOrder: number;
+  load: number;
+  patternStageCount: number;
+};
+
 type TrackerPayload = {
   items: TrackerStyle[];
   stages: string[];
   stageStandards: Record<string, number>;
+  patternMakers: PatternMakerOption[];
   facets: {
     targetOrderWeek: string[];
     subCategory: string[];
@@ -166,6 +178,7 @@ function targetWeekNumber(value: string | null): number | null {
 }
 
 export default function StyleDevelopmentTrackerPage() {
+  const queryClient = useQueryClient();
   const tracker = useQuery({ queryKey: ['workspace', 'style-development-tracker'], queryFn: loadTracker });
   const [view, setView] = useState<'board' | 'list' | 'approvals' | 'standards' | 'capacity'>('board');
   const [search, setSearch] = useState('');
@@ -188,9 +201,56 @@ export default function StyleDevelopmentTrackerPage() {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('asc');
 
   const [detailId, setDetailId] = useState<number | null>(null);
+  const [selectedIds, setSelectedIds] = useState<number[]>([]);
+  const [bulkPatternMaker, setBulkPatternMaker] = useState('');
 
   const items = tracker.data?.items ?? [];
   const stages = tracker.data?.stages ?? [];
+  const patternMakers = tracker.data?.patternMakers ?? [];
+  const assignmentLoads = useMemo(() => {
+    const loads = new Map<string, number>([['', 0]]);
+    for (const option of patternMakers) loads.set(option.name, 0);
+    for (const style of items) {
+      const key = style.patternMaker || '';
+      loads.set(key, (loads.get(key) ?? 0) + 1);
+    }
+    return loads;
+  }, [items, patternMakers]);
+  const reassignMutation = useMutation({
+    mutationFn: async ({ styleIds, patternMaker }: { styleIds: number[]; patternMaker: string }) => {
+      const res = await fetch('/api/workspace/style-development-tracker/bulk-pattern-maker', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ styleIds, patternMaker }),
+      });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || 'Could not reassign styles');
+      }
+      return res.json() as Promise<{ updated: number }>;
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.setQueryData<TrackerPayload>(['workspace', 'style-development-tracker'], current => current ? ({
+        ...current,
+        items: current.items.map(item => variables.styleIds.includes(item.id)
+          ? { ...item, patternMaker: variables.patternMaker || null }
+          : item),
+      }) : current);
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'reporting'] });
+      for (const id of variables.styleIds) {
+        queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', id] });
+      }
+      setSelectedIds([]);
+    },
+  });
+  const assignmentOptions = [{ name: '', label: 'Unassigned' }, ...patternMakers.map(option => ({ name: option.name, label: option.name }))];
+  const projectedLabel = (name: string, styles: TrackerStyle[]) => {
+    const currentLoad = assignmentLoads.get(name) ?? 0;
+    const incoming = styles.filter(style => (style.patternMaker || '') !== name).length;
+    const display = name || 'Unassigned';
+    return `${display} · ${currentLoad}${incoming ? ` → ${currentLoad + incoming}` : ''}`;
+  };
 
   const facets = tracker.data?.facets ?? {
     targetOrderWeek: Array.from(new Set(items.map(s => s.targetOrderWeek).filter(Boolean))) as string[],
@@ -214,7 +274,8 @@ export default function StyleDevelopmentTrackerPage() {
       const matchBrand = filters.brand === 'All' || style.brand === filters.brand;
       const matchType = filters.type === 'All' || style.type === filters.type;
       const matchTier = filters.tier === 'All' || style.tier === filters.tier;
-      const matchPatternMaker = filters.patternMaker === 'All' || style.patternMaker === filters.patternMaker;
+      const matchPatternMaker = filters.patternMaker === 'All'
+        || (filters.patternMaker === 'Unassigned' ? !style.patternMaker : style.patternMaker === filters.patternMaker);
       const matchStatus = filters.status === 'All' || style.status === filters.status;
       const matchBlocked = filters.blocked === 'All' || (filters.blocked === 'Blocked' ? style.blocked : !style.blocked);
 
@@ -312,9 +373,12 @@ export default function StyleDevelopmentTrackerPage() {
            <div className="tracker-header-title-row">
               <h1>Style development</h1>
               {unassignedPmCount > 0 && (
-                <span className="tracker-header-metric">
+                <button className="tracker-header-metric" onClick={() => {
+                  setView('board');
+                  setFilters(current => ({ ...current, patternMaker: 'Unassigned' }));
+                }}>
                    <strong>{unassignedPmCount}</strong> Unassigned Pattern Maker
-                </span>
+                </button>
               )}
            </div>
         </div>
@@ -390,6 +454,7 @@ export default function StyleDevelopmentTrackerPage() {
             <label>Pattern Maker</label>
             <select value={filters.patternMaker} onChange={e => setFilters({...filters, patternMaker: e.target.value})}>
               <option value="All">All</option>
+              <option value="Unassigned">Unassigned</option>
               {facets.patternMaker?.map(f => <option key={f} value={f}>{f}</option>)}
             </select>
           </div>
@@ -437,8 +502,9 @@ export default function StyleDevelopmentTrackerPage() {
               </div>
               <div className="tracker-col-cards">
                 {styles.map(s => (
-                  <button key={s.id} className="tracker-card-compact" onClick={() => setDetailId(s.id)}>
-                    <div className="tracker-card-compact-head">
+                  <article key={s.id} className="tracker-card-compact">
+                    <button className="tracker-card-compact-open" onClick={() => setDetailId(s.id)}>
+                     <div className="tracker-card-compact-head">
                        <div className="tracker-card-compact-img placeholder">
                           <ImageIcon size={14} />
                           {s.imageUrl && (
@@ -458,14 +524,26 @@ export default function StyleDevelopmentTrackerPage() {
                           </div>
                        </div>
                     </div>
-                    <div className="tracker-card-compact-badges">
+                     <div className="tracker-card-compact-badges">
                        {s.patternMaker && <span className="compact-badge pm">{s.patternMaker}</span>}
                        {(s.type || s.tier) && <span className="compact-badge ty">{[s.type, s.tier].filter(Boolean).join('/')}</span>}
                        {s.waitingDecision && <span className="compact-badge ac">Action</span>}
                        {s.blocked && <span className="compact-badge bl">Blocked</span>}
                        {s.overStandard && <span className="compact-badge wa">Over Std</span>}
-                    </div>
-                  </button>
+                     </div>
+                    </button>
+                    <label className="tracker-card-assignment">
+                      <span>Assign</span>
+                      <select
+                        aria-label={`Assign ${s.styleName}`}
+                        value={s.patternMaker || ''}
+                        disabled={reassignMutation.isPending}
+                        onChange={event => reassignMutation.mutate({ styleIds: [s.id], patternMaker: event.target.value })}
+                      >
+                        {assignmentOptions.map(option => <option key={option.name || 'unassigned'} value={option.name}>{projectedLabel(option.name, [s])}</option>)}
+                      </select>
+                    </label>
+                  </article>
                 ))}
               </div>
             </div>
@@ -474,12 +552,36 @@ export default function StyleDevelopmentTrackerPage() {
       )}
 
       {view === 'list' && (
-        <div className="tracker-table-scroll">
+        <div className="tracker-list-view">
+          {selectedIds.length > 0 && (
+            <div className="tracker-bulk-bar">
+              <strong>{selectedIds.length} selected</strong>
+              <select value={bulkPatternMaker} onChange={event => setBulkPatternMaker(event.target.value)}>
+                {assignmentOptions.map(option => {
+                  const selected = items.filter(item => selectedIds.includes(item.id));
+                  return <option key={option.name || 'unassigned'} value={option.name}>{projectedLabel(option.name, selected)}</option>;
+                })}
+              </select>
+              <button className="button button-dark" disabled={reassignMutation.isPending} onClick={() => reassignMutation.mutate({ styleIds: selectedIds, patternMaker: bulkPatternMaker })}>
+                Reassign {selectedIds.length} styles
+              </button>
+              <button className="text-button" onClick={() => setSelectedIds([])}>Clear</button>
+            </div>
+          )}
+         <div className="tracker-table-scroll">
           {sortedForList.length === 0 && <div className="tracker-empty-state">No styles match filters.</div>}
           {sortedForList.length > 0 && (
             <table>
               <thead>
                 <tr>
+                  <th className="tracker-select-cell" onClick={event => event.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      aria-label="Select all visible styles"
+                      checked={sortedForList.length > 0 && sortedForList.every(style => selectedIds.includes(style.id))}
+                      onChange={event => setSelectedIds(event.target.checked ? sortedForList.map(style => style.id) : [])}
+                    />
+                  </th>
                   <th onClick={() => handleSort('styleNumber')}>Style # {sortField === 'styleNumber' && (sortDir === 'asc' ? '↑' : '↓')}</th>
                   <th onClick={() => handleSort('styleName')}>Style Name {sortField === 'styleName' && (sortDir === 'asc' ? '↑' : '↓')}</th>
                   <th onClick={() => handleSort('sampleFabricName')}>Fabric {sortField === 'sampleFabricName' && (sortDir === 'asc' ? '↑' : '↓')}</th>
@@ -487,11 +589,15 @@ export default function StyleDevelopmentTrackerPage() {
                   <th onClick={() => handleSort('targetOrderWeek')}>Target Wk {sortField === 'targetOrderWeek' && (sortDir === 'asc' ? '↑' : '↓')}</th>
                   <th onClick={() => handleSort('category')}>Category {sortField === 'category' && (sortDir === 'asc' ? '↑' : '↓')}</th>
                   <th onClick={() => handleSort('status')}>Status {sortField === 'status' && (sortDir === 'asc' ? '↑' : '↓')}</th>
+                  <th onClick={() => handleSort('patternMaker')}>Pattern Maker {sortField === 'patternMaker' && (sortDir === 'asc' ? '↑' : '↓')}</th>
                 </tr>
               </thead>
               <tbody>
                 {sortedForList.map(s => (
                   <tr key={s.id} onClick={() => setDetailId(s.id)}>
+                    <td className="tracker-select-cell" onClick={event => event.stopPropagation()}>
+                      <input type="checkbox" aria-label={`Select ${s.styleName}`} checked={selectedIds.includes(s.id)} onChange={event => setSelectedIds(current => event.target.checked ? [...current, s.id] : current.filter(id => id !== s.id))} />
+                    </td>
                     <td>{s.styleNumber || <em style={{color: '#999'}}>Pending</em>}</td>
                     <td>
                       <div className="tracker-table-title">
@@ -514,11 +620,14 @@ export default function StyleDevelopmentTrackerPage() {
                     <td>{s.targetOrderWeek || 'Unscheduled'}</td>
                     <td>{s.category}</td>
                     <td>{s.status}</td>
+                    <td>{s.patternMaker || <span className="tracker-fabric-missing">Unassigned</span>}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
+         </div>
+         {reassignMutation.isError && <div className="tracker-assignment-error">{reassignMutation.error instanceof Error ? reassignMutation.error.message : 'Reassignment failed'}</div>}
         </div>
       )}
 
@@ -534,7 +643,7 @@ export default function StyleDevelopmentTrackerPage() {
         <TrackerCapacity />
       )}
 
-      {detailId && <TrackerDetailDrawer id={detailId} onClose={() => setDetailId(null)} />}
+      {detailId && <TrackerDetailDrawer id={detailId} patternMakers={patternMakers} onClose={() => setDetailId(null)} />}
     </section>
   );
 }
@@ -684,6 +793,76 @@ function TrackerCapacity() {
            </tbody>
          </table>
       </div>
+       <PatternMakerDirectory />
+    </div>
+  );
+}
+
+function PatternMakerDirectory() {
+  const queryClient = useQueryClient();
+  const [name, setName] = useState('');
+  const [kind, setKind] = useState<PatternMakerOption['kind']>('person');
+  const query = useQuery({
+    queryKey: ['workspace', 'style-development-tracker', 'pattern-makers'],
+    queryFn: async () => {
+      const res = await fetch('/api/workspace/style-development-tracker/pattern-makers', { credentials: 'include' });
+      if (!res.ok) throw new Error('Could not load assignment options');
+      return res.json() as Promise<{ items: PatternMakerOption[] }>;
+    },
+  });
+  const refresh = () => {
+    queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker'] });
+    queryClient.invalidateQueries({ queryKey: ['workspace', 'style-development-tracker', 'pattern-makers'] });
+  };
+  const addMutation = useMutation({
+    mutationFn: async () => {
+      const res = await fetch('/api/workspace/style-development-tracker/pattern-makers', {
+        method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, kind }),
+      });
+      if (!res.ok) {
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || 'Could not add assignment option');
+      }
+    },
+    onSuccess: () => { setName(''); refresh(); },
+  });
+  const toggleMutation = useMutation({
+    mutationFn: async ({ id, active }: { id: number; active: boolean }) => {
+      const res = await fetch(`/api/workspace/style-development-tracker/pattern-makers/${id}`, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ active }),
+      });
+      if (!res.ok) throw new Error('Could not update assignment option');
+    },
+    onSuccess: refresh,
+  });
+  return (
+    <div className="tracker-rep-card pattern-maker-directory" style={{ marginTop: 24 }}>
+      <div>
+        <h3>Assignment options</h3>
+        <p className="tracker-capacity-note">Add or remove names here as the team changes. Removing an option does not erase existing style history.</p>
+      </div>
+      <form className="pattern-maker-add" onSubmit={event => { event.preventDefault(); if (name.trim()) addMutation.mutate(); }}>
+        <input value={name} onChange={event => setName(event.target.value)} placeholder="Name or routing team" />
+        <select value={kind} onChange={event => setKind(event.target.value as PatternMakerOption['kind'])}>
+          <option value="person">Pattern maker</option>
+          <option value="team">Internal team</option>
+          <option value="supplier">External supplier</option>
+        </select>
+        <button className="button button-dark" disabled={!name.trim() || addMutation.isPending}>Add option</button>
+      </form>
+      <div className="pattern-maker-option-list">
+        {query.data?.items.map(option => (
+          <div key={option.id} className={!option.active ? 'inactive' : ''}>
+            <span><strong>{option.name}</strong><small>{option.kind} · {option.load} assigned</small></span>
+            <button className="text-button" disabled={toggleMutation.isPending} onClick={() => toggleMutation.mutate({ id: option.id, active: !option.active })}>
+              {option.active ? 'Remove from choices' : 'Restore'}
+            </button>
+          </div>
+        ))}
+      </div>
+      {(query.isError || addMutation.isError || toggleMutation.isError) && <div className="tracker-assignment-error">Assignment options could not be updated.</div>}
     </div>
   );
 }
@@ -891,7 +1070,7 @@ function TrackerFabricSelection({ item }: { item: TrackerDetailPayload }) {
   );
 }
 
-function TrackerDetailDrawer({ id, onClose }: { id: number, onClose: () => void }) {
+function TrackerDetailDrawer({ id, patternMakers, onClose }: { id: number, patternMakers: PatternMakerOption[], onClose: () => void }) {
   const { data, isLoading, error } = useQuery({
     queryKey: ['workspace', 'style-development-tracker', id],
     queryFn: async () => {
@@ -991,7 +1170,7 @@ function TrackerDetailDrawer({ id, onClose }: { id: number, onClose: () => void 
 
                  <div className="tracker-drawer-section">
                      <h3>Master Details</h3>
-                     <TrackerMasterForm item={data} />
+                     <TrackerMasterForm item={data} patternMakers={patternMakers} />
                  </div>
 
                  <div className="tracker-drawer-section">
@@ -1127,7 +1306,7 @@ function TrackerEventForm({ item }: { item: TrackerDetailPayload }) {
   );
 }
 
-function TrackerMasterForm({ item }: { item: TrackerDetailPayload }) {
+function TrackerMasterForm({ item, patternMakers }: { item: TrackerDetailPayload, patternMakers: PatternMakerOption[] }) {
   const queryClient = useQueryClient();
   const mutation = useMutation({
      mutationFn: async (data: Partial<TrackerDetailPayload>) => {
@@ -1244,7 +1423,10 @@ function TrackerMasterForm({ item }: { item: TrackerDetailPayload }) {
             </label>
             <label className="tracker-input-wrap">
                <span>Pattern Maker</span>
-               <input type="text" value={form.patternMaker} onChange={e => setForm({...form, patternMaker: e.target.value})} placeholder="Unassigned" />
+                <select value={form.patternMaker} onChange={e => setForm({...form, patternMaker: e.target.value})}>
+                  <option value="">Unassigned</option>
+                  {patternMakers.map(option => <option key={option.id} value={option.name}>{option.name} · {option.load}{option.name !== form.patternMaker ? ` → ${option.load + 1}` : ''}</option>)}
+                </select>
             </label>
            <label className="tracker-input-wrap">
               <span>Season</span>
@@ -1369,7 +1551,8 @@ function TrackerHistory({ history }: { history: HistoryEntry[] }) {
               <div className="tracker-history-body">
                  {h.entryType === 'event' && <div>Recorded <strong>{h.eventType?.replace('_', ' ').toUpperCase()}</strong></div>}
                   {h.entryType === 'event' && h.outcome && <div className="note-text">Stage: {h.outcome}</div>}
-                 {h.entryType === 'update' && <div>Updated <span className="tracker-history-change">{h.oldValue} → {h.newValue}</span></div>}
+                  {h.entryType === 'update' && <div>Updated <span className="tracker-history-change">{h.oldValue} → {h.newValue}</span></div>}
+                  {h.entryType === 'pattern_maker_changed' && <div>Reassigned pattern maker <span className="tracker-history-change">{h.oldValue || 'Unassigned'} → {h.newValue || 'Unassigned'}</span></div>}
                  {h.reason && <div className="note-text">Reason: {h.reason}</div>}
                  {h.note && <div className="note-text">{h.note}</div>}
               </div>
