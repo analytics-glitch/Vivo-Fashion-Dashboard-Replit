@@ -45,7 +45,6 @@ TRANSFORM_SCRIPTS = [
     "transform_all_sales.py",
     "transform_all_customers.py",
     "build_customer_identity.py",
-    "build_customer_people.py",
     "transform_all_products_clean.py",
 ]
 
@@ -79,19 +78,29 @@ def main():
             ok = run_script(script)
             if not ok:
                 failed.append(script)
-                log.warning("Continuing despite failure in %s", script)
+                # Preserve established continuation for unrelated extracts, but
+                # a customer-source failure makes canonical customer publish
+                # unsafe and blocks the transform phase below.
+                log.warning("Continuing non-customer extracts after %s", script)
 
     if run_transform:
+        customer_prereqs = {"extract_odoo_customers.py", "extract_shopify_customers.py"}
+        if any(item in customer_prereqs for item in failed):
+            log.error("Skipping customer-dependent transforms: customer prerequisite failed")
+            return 1
         for script in TRANSFORM_SCRIPTS:
             ok = run_script(script)
             if not ok:
-                failed.append(script)
+                log.error("Failing fast after transform failure: %s", script)
+                return 1
 
     log.info("=" * 50)
     if failed:
         log.error("Pipeline completed with failures: %s", failed)
+        return 1
     else:
         log.info("✅ Pipeline complete — all scripts succeeded")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

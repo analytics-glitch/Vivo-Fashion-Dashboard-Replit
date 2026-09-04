@@ -1546,6 +1546,9 @@ def sync_odoo_customers_incremental(conn):
                 )
         except Exception as e:
             log.error("Odoo customer gap-fill error: %s", e)
+            # Publishing identity after an incomplete customer source would
+            # replace a known-good snapshot with a partial one.
+            raise
 
     # Step 3 — upsert any raw_odoo_customers updated in this sync cycle into
     # all_customers, then backfill order stats from all_sales.
@@ -1632,6 +1635,17 @@ def sync_odoo_customers_incremental(conn):
 
     conn.commit()
     log.info("Odoo customer sync: upserted %d rows into all_customers", len(ac_rows))
+    # Customer facts are now changed; publish the canonical phone-only identity
+    # immediately so freshness metadata exposes either the new snapshot or a
+    # visible failure to this caller.  publish uses a transaction row lock.
+    from customer_identity import publish as publish_customer_identity
+    try:
+        report = publish_customer_identity(conn)
+        log.info("✅ canonical customer identity refreshed: %s", report)
+    except Exception:
+        conn.rollback()
+        log.exception("canonical customer identity refresh failed after customer update")
+        raise
 
 
 def sync_shopping_bags(cur, conn):

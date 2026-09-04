@@ -44,6 +44,10 @@ args = "community-referral-pg"
 task = "workflow.run"
 args = "production-tracker-sheet-pg"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "customer-identity-pg"
+
 [[workflows.workflow]]
 name = "Sync Watchdog"
 author = "agent"
@@ -117,6 +121,17 @@ author = "agent"
 [[workflows.workflow.tasks]]
 task = "shell.exec"
 args = "python3 run_production_tracker_sheet_pg_test.py"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "customer-identity-pg"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "python run_customer_identity_pg_test.py"
 
 [workflows.workflow.metadata]
 isValidation = true
