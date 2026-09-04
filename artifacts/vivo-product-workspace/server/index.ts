@@ -52,6 +52,7 @@ import {
   rangePlanAosDefault,
   rangePlanAosDefaultMigrationSql,
 } from "./range-plan-defaults.js";
+import { calendarDate, legacyCalendarDate, styleDateInput } from "./calendar-date.js";
 import {
   DEFAULT_NEW_STYLE_ORDER_UNITS,
   calculateNewnessCommitment,
@@ -176,7 +177,7 @@ function biStyle(style: Record<string, any>) {
 function biOrder(order: Record<string, any>) {
   return {
     orderRef: String(biValue(order, "orderRef", "order_ref", "name", "reference") ?? ""),
-    orderDate: String(biValue(order, "orderDate", "order_date", "dateOrdered", "date_ordered") ?? "").slice(0, 10),
+    orderDate: calendarDate(biValue(order, "orderDate", "order_date", "dateOrdered", "date_ordered")) ?? "",
     styleNumber: String(biValue(order, "styleNumber", "style_number", "productSku", "product_sku", "sku") ?? "").trim(),
     styleName: String(biValue(order, "styleName", "style_name", "productName", "product_name") ?? ""),
     quantity: Number(biValue(order, "quantity", "orderQty", "order_qty", "units") ?? 0),
@@ -1081,7 +1082,7 @@ const liveScorecardHandler = async (_req: Request, res: Response, next: NextFunc
     }
 
     res.json({
-      weekStart: l10Monday().toISOString().slice(0, 10),
+      weekStart: calendarDate(l10Monday())!,
       metrics,
     });
   } catch (error) {
@@ -1105,7 +1106,7 @@ async function ensureL10Data() {
       (week_label,meeting_date,start_time,end_time,location,duration_minutes)
      VALUES ($1,$2,'11:30','13:00','Design Board Room',90)
      ON CONFLICT (week_label) DO NOTHING`,
-    [l10WeekLabel(currentMonday), currentMonday.toISOString().slice(0, 10)],
+    [l10WeekLabel(currentMonday), calendarDate(currentMonday)!],
   );
 
   const meetingRows = await pool.query<{ id: number; weekLabel: string }>(
@@ -3891,7 +3892,7 @@ function teamMemberPayload(row: Record<string, unknown>) {
     department: String(row.department ?? ""),
     team: String(row.team ?? ""),
     description: String(row.description ?? ""),
-    birthday: row.birthday ? String(row.birthday).slice(0, 10) : null,
+    birthday: calendarDate(row.birthday),
     photoUrl: row.photoPath ? `/api/workspace/team-directory/${Number(row.id)}/photo` : null,
     isLma: Boolean(row.isLma),
     displayOrder: Number(row.displayOrder ?? 0),
@@ -5459,11 +5460,13 @@ function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Re
       ? null : Number(row.patternRouteId),
     patternRouteKind: row.patternRouteKind ?? null,
     isLegacyCadPatternAssignment: Boolean(row.isLegacyCadPatternAssignment),
-    adoptionDate: row.adoptionDate ? String(row.adoptionDate).slice(0, 10) : null,
+    adoptionDate: calendarDate(row.adoptionDate),
     targetOrderWeek: row.targetOrderWeek ?? null,
     targetLaunchWeek: row.targetLaunchWeek ?? null,
     launchMonth: styleDevelopmentLaunchMonth(row.targetLaunchWeek),
-    sampleApprovalDate: row.sampleApprovalDate ?? null,
+    sampleApprovalDate: legacyCalendarDate(row.sampleApprovalDate),
+    sampleApprovalDateUnreadable: row.sampleApprovalDate && !legacyCalendarDate(row.sampleApprovalDate)
+      ? String(row.sampleApprovalDate) : null,
     dataQualityFlags: row.dataQualityFlags ?? [],
     blocked: status === "Blocked",
     blockerReason: status === "Blocked" ? (row.blockerReason || (sourceStatus.trim().toUpperCase() === "WAITING FOR FABRIC" ? "Waiting for fabric" : "")) : "",
@@ -5917,10 +5920,10 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
       ),
     ]);
     const makerByKey = new Map(makerConfig.map((row) => [String(row.assignmentKey), row]));
-    const today = new Date().toISOString().slice(0, 10);
+    const today = calendarDate(new Date())!;
     const currentUnavailable = new Set<number>(unavailabilityResult.rows
-      .filter((row) => String(row.unavailableFrom).slice(0, 10) <= today
-        && (!row.unavailableTo || String(row.unavailableTo).slice(0, 10) >= today))
+      .filter((row) => calendarDate(row.unavailableFrom)! <= today
+        && (!row.unavailableTo || calendarDate(row.unavailableTo)! >= today))
       .map((row) => Number(row.patternMakerId)));
     const baseMakers = makerConfig
       .filter((row) => row.active && row.kind === "person" && Number(row.effectiveCapacity) > 0)
@@ -6008,9 +6011,9 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
           unavailableNow,
           nextUnavailable: nextUnavailable ? {
             id: Number(nextUnavailable.id),
-            unavailableFrom: String(nextUnavailable.unavailableFrom).slice(0, 10),
+            unavailableFrom: calendarDate(nextUnavailable.unavailableFrom),
             unavailableTo: nextUnavailable.unavailableTo
-              ? String(nextUnavailable.unavailableTo).slice(0, 10) : null,
+              ? calendarDate(nextUnavailable.unavailableTo) : null,
             note: nextUnavailable.note,
           } : null,
           displayOrder: config?.displayOrder ?? 999,
@@ -6057,10 +6060,11 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
       5,
     ).map(({ id, ...suggestion }) => ({ styleId: id, ...suggestion }));
     const availabilitySchedule = unavailabilityResult.rows.map((row) => {
-      const impactDate = String(row.unavailableFrom).slice(0, 10) < today ? today : String(row.unavailableFrom).slice(0, 10);
+      const unavailableFrom = calendarDate(row.unavailableFrom)!;
+      const impactDate = unavailableFrom < today ? today : unavailableFrom;
       const overlappingMakerIds = new Set(unavailabilityResult.rows
-        .filter((candidate) => String(candidate.unavailableFrom).slice(0, 10) <= impactDate
-          && (!candidate.unavailableTo || String(candidate.unavailableTo).slice(0, 10) >= impactDate))
+        .filter((candidate) => calendarDate(candidate.unavailableFrom)! <= impactDate
+          && (!candidate.unavailableTo || calendarDate(candidate.unavailableTo)! >= impactDate))
         .map((candidate) => Number(candidate.patternMakerId)));
       const unavailableCapacity = makerConfig
         .filter((maker) => overlappingMakerIds.has(Number(maker.id)) && maker.kind === "person")
@@ -6070,8 +6074,8 @@ router.get("/style-development-tracker/reporting", async (_req, res, next) => {
         id: Number(row.id),
         patternMakerId: Number(row.patternMakerId),
         patternMaker: row.patternMaker,
-        unavailableFrom: String(row.unavailableFrom).slice(0, 10),
-        unavailableTo: row.unavailableTo ? String(row.unavailableTo).slice(0, 10) : null,
+        unavailableFrom,
+        unavailableTo: row.unavailableTo ? calendarDate(row.unavailableTo) : null,
         note: row.note,
         recordedBy: row.recordedBy,
         makersDuring,
@@ -6486,7 +6490,9 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
         if (sellingPrice !== null && (!Number.isFinite(sellingPrice) || sellingPrice < 0)) throw new Error("Intended selling price must be a non-negative number");
       }
       else if (key === "exitReason" || key === "reason") value = value ? String(value).trim() : null;
-      else if (key === "adoptionDate" || key === "targetOrderWeek" || key === "targetLaunchWeek" || key === "sampleApprovalDate") value = value ? String(value).trim() : null;
+      else if (key === "adoptionDate") value = styleDateInput(value, "Adoption Date");
+      else if (key === "sampleApprovalDate") value = styleDateInput(value, "Sample Approval Date");
+      else if (key === "targetOrderWeek" || key === "targetLaunchWeek") value = value ? String(value).trim() : null;
       else value = String(value ?? "").trim();
       const oldValue = current.rows[0][column];
       if (String(oldValue ?? "") === String(value ?? "")) continue;
@@ -6757,8 +6763,8 @@ router.post("/feedback/pulses", async (req: AuthRequest, res, next) => {
 function stockSalesReportPayload(row: Record<string, unknown>) {
   return {
     id: Number(row.id),
-    reportMonth: String(row.reportMonth ?? "").slice(0, 10),
-    pulledAt: String(row.pulledAt ?? "").slice(0, 10),
+    reportMonth: calendarDate(row.reportMonth) ?? "",
+    pulledAt: calendarDate(row.pulledAt) ?? "",
     reportUrl: String(row.reportUrl ?? ""),
     informedPlanId: row.informedPlanId == null ? null : Number(row.informedPlanId),
     informedPlanName: row.informedPlanName == null ? null : String(row.informedPlanName),
@@ -6902,7 +6908,7 @@ function assortmentStylePayload(row: Record<string, unknown>) {
     unitsSold: row.unitsSold == null ? null : Number(row.unitsSold),
     revenueKes: row.revenueKes == null ? null : Number(row.revenueKes),
     sorPct: row.sorPct == null ? null : Number(row.sorPct),
-    launchDate: launchDate == null ? null : launchDate instanceof Date ? launchDate.toISOString().slice(0, 10) : String(launchDate),
+    launchDate: calendarDate(launchDate),
     price: row.price == null ? null : Number(row.price),
     stockUnits: row.stockUnits == null ? null : Number(row.stockUnits),
     sohStores: row.sohStores == null ? null : Number(row.sohStores),
@@ -7281,7 +7287,7 @@ router.get("/range-plan", async (req, res, next) => {
        ORDER BY w.start_date`,
     )).rows.map((row) => ({
       isoYear: Number(row.isoYear), isoWeek: Number(row.isoWeek),
-      startDate: String(row.startDate).slice(0, 10), endDate: String(row.endDate).slice(0, 10),
+      startDate: calendarDate(row.startDate), endDate: calendarDate(row.endDate),
       label: String(row.label), status: String(row.status),
     }));
     const requestedQuarter = String(req.query.quarter ?? "");
@@ -8977,7 +8983,7 @@ const TEAM_ROLES = ["Admin", "Design", "Buying", "Retail", "Finance"] as const;
 
 router.get("/l10/meetings", async (_req, res, next) => {
   try {
-    const monday = l10Monday().toISOString().slice(0, 10);
+    const monday = calendarDate(l10Monday())!;
     const result = await pool.query(
       `SELECT id,week_label AS "weekLabel",meeting_date::text AS "meetingDate",
         start_time AS "startTime",end_time AS "endTime",location,
@@ -8995,7 +9001,7 @@ router.get("/l10/meetings", async (_req, res, next) => {
 router.get("/l10/meetings/:meetingId", async (req, res, next) => {
   try {
     const meetingId = Number(req.params.meetingId);
-    const monday = l10Monday().toISOString().slice(0, 10);
+    const monday = calendarDate(l10Monday())!;
     const meetingResult = await pool.query(
       `SELECT id,week_label AS "weekLabel",meeting_date::text AS "meetingDate",
         start_time AS "startTime",end_time AS "endTime",location,
@@ -10215,7 +10221,7 @@ router.get("/dashboard", async (_req, res, next) => {
     ]);
     const countByStatus = Object.fromEntries(styles.rows.map((row) => [row.status.toLowerCase().replaceAll(" ", "_"), row.count]));
     const snapshot = {
-      asOfDate: new Date().toISOString().slice(0, 10),
+      asOfDate: calendarDate(new Date())!,
       planningPeriod: `Week ${focus.week.isoWeek} · ${focus.week.monthLabel}`,
       inDevelopment: focus.canonicalStyleCount,
       dueThisWeek: focus.week.stylesCommitted,
@@ -12257,9 +12263,9 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       `SELECT to_date($1::text || lpad($2::text,2,'0'),'IYYYIW')::text AS "startDate"`,
       [isoYear, isoWeek],
     );
-    const startDate = String(datesResult.rows[0]?.startDate ?? fallbackStart.rows[0].startDate).slice(0, 10);
-    const endDate = String(datesResult.rows[0]?.endDate
-      ?? (await pool.query(`SELECT ($1::date + 6)::text AS "endDate"`, [startDate])).rows[0].endDate).slice(0, 10);
+    const startDate = calendarDate(datesResult.rows[0]?.startDate ?? fallbackStart.rows[0].startDate)!;
+    const endDate = calendarDate(datesResult.rows[0]?.endDate
+      ?? (await pool.query(`SELECT ($1::date + 6)::text AS "endDate"`, [startDate])).rows[0].endDate)!;
     const planResult = await pool.query(
       `SELECT id,iso_year AS "isoYear",iso_week AS "isoWeek",status,confirmed_at AS "confirmedAt"
        FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
@@ -12399,7 +12405,7 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       [startDate, endDate],
     );
     const weeklyNewness = weeklyNewnessTarget(startDate, endDate, monthlyNewnessResult.rows.map((row) => ({
-      monthStart: String(row.monthStart).slice(0, 10),
+      monthStart: calendarDate(row.monthStart)!,
       monthLabel: String(row.monthLabel),
       targetUnits: Number(row.targetUnits),
     })));

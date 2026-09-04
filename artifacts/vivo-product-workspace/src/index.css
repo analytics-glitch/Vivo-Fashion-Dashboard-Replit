@@ -115,6 +115,7 @@
 .tracker-select-cell { width: 38px; padding-left: 12px !important; padding-right: 4px !important; }
 .tracker-select-cell input { width: 16px; height: 16px; accent-color: var(--gold); cursor: pointer; }
 .tracker-assignment-error { color: var(--coral); background: #fbeae8; border: 1px solid #f2c7c1; border-radius: 6px; padding: 9px 12px; font-size: 12px; }
+.tracker-date-warning { color: #9a5b2f; font-size: 11px; line-height: 1.4; }
 
 .tracker-approvals { display: flex; flex-direction: column; gap: 12px; max-width: 900px; margin: 0 auto; width: 100%; }
 .tracker-approval-row { display: flex; gap: 20px; padding: 16px; background: #fff; border: 1px solid #d8d0c2; border-radius: 8px; align-items: center; transition: transform 0.1s, box-shadow 0.1s; flex-wrap: wrap; }

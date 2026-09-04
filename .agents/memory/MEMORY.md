@@ -154,3 +154,4 @@
 - [Production API compile gate](production-api-compile-gate.md) — watchdog compiles every backend Python file, including tests; one malformed test prevents port 8080 from opening and makes all live /api routes return 500.
 - [Store stock movement and colour opportunities](store-stock-movement-opportunities.md) — transfer routes are destination-aware; unseen colour suggestions require sold-style evidence and no prior store holding.
 - [Stock to sales planning evidence](stock-sales-planning-evidence.md) — archive frozen monthly reports separately from live BI; attach one snapshot to the monthly plan it informed.
+- [Product Workspace calendar dates](product-workspace-calendar-dates.md) — serialize DATE values from local calendar parts, validate before SQL, and isolate unreadable legacy text.

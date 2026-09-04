@@ -35,6 +35,7 @@ type TrackerStyle = {
   targetLaunchWeek: string | null;
   launchMonth: string | null;
   sampleApprovalDate: string | null;
+  sampleApprovalDateUnreadable: string | null;
   dataQualityFlags: string[];
   blocked: boolean;
   blockerReason: string | null;
@@ -2353,7 +2354,9 @@ function TrackerMasterForm({ item, patternMakers, designers, reassignmentReasons
         adoptionDate: form.adoptionDate || null,
         targetOrderWeek: form.targetOrderWeek || null,
         targetLaunchWeek: form.targetLaunchWeek || null,
-        sampleApprovalDate: form.sampleApprovalDate || null,
+        ...(!item.sampleApprovalDateUnreadable || form.sampleApprovalDate
+          ? { sampleApprovalDate: form.sampleApprovalDate || null }
+          : {}),
         blocked: form.blocked,
         blockerReason: form.blocked ? form.blockerReason : '',
        season: form.season,
@@ -2514,6 +2517,11 @@ function TrackerMasterForm({ item, patternMakers, designers, reassignmentReasons
             <label className="tracker-input-wrap">
                <span>Sample Approval Date</span>
                <input type="date" value={form.sampleApprovalDate} onChange={e => setForm({...form, sampleApprovalDate: e.target.value})} />
+                {item.sampleApprovalDateUnreadable && !form.sampleApprovalDate && (
+                  <small className="tracker-date-warning">
+                    Saved value “{item.sampleApprovalDateUnreadable}” is unreadable. Choose a valid date to replace it.
+                  </small>
+                )}
             </label>
         </div>
 
@@ -2549,7 +2557,7 @@ function TrackerMasterForm({ item, patternMakers, designers, reassignmentReasons
            </label>
         </div>
 
-        {mutation.isError && <div style={{color: 'var(--coral)', fontSize: 13, marginTop: 8}}>{mutation.error instanceof Error ? mutation.error.message : 'Update failed'}</div>}
+        {mutation.isError && <div className="tracker-assignment-error" style={{ marginTop: 8 }} role="alert">{mutation.error instanceof Error ? mutation.error.message : 'Master Details could not be saved. Your edits are still here.'}</div>}
 
         <div className="form-actions">
            <button type="submit" className="button button-dark" disabled={mutation.isPending}>Save Master Details</button>
