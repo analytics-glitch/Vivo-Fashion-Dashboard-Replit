@@ -955,7 +955,7 @@ function TrackerCardImage({ imageUrl }: { imageUrl: string | null }) {
   }, [imageUrl]);
 
   return (
-    <div className="tracker-card-image" aria-hidden="true">
+    <div className={`tracker-card-image ${imageFailed ? 'is-empty' : ''}`} aria-hidden="true">
       {imageUrl && !imageFailed && (
         <img
           src={imageUrl}
@@ -964,6 +964,12 @@ function TrackerCardImage({ imageUrl }: { imageUrl: string | null }) {
           decoding="async"
           onError={() => setImageFailed(true)}
         />
+      )}
+      {imageFailed && (
+        <span className="tracker-card-image-empty">
+          <ImageIcon size={14} />
+          No garment image
+        </span>
       )}
     </div>
   );
