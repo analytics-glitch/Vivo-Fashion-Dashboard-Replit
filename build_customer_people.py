@@ -3,7 +3,7 @@ Most-common name per person. Build-then-swap (no long lock). Reads customer_iden
 import os, psycopg2, logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
-conn = psycopg2.connect(os.environ['DATABASE_URL'])
+conn = psycopg2.connect(os.environ.get('VIVO_DATABASE_URL') or os.environ['DATABASE_URL'])
 cur = conn.cursor()
 
 log.info("Building customer_people_new (most-common name, no lock on live)...")

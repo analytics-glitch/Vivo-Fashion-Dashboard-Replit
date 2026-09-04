@@ -6,7 +6,7 @@ import os, re, psycopg2
 from psycopg2.extras import execute_values
 from collections import defaultdict
 
-conn = psycopg2.connect(os.environ['DATABASE_URL'])
+conn = psycopg2.connect(os.environ.get('VIVO_DATABASE_URL') or os.environ['DATABASE_URL'])
 cur = conn.cursor()
 
 def norm_name(s): return re.sub(r'\s+',' ',(s or '').strip()).lower() or None
