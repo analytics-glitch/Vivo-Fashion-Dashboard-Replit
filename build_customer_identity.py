@@ -1,146 +1,63 @@
-"""Customer identity resolver (Step 6 — phone-first + junk blocklist before matching).
-Reads normalised all_customers + raw_odoo_customers link. Blocklist tags pseudo
-accounts BEFORE matching so they never merge with real people. Writes ONLY to
-customer_identity / _review. Live pipeline untouched."""
-import os, re, psycopg2
-from psycopg2.extras import execute_values
-from collections import defaultdict
-
+"""build_customer_people.py — clean one-row-per-person master.
+Most-common name per person. Build-then-swap (no long lock). Reads customer_identity."""
+import os, psycopg2, logging
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+log = logging.getLogger(__name__)
 conn = psycopg2.connect(os.environ['DATABASE_URL'])
 cur = conn.cursor()
 
-def norm_name(s): return re.sub(r'\s+',' ',(s or '').strip()).lower() or None
-
-# ---- JUNK BLOCKLIST (applied BEFORE matching) ----
-PSEUDO = re.compile(
-    r'walk.?in|dormant|newsletter|subscriber|jumia|wholesale|\binfo\b|'
-    r'sample|test|demo|staff|anonymous|\bguest\b|collection|counter|reception',
-    re.I)
-def is_pseudo(name, email):
-    if name and PSEUDO.search(name): return True
-    if email and email.endswith('@vivofashiongroup.com'): return True
-    return False
-
-print("reading all_customers (normalised)...")
-cur.execute("SELECT customer_id, store_id, first_name, last_name, email, phone FROM all_customers")
-custs = cur.fetchall()
-
-cur.execute("""SELECT DISTINCT ON (id) id, shopify_user_id FROM raw_odoo_customers
-    WHERE shopify_user_id IS NOT NULL ORDER BY id, write_date DESC""")
-odoo_link = {str(r[0]): str(r[1]) for r in cur.fetchall()}
-
-cur.execute("SELECT source_system, source_customer_id, force_person_id FROM customer_identity_override")
-overrides = {(r[0], r[1]): r[2] for r in cur.fetchall()}
-print(f"customers={len(custs)} odoo_links={len(odoo_link)} overrides={len(overrides)}")
-
-# ---- Build nodes, tagging pseudo up front ----
-nodes = []
-for (cid, store, fn, ln, email, phone) in custs:
-    system = 'odoo' if store == 'vivofashiongroup' else 'shopify'
-    disp = ((fn or '')+' '+(ln or '')).strip()
-    full = norm_name(disp)
-    pseudo = is_pseudo(disp, email)
-    nodes.append([system, str(cid), store, disp, (email or None),
-                  (phone or None), full, pseudo])
-
-real  = [n for n in nodes if not n[7]]   # matched
-pseudo_nodes = [n for n in nodes if n[7]] # NOT matched — each stays its own person
-print(f"real nodes: {len(real)}  |  pseudo (blocklisted, not matched): {len(pseudo_nodes)}")
-
-parent = {}
-def find(x):
-    parent.setdefault(x, x)
-    while parent[x] != x:
-        parent[x] = parent[parent[x]]; x = parent[x]
-    return x
-def union(a, b):
-    ra, rb = find(a), find(b)
-    if ra != rb: parent[rb] = ra
-def key(n): return (n[0], n[1])
-for n in real: find(key(n))
-
-# 1. shopify_user_id link (structural — always safe)
-shop_ids = set(n[1] for n in real if n[0]=='shopify')
-for n in real:
-    if n[0]=='odoo' and n[1] in odoo_link and odoo_link[n[1]] in shop_ids:
-        union(key(n), ('shopify', odoo_link[n[1]]))
-
-def group_by(idx):
-    d = defaultdict(list)
-    for n in real:
-        if n[idx]: d[n[idx]].append(n)
-    return d
-
-review_rows = []
-# 2. PHONE FIRST (country-prefixed, globally unique). Flag same-phone/diff-name.
-for val, members in group_by(5).items():
-    names = set(m[6] for m in members if m[6])
-    if len(names) > 1:
-        review_rows.append((val, 'phone', [m[1] for m in members], sorted(names)))
-        continue
-    for i in range(1, len(members)):
-        union(key(members[0]), key(members[i]))
-
-# 3. EMAIL second
-for val, members in group_by(4).items():
-    for i in range(1, len(members)):
-        union(key(members[0]), key(members[i]))
-
-# 4. exact name third (only when no phone conflict)
-for val, members in group_by(6).items():
-    if len(members) > 1 and len(set(m[5] for m in members if m[5])) <= 1:
-        for i in range(1, len(members)):
-            union(key(members[0]), key(members[i]))
-
-ov_person = {}
-for (sys, sid), pid in overrides.items():
-    ov_person[find((sys, sid))] = pid
-
-root_to_person = {}; next_pid = 1; out = []
-# real people first
-for n in real:
-    r = find(key(n))
-    if r in ov_person:
-        pid = ov_person[r]; method='override'
-    else:
-        if r not in root_to_person:
-            root_to_person[r] = next_pid; next_pid += 1
-        pid = root_to_person[r]; method='resolved'
-    out.append((pid, n[0], n[1], n[2], n[3], n[4], n[5], n[6], method))
-# pseudo accounts: each its OWN person, method='pseudo' (never merged)
-for n in pseudo_nodes:
-    pid = next_pid; next_pid += 1
-    out.append((pid, n[0], n[1], n[2], n[3], n[4], n[5], n[6], 'pseudo'))
-
-print("writing customer_identity...")
-cur.execute("TRUNCATE customer_identity")
-execute_values(cur, """
-    INSERT INTO customer_identity
-      (person_id, source_system, source_customer_id, store_id, display_name,
-       email_n, phone9, name_n, match_method)
-    VALUES %s
-""", out, page_size=1000)
-cur.execute("TRUNCATE customer_identity_review RESTART IDENTITY")
-if review_rows:
-    execute_values(cur, """
-        INSERT INTO customer_identity_review (match_key, key_type, source_ids, names)
-        VALUES %s
-    """, review_rows, page_size=500)
+log.info("Building customer_people_new (most-common name, no lock on live)...")
+cur.execute("DROP TABLE IF EXISTS customer_people_new")
+cur.execute("""
+CREATE TABLE customer_people_new AS
+WITH person_sales AS (
+    SELECT ci.person_id, COUNT(DISTINCT s.order_id) AS total_orders,
+           ROUND(SUM(s.total_sales_kes)::numeric,2) AS total_spend_kes,
+           MIN(s.sale_date::date) AS first_purchase, MAX(s.sale_date::date) AS last_purchase
+    FROM customer_identity ci
+    JOIN all_sales s ON s.customer_id = ci.source_customer_id
+    WHERE s.sale_kind IN ('sale','order')
+    GROUP BY ci.person_id
+),
+name_ranked AS (
+    SELECT person_id, display_name,
+           ROW_NUMBER() OVER (PARTITION BY person_id
+             ORDER BY COUNT(*) DESC, LENGTH(display_name) DESC) AS rn
+    FROM customer_identity
+    WHERE display_name IS NOT NULL AND display_name <> ''
+    GROUP BY person_id, display_name
+),
+person_attrs AS (
+    SELECT ci.person_id,
+      (SELECT display_name FROM name_ranked nr WHERE nr.person_id=ci.person_id AND nr.rn=1) AS name,
+      (ARRAY_AGG(ci.email_n ORDER BY LENGTH(COALESCE(ci.email_n,'')) DESC)
+         FILTER (WHERE ci.email_n IS NOT NULL AND ci.email_n<>''))[1] AS email,
+      (ARRAY_AGG(ci.phone9 ORDER BY LENGTH(COALESCE(ci.phone9,'')) DESC)
+         FILTER (WHERE ci.phone9 IS NOT NULL AND ci.phone9<>''))[1] AS phone,
+      COUNT(*) AS source_records,
+      STRING_AGG(DISTINCT ci.source_system,'+' ORDER BY ci.source_system) AS systems,
+      BOOL_OR(ci.match_method='pseudo') AS is_pseudo
+    FROM customer_identity ci GROUP BY ci.person_id
+)
+SELECT a.person_id, a.name, a.email, a.phone, a.source_records, a.systems, a.is_pseudo,
+       COALESCE(ps.total_orders,0) AS total_orders,
+       COALESCE(ps.total_spend_kes,0) AS total_spend_kes,
+       ps.first_purchase, ps.last_purchase,
+       CASE WHEN COALESCE(ps.total_orders,0)>1 THEN 'Returning'
+            WHEN COALESCE(ps.total_orders,0)=1 THEN 'New' ELSE 'No purchase' END AS customer_type
+FROM person_attrs a LEFT JOIN person_sales ps ON ps.person_id=a.person_id
+""")
+cur.execute("BEGIN")
+cur.execute("DROP TABLE IF EXISTS customer_people_old")
+cur.execute("ALTER TABLE customer_people RENAME TO customer_people_old")
+cur.execute("ALTER TABLE customer_people_new RENAME TO customer_people")
+cur.execute("DROP TABLE customer_people_old")
+cur.execute("CREATE INDEX idx_cp_person ON customer_people(person_id)")
+cur.execute("CREATE INDEX idx_cp_phone ON customer_people(phone)")
+cur.execute("CREATE INDEX idx_cp_email ON customer_people(email)")
+cur.execute("COMMIT")
 conn.commit()
-
-cur.execute("SELECT COUNT(*), COUNT(DISTINCT person_id) FROM customer_identity")
-total, people = cur.fetchone()
-cur.execute("SELECT COUNT(*) FROM customer_identity WHERE match_method='pseudo'")
-pseudo_ct = cur.fetchone()[0]
-cur.execute("SELECT COUNT(*) FROM customer_identity_review")
-rev = cur.fetchone()[0]
-cur.execute("SELECT COUNT(DISTINCT person_id) FROM customer_identity WHERE match_method<>'pseudo'")
-real_people = cur.fetchone()[0]
-print(f"\n=== IDENTITY BUILT (phone-first + blocklist) ===")
-print(f"source rows:        {total}")
-print(f"distinct people:    {people}")
-print(f"  real people:      {real_people}")
-print(f"  pseudo accounts:  {pseudo_ct} (blocklisted, each its own, not merged)")
-print(f"review queue:       {rev}")
+cur.execute("SELECT COUNT(*), COUNT(*) FILTER (WHERE NOT is_pseudo) FROM customer_people")
+t,r=cur.fetchone()
+log.info("✅ customer_people built: %d rows (%d real people)", t, r)
 conn.close()
-print("\nDONE — identity tables only. Live untouched.")
