@@ -3,11 +3,11 @@ name: Style Development operating model
 description: Durable readiness, timing, exit, and capacity rules for the Product Development Tracker.
 ---
 
-Sample fabric selection must use live Fabric BI products. Availability is canonical available stock converted to metres; indicative COGS uses live cost and category-level metres per garment. Adoption readiness is a soft gate: missing stock, season, COGS, price, or a COGS result above 32% of VAT-exclusive selling price requires a recorded override rather than blocking progress absolutely.
+Sample fabric selection must use live Fabric BI products. Availability is canonical available stock converted to metres; indicative COGS uses live cost and category-level metres per garment. Adoption readiness remains visible information, but it and rejection reasons must not block Log Action while action gates are disabled. One server-owned switch controls both blockers and defaults off so the team can deliberately restore them together later.
 
-**Why:** Product-development decisions need current material feasibility without letting incomplete source data halt urgent work invisibly.
+**Why:** The team is still deciding which workflow gates are operationally useful. Readiness context should remain available without adding friction or silently discarding the former rules.
 
-**How to apply:** Keep fabric choice constrained to live products, show the chosen colour plus sibling colours, and preserve structured missing/warning reasons in the API and UI.
+**How to apply:** Keep fabric choice constrained to live products, show the chosen colour plus sibling colours, and preserve structured missing/warning reasons in the API and a neutral UI. Do not add stage-order, duplicate, or chronology blockers. Re-enable the shared action-gates switch only after the team deliberately confirms the policy.
 
 Lifecycle reporting uses working days and reports queue, work, and total intervals separately using median, P80, observation count, and standards. Parallel CAD grading and set-sample ordering remain separate branches that converge before production.
 

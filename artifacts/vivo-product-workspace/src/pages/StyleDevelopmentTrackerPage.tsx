@@ -72,6 +72,7 @@ type TrackerStyle = {
   patternEffortDays?: number | null;
   categoryMetresPerGarment?: number | null;
   adoptionReadiness?: { ready: boolean; missing: string[]; warnings: string[] };
+  actionGatesEnabled?: boolean;
   exitStatus?: string | null;
   exitReason?: string | null;
   exitStage?: string | null;
@@ -2189,9 +2190,10 @@ function TrackerEventForm({ item }: { item: TrackerDetailPayload }) {
      return now.toISOString().slice(0, 16);
   });
 
-  const requiresReason = eventType.includes('rejected');
+  const isRejected = eventType.includes('rejected');
   const isPatternStarted = eventType === 'pattern_started';
-  const showOverride = isPatternStarted && item.adoptionReadiness && !item.adoptionReadiness.ready;
+  const adoptionNotReady = Boolean(item.adoptionReadiness && !item.adoptionReadiness.ready);
+  const gateActive = Boolean(item.actionGatesEnabled && isPatternStarted && adoptionNotReady);
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -2245,24 +2247,25 @@ function TrackerEventForm({ item }: { item: TrackerDetailPayload }) {
               <input type="datetime-local" value={occurredAt} onChange={e => setOccurredAt(e.target.value)} required />
            </label>
         </div>
-        {requiresReason && (
+        {isRejected && (
            <label className="tracker-input-wrap">
-              <span>Reason</span>
-              <input type="text" value={reason} onChange={e => setReason(e.target.value)} required />
+              <span>Reason{item.actionGatesEnabled ? '' : ' (optional)'}</span>
+              <input type="text" value={reason} onChange={e => setReason(e.target.value)} required={Boolean(item.actionGatesEnabled)} />
            </label>
         )}
-        {showOverride && (
-           <div className="tracker-gate-warning">
-             <AlertTriangle size={16} />
+         {adoptionNotReady && (
+            <div className={gateActive ? 'tracker-gate-warning' : 'tracker-readiness-context'}>
+              {gateActive && <AlertTriangle size={16} />}
              <div style={{ flex: 1 }}>
-               <strong>Adoption Gate: Not Ready</strong>
-               {item.adoptionReadiness?.missing && item.adoptionReadiness.missing.length > 0 && <div className="gate-missing">Missing: {item.adoptionReadiness.missing.join(', ')}</div>}
-               {item.adoptionReadiness?.warnings && item.adoptionReadiness.warnings.length > 0 && <div className="gate-warnings">Warnings: {item.adoptionReadiness.warnings.join(', ')}</div>}
-
-               <label className="tracker-input-wrap" style={{ marginTop: 12 }}>
-                 <span>Override Reason</span>
-                 <input type="text" value={overrideReason} onChange={e => setOverrideReason(e.target.value)} required placeholder="Why bypass the adoption gate?" />
-               </label>
+                <strong>{gateActive ? 'Adoption Gate: Not Ready' : 'Adoption readiness'}</strong>
+                {item.adoptionReadiness?.missing && item.adoptionReadiness.missing.length > 0 && <div className="gate-missing">Still missing: {item.adoptionReadiness.missing.join(', ')}</div>}
+                {item.adoptionReadiness?.warnings && item.adoptionReadiness.warnings.length > 0 && <div className="gate-warnings">{gateActive ? 'Warnings' : 'For review'}: {item.adoptionReadiness.warnings.join(', ')}</div>}
+                {gateActive && (
+                  <label className="tracker-input-wrap" style={{ marginTop: 12 }}>
+                    <span>Override Reason</span>
+                    <input type="text" value={overrideReason} onChange={e => setOverrideReason(e.target.value)} required placeholder="Why bypass the adoption gate?" />
+                  </label>
+                )}
              </div>
            </div>
         )}

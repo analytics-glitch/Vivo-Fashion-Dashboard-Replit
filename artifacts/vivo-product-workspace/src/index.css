@@ -279,6 +279,9 @@
 .tracker-gate-warning { background: #fdf3d9; border: 1px solid #e5d1a4; border-radius: 8px; padding: 16px; display: flex; align-items: flex-start; gap: 12px; color: #b28a45; margin-top: 16px; }
 .tracker-gate-warning strong { display: block; font-size: 14px; font-weight: 700; margin-bottom: 4px; color: #8f6f36; }
 .gate-missing, .gate-warnings { font-size: 12px; color: #8f6f36; margin-bottom: 4px; line-height: 1.4; }
+.tracker-readiness-context { margin-top: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 7px; background: var(--paper); color: #737b86; }
+.tracker-readiness-context strong { display: block; margin-bottom: 4px; color: #555d68; font-size: 12px; font-weight: 600; }
+.tracker-readiness-context .gate-missing, .tracker-readiness-context .gate-warnings { color: #737b86; font-size: 11px; }
 
 .tracker-fabric-picker { display: flex; flex-direction: column; gap: 12px; background: #fff; border: 1px solid #d8d0c2; border-radius: 8px; padding: 12px; }
 .tracker-fabric-picker input { padding: 10px 12px; border: 1px solid #d8d0c2; border-radius: 6px; font-size: 13px; font-family: var(--app-font-sans); }

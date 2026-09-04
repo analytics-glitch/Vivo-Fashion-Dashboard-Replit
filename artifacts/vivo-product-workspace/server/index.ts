@@ -460,6 +460,11 @@ const STYLE_DEVELOPMENT_EVENT_TYPES = [
   "order_rejected",
 ] as const;
 type StyleDevelopmentEventType = (typeof STYLE_DEVELOPMENT_EVENT_TYPES)[number];
+// One switch restores both action blockers when the team is ready to use them again.
+// It is deliberately off unless explicitly enabled in the service environment.
+const STYLE_DEVELOPMENT_ACTION_GATES_ENABLED = /^(1|true|yes|on)$/i.test(
+  String(process.env.STYLE_DEVELOPMENT_ACTION_GATES_ENABLED ?? ""),
+);
 const WORKSPACE_BRANDS = ["Vivo", "Safari by Vivo", "Zoya"] as const;
 const ALLOWED_BRANDS_SQL = WORKSPACE_BRANDS.map((brand) => `'${brand}'`).join(",");
 const allowedBrand = (alias: string) => `${alias}.brand IN (${ALLOWED_BRANDS_SQL})`;
@@ -5485,6 +5490,7 @@ function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Re
     cogsPct,
     indicativeCogsPct: cogsPct,
     adoptionReadiness,
+    actionGatesEnabled: STYLE_DEVELOPMENT_ACTION_GATES_ENABLED,
     exitStatus: row.exitStatus ?? "active",
     exitReason: row.exitReason ?? null,
     exitedAt: row.exitedAt ?? null,
@@ -6666,7 +6672,7 @@ router.post("/style-development-tracker/:id/events", async (req: AuthRequest, re
       return;
     }
     const reason = String(req.body?.reason ?? "").trim();
-    if (eventType.endsWith("_rejected") && !reason) {
+    if (STYLE_DEVELOPMENT_ACTION_GATES_ENABLED && eventType.endsWith("_rejected") && !reason) {
       res.status(400).json({ error: "A rejection reason is required" });
       return;
     }
@@ -6677,7 +6683,7 @@ router.post("/style-development-tracker/:id/events", async (req: AuthRequest, re
     }
     await client.query("BEGIN");
     const styleId = Number(req.params.id);
-    if (eventType === "pattern_started") {
+    if (STYLE_DEVELOPMENT_ACTION_GATES_ENABLED && eventType === "pattern_started") {
       const current = (await loadStyleDevelopmentTracker(styleId))[0] as Record<string, unknown> | undefined;
       const overrideReason = String(req.body?.overrideReason ?? "").trim();
       if (!current) {
