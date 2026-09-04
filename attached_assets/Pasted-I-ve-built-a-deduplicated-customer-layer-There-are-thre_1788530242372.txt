@@ -1,0 +1,15 @@
+I've built a deduplicated customer layer. There are three tables, in a source → map → clean structure:
+
+1. all_customers (~509,588 rows) — the raw customer master. One row per source record (each Shopify customer and each Odoo partner is its own row). This still contains duplicates — the same person appears multiple times (across Shopify stores + Odoo). Fields normalised on write: phone (12-digit, country-prefixed e.g. 254…/256…/250…), email (lowercased/trimmed), names (trimmed, no naive split). Key: (customer_id, store_id).
+
+2. customer_identity (~509,574 rows) — the deduplication map. One row per source record, tagged with a durable person_id. It maps every source_customer_id → one person_id. Rule: phone = identity — all records sharing a phone are one person; no chaining across phones; most-common name wins. match_method = 'resolved' or 'pseudo' (pseudo = walk-in/newsletter/wholesale/staff/store-email accounts, excluded from real-customer counts). Join key: customer_identity.source_customer_id = all_customers.customer_id and = all_sales.customer_id.
+
+3. customer_people (~254,910 rows) — the clean master. One row per real person. Fields: person_id, name (most common), email, phone, source_records (how many raw records merged in), systems, is_pseudo, total_orders, total_spend_kes, first_purchase, last_purchase, customer_type. This is what customer analytics/CRM should read. Filter WHERE NOT is_pseudo for real customers (~248k).
+
+How to use them:
+
+Snapshot metrics (customer count, LTV, segments, churn recency): read customer_people.
+Daily/time-series (new/returning/active per day): read all_sales JOINed to customer_identity on source_customer_id, aggregated by person_id — so a person is counted once, not once per store.
+Sales are never modified — they stay in all_sales keyed by the original customer_id; the identity layer only links.
+
+How they're maintained: the build scripts (build_customer_identity.py, build_customer_people.py) are wired into sync_all.py (after transform_all_customers.py), using build-then-swap (no long locks). All scripts prefer VIVO_DATABASE_URL.
