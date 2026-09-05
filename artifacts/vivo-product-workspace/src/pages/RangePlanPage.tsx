@@ -169,6 +169,12 @@ function numberFormat(value: number | null | undefined) {
   if (value === null || value === undefined || !Number.isFinite(Number(value))) return '—';
   return new Intl.NumberFormat('en-KE', { maximumFractionDigits: 0 }).format(Number(value));
 }
+function decimalFormat(value: number | null | undefined, digits = 1, suffix = '') {
+  const numeric = Number(value);
+  return value === null || value === undefined || !Number.isFinite(numeric)
+    ? '—'
+    : `${numeric.toFixed(digits)}${suffix}`;
+}
 function kes(value: number | null | undefined) {
   return value === null || value === undefined ? '—' : `KES ${numberFormat(value)}`;
 }
@@ -538,7 +544,7 @@ function RangePlanPage() {
                 <StatTile label="Ordered by date" value={`${numberFormat(orderTracking.orderedStyles)} styles`} detail={`${numberFormat(orderTracking.orderedUnits)} units from orders dated inside this ${orderTracking.periodLabel.toLowerCase()}`} tone="success" icon={<Save size={16} />} />
                 <StatTile label="Planned, not raised" value={`${numberFormat(orderTracking.plannedPendingStyles)} styles`} detail={`${numberFormat(orderTracking.plannedPendingUnits)} estimated units in overlapping weekly targets`} tone="warning" icon={<RefreshCw size={16} />} />
                 <StatTile label={`Projected ${orderTracking.periodLabel.toLowerCase()}`} value={numberFormat(orderTracking.projectedUnits)} detail="Dated orders + unraised weekly intent + remaining plan" tone={orderTracking.ceilingBreached ? 'danger' : 'default'} icon={<TrendingUp size={16} />} />
-                <StatTile label="Projected capacity" value={`${orderTracking.projectedCapacityPct.toFixed(1)}%`} detail={`${numberFormat(orderTracking.balanceStyles)} styles · ${numberFormat(orderTracking.balanceUnits)} units left to order`} tone={orderTracking.ceilingBreached ? 'danger' : orderTracking.significantlyUnderOrdered ? 'warning' : 'success'} icon={orderTracking.significantlyUnderOrdered ? <TrendingDown size={16} /> : <Target size={16} />} />
+                <StatTile label="Projected capacity" value={decimalFormat(orderTracking.projectedCapacityPct, 1, '%')} detail={`${numberFormat(orderTracking.balanceStyles)} styles · ${numberFormat(orderTracking.balanceUnits)} units left to order`} tone={orderTracking.ceilingBreached ? 'danger' : orderTracking.significantlyUnderOrdered ? 'warning' : 'success'} icon={orderTracking.significantlyUnderOrdered ? <TrendingDown size={16} /> : <Target size={16} />} />
               </div>
               {orderTracking.unmatchedStyles > 0 && (
                 <div className="range-order-exceptions" role="alert">
@@ -565,7 +571,7 @@ function RangePlanPage() {
             <StatTile label={isActualPlusPlan ? 'Quarter units' : 'Total units implied'} value={numberFormat(totals.totalUnits)} detail={`${totals.capacityPct.toFixed(0)}% of ${numberFormat(season.factoryCapacityUnits)} factory capacity`} tone={capacityTone} icon={totals.capacityPct > 100 ? <TrendingUp size={16} /> : <TrendingDown size={16} />} />
             <StatTile label="Estimated COGS" value={kesMillions(totals.estimatedCogs)} detail={`${totals.costedRowCount} costed rows`} icon={<TrendingDown size={16} />} />
             <StatTile label="Gross revenue potential" value={kesMillions(totals.potentialFpRevenue)} detail="Total units × selling price" tone="success" icon={<TrendingUp size={16} />} />
-             <StatTile label="COGS vs budget" value={biTrusted && displayedCogsPct !== null ? `${displayedCogsPct.toFixed(1)}%` : 'Not trusted'} detail={biTrusted ? `Server-provided blended input COGS · ${season.cogsBudgetPct}% ceiling` : 'Reconciliation failed — resolve the data trust error'} tone={biTrusted ? cogsTone : 'danger'} icon={<Save size={16} />} />
+             <StatTile label="COGS vs budget" value={biTrusted ? decimalFormat(displayedCogsPct, 1, '%') : 'Not trusted'} detail={biTrusted ? `Server-provided blended input COGS · ${season.cogsBudgetPct}% ceiling` : 'Reconciliation failed — resolve the data trust error'} tone={biTrusted ? cogsTone : 'danger'} icon={<Save size={16} />} />
              <StatTile label={isActualPlusPlan ? 'September new units' : 'New-unit commitment'} value={season.cadence === 'monthly' ? `${numberFormat(totals.newUnits)} / ${numberFormat(totals.requiredNewUnits)}` : numberFormat(totals.newUnits)} detail={season.cadence === 'monthly' ? `${numberFormat(totals.newStyles)} planned styles · ${numberFormat(totals.impliedNewStyles)} implied at ${numberFormat(totals.effectiveNewAos)} units each` : `${numberFormat(totals.newStyles)} Tier 4 styles × ${numberFormat(totals.effectiveNewAos)} average units`} tone={season.cadence === 'monthly' ? (totals.meetsNewnessTarget ? 'success' : 'danger') : 'default'} icon={<Target size={16} />} />
              <StatTile label={isActualPlusPlan ? 'September newness in Q3' : 'Newness outcome'} value={totals.totalUnits ? `${totals.newnessPct.toFixed(1)}%` : '—'} detail={season.cadence === 'monthly' ? `${numberFormat(totals.newUnits)} of ${numberFormat(totals.totalUnits)} planned units · target equals ${totals.targetPctOfCapacity.toFixed(1)}% of capacity` : 'New units as a share of planned volume'} tone={season.cadence === 'monthly' ? (totals.meetsNewnessTarget ? 'success' : 'danger') : 'default'} icon={<Target size={16} />} />
              {pipelineComparison && <StatTile label="Pipeline shortfall" value={`${numberFormat(pipelineComparison.shortfall)} styles`} detail={`${numberFormat(pipelineComparison.availableNewStyles)} available · ${numberFormat(pipelineComparison.surplus)} surplus elsewhere`} tone={pipelineComparison.shortfall ? 'danger' : 'success'} icon={<Target size={16} />} />}
@@ -610,7 +616,7 @@ function RangePlanPage() {
                              <tr key={row.id} className={`${inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-over ' : ''}${row.ceilingBreached ? 'range-ceiling-breach ' : ''}${significantlyUnderOrdered ? 'range-under-order ' : ''}${row.newStylesGap > 0 ? 'range-pipeline-shortfall' : ''}`}>
                               <td><strong>{row.subCategory}</strong></td>
                               <td><InlineCell disabled={isActualPlusPlan} value={row.openingStockUnits} displayValue={row.openingStockUnits === null ? '—' : numberFormat(row.openingStockUnits)} kind="number" ariaLabel={`${row.subCategory} opening stock units`} onSave={(value) => saveRow(row, 'openingStockUnits', value)} /></td>
-                              <td className="range-readonly">{weeksOfCover === null ? '—' : `${weeksOfCover.toFixed(1)} wks`}</td>
+                              <td className="range-readonly">{decimalFormat(weeksOfCover, 1, ' wks')}</td>
                               <td className="range-total-cell">{numberFormat(row.styleCountTarget)}</td>
                               <td><InlineCell disabled={isActualPlusPlan} value={row.newStyleCount} kind="number" ariaLabel={`${row.subCategory} new styles`} onSave={(value) => saveRow(row, 'newStyleCount', value)} /></td>
                                <td className="range-pipeline-available">{numberFormat(row.pipelineNewStylesAvailable)}</td>
@@ -635,7 +641,7 @@ function RangePlanPage() {
                               <td><InlineCell disabled={isActualPlusPlan} value={row.expectedUnitCost} displayValue={kes(row.expectedUnitCost)} kind="number" ariaLabel={`${row.subCategory} expected unit cost`} onSave={(value) => saveRow(row, 'expectedUnitCost', value)} /></td>
                               <td><InlineCell disabled={isActualPlusPlan} value={row.sellingPrice} displayValue={kes(row.sellingPrice)} kind="number" ariaLabel={`${row.subCategory} average selling price`} onSave={(value) => saveRow(row, 'sellingPrice', value)} /></td>
                               <td className="range-total-cell">{row.sellingPrice === null ? '—' : kes(row.potentialFpRevenue)}</td>
-                              <td className={inputCogs !== null && inputCogs > season.cogsBudgetPct ? 'range-cogs-alert' : 'range-readonly'}>{inputCogs === null ? '—' : `${inputCogs.toFixed(1)}%`}</td>
+                              <td className={inputCogs != null && inputCogs > season.cogsBudgetPct ? 'range-cogs-alert' : 'range-readonly'}>{decimalFormat(inputCogs, 1, '%')}</td>
                             </tr>
                           );
                         })}
@@ -643,7 +649,7 @@ function RangePlanPage() {
                       </Fragment>
                     );
                   })}
-                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={2} /><td>{numberFormat(totals.totalStyles)}</td><td>{numberFormat(totals.newStyles)}</td><td>{numberFormat(pipelineComparison?.availableNewStyles ?? 0)}</td><td className={pipelineComparison?.shortfall ? 'range-pipeline-gap shortfall' : ''}>{pipelineComparison ? `${numberFormat(pipelineComparison.shortfall)} short` : '—'}</td><td colSpan={4} /><td>{numberFormat(totals.totalUnits)}</td><td>{numberFormat(totals.newUnits)}</td><td colSpan={2} /><td>{totals.totalUnits ? '100.0%' : '—'}</td><td>{numberFormat(orderTracking?.orderedStyles)}</td><td>{numberFormat(orderTracking?.plannedPendingStyles)}</td><td>{numberFormat(orderTracking?.balanceStyles)}</td><td>{numberFormat(orderTracking?.orderedUnits)}</td><td>{numberFormat(orderTracking?.plannedPendingUnits)}</td><td>{numberFormat(orderTracking?.balanceUnits)}</td><td>{numberFormat(orderTracking?.projectedUnits)}</td><td>{orderTracking?.ceilingBreached ? 'CEILING BREACH' : orderTracking?.significantlyUnderOrdered ? 'UNDER ORDER' : orderTracking ? 'On track' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{biTrusted && displayedCogsPct !== null ? `${displayedCogsPct.toFixed(1)}%` : 'Not trusted'}</td></tr>
+                  <tr className="range-grand-total"><td>Grand total</td><td colSpan={2} /><td>{numberFormat(totals.totalStyles)}</td><td>{numberFormat(totals.newStyles)}</td><td>{numberFormat(pipelineComparison?.availableNewStyles ?? 0)}</td><td className={pipelineComparison?.shortfall ? 'range-pipeline-gap shortfall' : ''}>{pipelineComparison ? `${numberFormat(pipelineComparison.shortfall)} short` : '—'}</td><td colSpan={4} /><td>{numberFormat(totals.totalUnits)}</td><td>{numberFormat(totals.newUnits)}</td><td colSpan={2} /><td>{totals.totalUnits ? '100.0%' : '—'}</td><td>{numberFormat(orderTracking?.orderedStyles)}</td><td>{numberFormat(orderTracking?.plannedPendingStyles)}</td><td>{numberFormat(orderTracking?.balanceStyles)}</td><td>{numberFormat(orderTracking?.orderedUnits)}</td><td>{numberFormat(orderTracking?.plannedPendingUnits)}</td><td>{numberFormat(orderTracking?.balanceUnits)}</td><td>{numberFormat(orderTracking?.projectedUnits)}</td><td>{orderTracking?.ceilingBreached ? 'CEILING BREACH' : orderTracking?.significantlyUnderOrdered ? 'UNDER ORDER' : orderTracking ? 'On track' : '—'}</td><td colSpan={2} /><td>{kes(totals.potentialFpRevenue)}</td><td>{biTrusted ? decimalFormat(displayedCogsPct, 1, '%') : 'Not trusted'}</td></tr>
                 </tbody>
               </table>
             </div>

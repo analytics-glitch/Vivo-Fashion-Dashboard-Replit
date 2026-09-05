@@ -65,6 +65,12 @@ function metricValue(value: unknown, suffix: unknown, fallback: string) {
   }
   return fmt(value, fallback);
 }
+function apiDecimal(value: unknown, digits = 1, suffix = '') {
+  const numeric = Number(value);
+  return value === null || value === undefined || !Number.isFinite(numeric)
+    ? '—'
+    : `${numeric.toFixed(digits)}${suffix}`;
+}
 function initials(name = 'Vivo team') { return name.split(' ').map((part) => part[0]).join('').slice(0, 2).toUpperCase(); }
 function date(value: unknown) { if (!value) return 'No date'; const d = new Date(String(value)); return Number.isNaN(d.getTime()) ? String(value) : d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' }); }
 function getPathValue(item: unknown, keys: string[]) { const record = item as Record<string, unknown>; return keys.map((key) => record?.[key]).find((value) => value !== undefined); }
@@ -447,7 +453,7 @@ function Dashboard() {
               </h3>
               <div className="dash-tile-main">
                 <span className="dash-tile-value">{Math.round(focus.newness.newUnits).toLocaleString()} / {Math.round(focus.newness.targetUnits).toLocaleString()}</span>
-                <span className="dash-tile-sub">new units planned · {focus.newness.pct.toFixed(1)}% of {Math.round(focus.newness.totalUnits).toLocaleString()} total units</span>
+                <span className="dash-tile-sub">new units planned · {apiDecimal(focus.newness.pct, 1, '%')} of {Math.round(focus.newness.totalUnits).toLocaleString()} total units</span>
               </div>
               <div className={`dash-tile-status ${focus.newness.meetsTarget ? 'success' : 'danger'}`}>
                 {focus.newness.meetsTarget ? <Check size={14} /> : <CircleAlert size={14} />}
@@ -455,7 +461,7 @@ function Dashboard() {
                   <span>{focus.newness.meetsTarget ? 'Meets' : 'Misses'} {focus.newness.monthLabel} unit commitment</span>
                   <span style={{ fontSize: 10, color: 'var(--color-muted-foreground)', fontWeight: 500 }}>
                     {focus.newness.meetsTarget
-                      ? `${focus.newness.plannedNewStyles} planned styles · ${focus.newness.targetPctOfCapacity.toFixed(1)}% of capacity is the derived target share`
+                      ? `${focus.newness.plannedNewStyles} planned styles · ${apiDecimal(focus.newness.targetPctOfCapacity, 1, '%')} of capacity is the derived target share`
                       : `${Math.round(focus.newness.shortfallUnits).toLocaleString()} units · ${focus.newness.shortfallStyles} styles short`}
                   </span>
                 </div>
