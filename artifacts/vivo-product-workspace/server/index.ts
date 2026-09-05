@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { computeReorderSignal, weeksSinceFirstSale, type FabricAvailability } from "./assortment-signal.js";
 import { Readable } from "node:stream";
 import express, {
   type NextFunction,
@@ -167,6 +168,17 @@ function biStyle(style: Record<string, any>) {
   const styleNumber = String(biValue(style, "styleNumber", "style_number", "styleKey", "style_key", "sku") ?? "").trim();
   const tier = String(biValue(style, "tier", "rangeTier", "range_tier") ?? "");
   const status = String(biValue(style, "status", "lifecycleStatus", "lifecycle_status") ?? "Active");
+  const numberOrNull = (...keys: string[]) => {
+    const value = biValue(style, ...keys);
+    return value === undefined || value === null || !Number.isFinite(Number(value)) ? null : Number(value);
+  };
+  const fabricByColour: FabricAvailability[] = (Array.isArray(biValue(style, "fabricByColour", "fabric_by_colour"))
+    ? biValue(style, "fabricByColour", "fabric_by_colour")
+    : []).map((row: Record<string, any>) => ({
+      colour: row.colour == null ? null : String(row.colour),
+      exactMetres: row.exactMetres == null && row.exact_metres == null ? null : Number(row.exactMetres ?? row.exact_metres),
+      otherColourMetres: row.otherColourMetres == null && row.other_colour_metres == null ? null : Number(row.otherColourMetres ?? row.other_colour_metres),
+    }));
   return {
     id: `catalogue:${styleNumber}`, pdId: null, source: "bi", styleNumber,
     name: String(biValue(style, "name", "styleName", "style_name") ?? ""),
@@ -181,6 +193,7 @@ function biStyle(style: Record<string, any>) {
     excluded: false,
     unitsSold: Number(biValue(style, "unitsSold", "units_sold", "units_period", "units") ?? 0), revenueKes: Number(biValue(style, "revenueKes", "revenue_kes", "revenue_period", "revenue") ?? 0),
     sorPct: biValue(style, "sorPct", "sor_pct", "sor_period", "sell_through") ?? null, launchDate: biValue(style, "launchDate", "launch_date") ?? null,
+    firstSaleDate: calendarDate(biValue(style, "firstSaleDate", "first_sale_date")),
     price: biValue(style, "price", "full_price", "asp") ?? null, stockUnits: biValue(style, "stockUnits", "stock_units", "current_stock") ?? null,
     sohStores: biValue(style, "sohStores", "soh_stores") ?? null, sohOnline: biValue(style, "sohOnline", "soh_online") ?? null,
     sohWarehouse: biValue(style, "sohWarehouse", "soh_warehouse") ?? null, wipUnits: biValue(style, "wipUnits", "wip_units") ?? null,
@@ -188,7 +201,9 @@ function biStyle(style: Record<string, any>) {
     sellThroughPct: biValue(style, "sellThroughPct", "sell_through_pct", "sell_through", "sor_period") ?? null, daysSinceLastSale: biValue(style, "daysSinceLastSale", "days_since_last_sale", "last_sale_days") ?? null,
     awaitingDelivery: Boolean(biValue(style, "awaitingDelivery", "awaiting_delivery")), fabricMetres: biValue(style, "fabricMetres", "fabric_metres", "fabric_exact_metres") ?? null,
     otherColourFabricMetres: biValue(style, "otherColourFabricMetres", "other_colour_fabric_metres", "fabric_other_colour_metres") ?? null,
-    colourways: biValue(style, "colourways", "colours") ?? [], fabric: String(biValue(style, "fabric") ?? "Fabric pending"),
+    colourways: biValue(style, "colourways", "colours") ?? [], colourwayCount: numberOrNull("colourwayCount", "colourway_count", "colour_count"),
+    fabric: String(biValue(style, "fabric") ?? "Fabric pending"), fabricByColour,
+    weeklyAvg: numberOrNull("weeklyAvg", "weekly_avg"),
     image: biValue(style, "image", "imageUrl", "image_url") ?? null,
   };
 }
@@ -8042,18 +8057,60 @@ router.get("/assortment-plan", async (_req, res, next) => {
         AND p.iso_week=EXTRACT(WEEK FROM start_date)::int
        ORDER BY start_date`,
     );
-    const [bi, seasonsResult, weeklyDestinationsResult] = await Promise.all([
+    const fabricRatesPromise = pool.query(
+      `SELECT LOWER(BTRIM(subcategory)) AS subcategory,
+        expected_metres_per_unit::float AS "metresPerUnit"
+       FROM ${schema}.subcategory_fabric_consumption_rates
+       WHERE expected_metres_per_unit IS NOT NULL AND is_non_garment=FALSE`,
+    );
+    const [bi, seasonsResult, weeklyDestinationsResult, fabricRatesResult] = await Promise.all([
       biPromise,
       seasonsPromise,
       weeklyDestinationsPromise,
+      fabricRatesPromise,
     ]);
+    const fabricRates = new Map(fabricRatesResult.rows.map((row) => [String(row.subcategory), Number(row.metresPerUnit)]));
     const selectedAssortment = await assortmentPlanData(CURRENT_ASSORTMENT_SCOPE, true, bi);
-    const assortmentStyles = selectedAssortment.styles.map((style) => ({
-      ...style,
-      image: style.styleNumber
-        ? `/api/workspace/assortment-image/${encodeURIComponent(style.styleNumber)}`
-        : style.image,
-    }));
+    const assortmentStyles = selectedAssortment.styles.map((style) => {
+      const sourceStockUnits = style.stockUnits == null ? null : Number(style.stockUnits);
+      const sohStores = Number(style.sohStores ?? 0);
+      const sohOnline = Number(style.sohOnline ?? 0);
+      const sohWarehouse = Number(style.sohWarehouse ?? 0);
+      const pipelineUnits = Number(style.wipUnits ?? 0);
+      const sellableStockUnits = sohStores + sohOnline + sohWarehouse;
+      const stockPlusPipelineUnits = sellableStockUnits + pipelineUnits;
+      const weeklyAvg = Number(style.weeklyAvg ?? 0);
+      const sellableCoverWeeks = weeklyAvg > 0 ? sellableStockUnits / weeklyAvg : null;
+      const planningCoverWeeks = weeklyAvg > 0 ? stockPlusPipelineUnits / weeklyAvg : null;
+      const fabricConsumptionMetresPerUnit = fabricRates.get(String(style.subCategory ?? "").trim().toLowerCase()) ?? null;
+      const reorderSignal = computeReorderSignal({
+        tier: style.tier,
+        sellThroughPct: style.sellThroughPct == null ? null : Number(style.sellThroughPct),
+        fullPricePct: style.fullPricePct == null ? null : Number(style.fullPricePct),
+        daysSinceLastSale: style.daysSinceLastSale == null ? null : Number(style.daysSinceLastSale),
+        firstSaleDate: style.firstSaleDate,
+        sellableCoverWeeks,
+        planningCoverWeeks,
+        fabricAvailability: style.fabricByColour,
+        fabricConsumptionMetresPerUnit,
+      });
+      return {
+        ...style,
+        sourceStockUnits,
+        stockUnits: sellableStockUnits,
+        sellableStockUnits,
+        pipelineUnits,
+        stockPlusPipelineUnits,
+        sellableCoverWeeks,
+        planningCoverWeeks,
+        weeksSinceFirstSale: weeksSinceFirstSale(style.firstSaleDate),
+        fabricConsumptionMetresPerUnit,
+        reorderSignal,
+        image: style.styleNumber
+          ? `/api/workspace/assortment-image/${encodeURIComponent(style.styleNumber)}`
+          : style.image,
+      };
+    });
     const payload = {
       assortmentStyles,
       assortmentSummary: {
