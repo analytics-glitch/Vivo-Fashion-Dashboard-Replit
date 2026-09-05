@@ -4,11 +4,12 @@ from psycopg2.extras import execute_values
 from datetime import datetime, timezone
 import re
 import logging
+import math
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ['DATABASE_URL']
+DATABASE_URL = os.environ.get('VIVO_DATABASE_URL') or os.environ['DATABASE_URL']
 
 SIZE_PATTERN = re.compile(
     r'(XS/S|S/M|M/L|L/XL|XL/2X|1X/2X|2X/3X|3X/4X|4X/5X|L/1X|XXS|'
@@ -209,18 +210,113 @@ _INSERT_SQL_NOOP = """
 """
 
 _BATCH = 1000  # rows flushed per commit — keeps Python heap bounded
+_STAGE_SCHEMA = "product_rebuild_stage"
+_MIN_STAGE_RATIO = 0.80
 
 
 def _flush(cur, conn, rows, sql=_INSERT_SQL):
-    """Write accumulated rows to DB, commit, and clear the list in-place."""
+    """Write accumulated rows to the isolated staging table and clear the list."""
     if not rows:
         return
     execute_values(cur, sql, rows, page_size=_BATCH)
-    conn.commit()
     rows.clear()
 
 
-def main():
+def _record_rebuild_event(action, notes):
+    """Best-effort visibility through the existing sync-health/DQ surfaces."""
+    log_fn = log.error if action == "product_rebuild_aborted" else log.info
+    log_fn("%s: %s", action, notes)
+    try:
+        with psycopg2.connect(DATABASE_URL) as health_conn:
+            with health_conn.cursor() as health_cur:
+                health_cur.execute(
+                    "INSERT INTO sync_health_log "
+                    "(checked_at,api_healthy,sync_healthy,action_taken,notes) "
+                    "VALUES (now(),true,%s,%s,%s)",
+                    (action != "product_rebuild_aborted", action, str(notes)[:500]),
+                )
+    except Exception as event_error:
+        log.error("Could not record product rebuild health event: %s", event_error)
+
+
+def _assert_stage_is_plausible(cur, live_count):
+    cur.execute(
+        "SELECT COUNT(*) AS rows,"
+        " COUNT(DISTINCT NULLIF(TRIM(style_name),'')) FILTER (WHERE status='Active') AS active,"
+        " COUNT(DISTINCT NULLIF(TRIM(style_name),'')) FILTER (WHERE status='Retired') AS retired,"
+        " COUNT(DISTINCT NULLIF(TRIM(style_name),'')) FILTER (WHERE status='Archived') AS archived"
+        f" FROM {_STAGE_SCHEMA}.all_products_clean"
+    )
+    staged_count, active, retired, archived = [int(value or 0) for value in cur.fetchone()]
+    minimum = math.ceil(live_count * _MIN_STAGE_RATIO) if live_count else 1
+    if staged_count < minimum:
+        raise RuntimeError(
+            "product rebuild sanity check failed: "
+            f"staged rows={staged_count}, live rows={live_count}, required>={minimum} "
+            f"({_MIN_STAGE_RATIO:.0%})"
+        )
+    status_counts = {"Active": active, "Retired": retired, "Archived": archived}
+    populated = [name for name, count in status_counts.items() if count > 0]
+    empty = [name for name, count in status_counts.items() if count == 0]
+    if populated and empty:
+        raise RuntimeError(
+            "product rebuild status sanity check failed: "
+            + ", ".join(f"{name}={count}" for name, count in status_counts.items())
+        )
+    return staged_count, status_counts
+
+
+def _publish_staged_table(conn, staged_count):
+    """Atomically replace live rows while preserving the live table's OID."""
+    cur = conn.cursor()
+    try:
+        cur.execute("SET search_path TO public")
+        cur.execute("LOCK TABLE public.all_products_clean IN ACCESS EXCLUSIVE MODE")
+        cur.execute("SELECT COUNT(*) FROM public.all_products_clean")
+        locked_live_count = int(cur.fetchone()[0])
+        checked_count, status_counts = _assert_stage_is_plausible(cur, locked_live_count)
+        if checked_count != staged_count:
+            raise RuntimeError(
+                f"staged product count changed before publish: {staged_count} -> {checked_count}"
+            )
+        cur.execute("DROP TABLE IF EXISTS public.all_products_clean_previous")
+        cur.execute(
+            "CREATE TABLE public.all_products_clean_previous "
+            "(LIKE public.all_products_clean INCLUDING ALL)"
+        )
+        cur.execute(
+            "INSERT INTO public.all_products_clean_previous "
+            "SELECT * FROM public.all_products_clean"
+        )
+        cur.execute("TRUNCATE public.all_products_clean")
+        cur.execute(
+            "INSERT INTO public.all_products_clean "
+            f"SELECT * FROM {_STAGE_SCHEMA}.all_products_clean"
+        )
+        cur.execute("SELECT COUNT(*) FROM public.all_products_clean")
+        published_count = int(cur.fetchone()[0])
+        if published_count != staged_count:
+            raise RuntimeError(
+                f"published product count mismatch: expected={staged_count}, got={published_count}"
+            )
+        # Remove this generation's stage before releasing the transaction lock.
+        # A later rebuild can then create its own stage without a cleanup race.
+        cur.execute(f"DROP TABLE {_STAGE_SCHEMA}.all_products_clean")
+        conn.commit()
+        log.info(
+            "✅ Atomic product publish committed: old=%d new=%d statuses=%s; "
+            "previous generation retained as all_products_clean_previous",
+            locked_live_count, published_count, status_counts,
+        )
+        return locked_live_count, published_count
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        cur.close()
+
+
+def _run_rebuild():
     conn = psycopg2.connect(DATABASE_URL)
     cur  = conn.cursor()
     now  = datetime.now(timezone.utc)
@@ -237,22 +333,34 @@ def main():
         ADD COLUMN IF NOT EXISTS fabric_product_id BIGINT DEFAULT NULL,
         ADD COLUMN IF NOT EXISTS fabric_barcode TEXT DEFAULT NULL
     """)
-    conn.commit()
     log.info("Schema: standard costs, last order date and range tier columns ensured")
 
-    log.info("Building all_products_clean...")
+    # The entire staged build and publish is one transaction. This xact lock is
+    # safe through transaction-mode poolers and prevents concurrent rebuilds.
+    cur.execute("SELECT pg_advisory_xact_lock(hashtext('all_products_clean_atomic_rebuild'))")
+    cur.execute("SELECT COUNT(*) FROM public.all_products_clean")
+    live_count_before = int(cur.fetchone()[0])
+    log.info(
+        "Building staged all_products_clean (live rows remain serving: %d)...",
+        live_count_before,
+    )
     # Preserve catalogue-owned tier choices across the full refresh. The clean
     # table is rebuilt from source data, but range_tier is a merchandising
     # decision rather than an Odoo attribute.
     cur.execute("""
         CREATE TEMP TABLE _catalogue_range_tier_overrides AS
         SELECT style_number, MAX(NULLIF(TRIM(range_tier),'')) AS range_tier
-        FROM all_products_clean
+        FROM public.all_products_clean
         WHERE style_number IS NOT NULL AND NULLIF(TRIM(range_tier),'') IS NOT NULL
         GROUP BY style_number
     """)
-    cur.execute("TRUNCATE all_products_clean")
-    conn.commit()  # release the exclusive lock immediately; subsequent inserts use row locks only
+    cur.execute(f"CREATE SCHEMA IF NOT EXISTS {_STAGE_SCHEMA}")
+    cur.execute(f"DROP TABLE IF EXISTS {_STAGE_SCHEMA}.all_products_clean")
+    cur.execute(
+        f"CREATE TABLE {_STAGE_SCHEMA}.all_products_clean "
+        "(LIKE public.all_products_clean INCLUDING ALL)"
+    )
+    cur.execute(f"SET search_path TO {_STAGE_SCHEMA}, public")
 
     # ── Sales enrichment data ────────────────────────────────────────────────
     # This is a grouped aggregate (one row per unique SKU), so it's much
@@ -297,11 +405,9 @@ def main():
     rows      = []
     total_odoo = 0
 
-    # withhold=True: _flush() commits on this same connection every _BATCH
-    # rows, and a commit closes a plain named cursor mid-iteration
-    # ("named cursor isn't valid anymore" — truncated all_products_clean to
-    # 1000 rows). WITH HOLD keeps the server-side cursor alive across commits.
-    with conn.cursor(name="odoo_products_cursor", withhold=True) as sc:
+    # A normal named cursor streams rows safely because the entire build stays
+    # inside one transaction; no session state has to survive a pooler commit.
+    with conn.cursor(name="odoo_products_cursor") as sc:
         sc.itersize = _BATCH
         sc.execute("""
             SELECT DISTINCT ON (default_code)
@@ -537,9 +643,7 @@ def main():
               IS DISTINCT FROM style_name
     """)
     log.info("style_name re-derived: %d rows updated", cur.rowcount)
-    conn.commit()
     cur.execute("ANALYZE all_products_clean")
-    conn.commit()
     log.info("✅ ANALYZE all_products_clean complete")
 
     # ── Canonicalise style_name to ONE per style_number ──────────────────────
@@ -681,13 +785,11 @@ def main():
               AND a.{c} IS DISTINCT FROM d.val
         """.format(c=col))
         log.info("Canonicalised %s: %d rows updated", col, cur.rowcount)
-    conn.commit()
 
     # ── Update barcodes from Shopify (already loaded) ────────────────────────
-    conn.commit()
 
     cur.execute("SELECT COUNT(*) FROM all_products_clean")
-    log.info("✅ all_products_clean final: %d rows", cur.fetchone()[0])
+    log.info("✅ staged all_products_clean final: %d rows", cur.fetchone()[0])
 
     cur.execute("""
         SELECT brand, COUNT(*) FROM all_products_clean
@@ -740,13 +842,11 @@ def main():
                OR p.product_type NOT IN ('Sample & Sale Items','Gift Vouchers'))
           AND p.product_type IS DISTINCT FROM d.product_type
     """
-    # Commit between iterations so each pass sees the previous pass's result
-    # (avoids a CTE-snapshot interaction that left some styles split when run
-    # as a single mid-transform statement). Converges fast; cap as a safety net.
+    # Each statement sees prior writes in this transaction, so the loop still
+    # converges without exposing or committing an intermediate generation.
     for _i in range(10):
         cur.execute(consolidation_sql)
         n = cur.rowcount
-        conn.commit()
         log.info("  consolidation pass %d: %d rows updated", _i + 1, n)
         if n == 0:
             break
@@ -779,7 +879,6 @@ def main():
         WHERE apc.sku = rop.default_code
     """)
     log.info("standard_cost_kes and standard_cost_date populated: %d rows", cur.rowcount)
-    conn.commit()
 
     # ── Populate last_order_date from production_orders ───────────────────────
     log.info("Populating last_order_date...")
@@ -795,7 +894,6 @@ def main():
         WHERE apc.style_number = po.style_number
     """)
     log.info("last_order_date populated: %d rows", cur.rowcount)
-    conn.commit()
 
     # ── Durable product-master overrides (WS8 T810) ──────────────────────────
     # Odoo attribute data carries a few wrong brand/subcategory values; the
@@ -804,7 +902,6 @@ def main():
     from product_master_overrides import apply_overrides
     fixed = apply_overrides(conn, log)
     log.info("Product-master overrides applied: %d rows", fixed)
-    conn.commit()
 
     # Restore manual tiers where a style survived the refresh, then safely
     # default the remaining rows from the complete style-level stock rollup.
@@ -835,7 +932,6 @@ def main():
           AND (a.range_tier IS NULL OR NULLIF(TRIM(a.range_tier),'') IS NULL)
     """)
     log.info("Catalogue range tiers restored/defaulted: %d rows", cur.rowcount)
-    conn.commit()
 
     # ── Verify no style number has multiple subcats ──────────────────────────
     cur.execute("""
@@ -853,15 +949,40 @@ def main():
     log.info("Style numbers with multiple subcats: %d", conflicts)
 
     try:
-        conn.commit()
-        conn.set_isolation_level(0)
-        vcur = conn.cursor()
-        vcur.execute("VACUUM ANALYZE all_products_clean")
-        vcur.close()
-        log.info("VACUUM ANALYZE all_products_clean complete")
-    except Exception as ve:
-        log.warning("VACUUM all_products_clean failed (non-fatal): %s", ve)
-    conn.close()
+        staged_count, status_counts = _assert_stage_is_plausible(cur, live_count_before)
+        log.info(
+            "✅ staged product sanity check passed: rows=%d (live=%d, threshold=%.0f%%), statuses=%s",
+            staged_count, live_count_before, _MIN_STAGE_RATIO * 100, status_counts,
+        )
+        old_count, new_count = _publish_staged_table(conn, staged_count)
+        _record_rebuild_event(
+            "product_rebuild_ok",
+            f"atomic product publish complete: old_rows={old_count}, new_rows={new_count}",
+        )
+        try:
+            conn.set_isolation_level(0)
+            vcur = conn.cursor()
+            vcur.execute("VACUUM ANALYZE public.all_products_clean")
+            vcur.close()
+            log.info("VACUUM ANALYZE all_products_clean complete")
+        except Exception as cleanup_error:
+            log.warning("Post-publish product cleanup failed (published table remains valid): %s", cleanup_error)
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def main():
+    try:
+        _run_rebuild()
+    except Exception as rebuild_error:
+        _record_rebuild_event(
+            "product_rebuild_aborted",
+            f"{rebuild_error}; existing live product table was retained",
+        )
+        raise
 
 
 if __name__ == "__main__":

@@ -728,8 +728,7 @@ const L10_METRIC_SEEDS: L10MetricSeed[] = [
   { owner: "Marion", measurable: "No. of Adopted Styles in the pipeline", goal: ">30", uom: "No.", metricKey: "adopted_styles_pipeline", values: [69, 73, 86, 68, 32, 44, 30] },
   { owner: "Marion", measurable: "% of Dresses Ordered (2800 units)", goal: ">35%", uom: "%", values: [46, 41, 25, 34, 41, 31, 38] },
   { owner: "Chantal", measurable: "% of Knit Units Ordered", goal: ">35%", uom: "%", values: [36, 49, 41, 34, 28, 28, 8] },
-  { owner: "Chantal", measurable: "No. of Replenishment Units Ordered", goal: ">3000", uom: "No.", values: [3152, 3510, 5261, 3917, 3923, 3665, 4039] },
-  { owner: "Yvonne", measurable: "No. of Reorder Units Ordered", goal: ">1000", uom: "No.", values: [1004, 894, 2092, 971, 1199, 1595, 899] },
+  { owner: "Yvonne", measurable: "No. of Repeat Units Ordered", goal: ">4000", uom: "No.", values: [4156, 4404, 7353, 4888, 5122, 5260, 4938] },
   { owner: "Florence", measurable: "Total New Styles Approved", goal: ">8", uom: "No.", metricKey: "new_styles_approved", values: [3, 8, 9, 6, 8, 5, 3] },
   { owner: "Florence", measurable: "New styles reviewed in fit sessions", goal: ">12", uom: "No.", metricKey: "fit_sessions_completed", values: [14, 17, 18, 10, 22, 17, 7] },
   { owner: "Florence", measurable: "No. of samples per approved style", goal: "<2.0", uom: "No.", values: [2.8, 2.2, 3, 2.4, 3, 1.8, 0.1] },
@@ -2518,6 +2517,48 @@ async function runBestEffortMigration(label: string, text: string) {
 
 async function ensureRecentWorkspaceMigrations() {
   const migrations: Array<[string, string]> = [
+    ["collapse reorder and replenishment into repeat", `
+      ALTER TABLE ${schema}.weekly_order_plan_lines
+        ADD COLUMN IF NOT EXISTS legacy_order_type TEXT;
+      ALTER TABLE ${schema}.range_plan_rows
+        ADD COLUMN IF NOT EXISTS repeat_style_count INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS repeat_units INTEGER NOT NULL DEFAULT 0,
+        ADD COLUMN IF NOT EXISTS legacy_reorder_style_count INTEGER,
+        ADD COLUMN IF NOT EXISTS legacy_replenishment_style_count INTEGER,
+        ADD COLUMN IF NOT EXISTS legacy_reorder_units INTEGER,
+        ADD COLUMN IF NOT EXISTS legacy_replenishment_units INTEGER;
+      ALTER TABLE ${schema}.weekly_order_plan_lines
+        DROP CONSTRAINT IF EXISTS weekly_order_plan_lines_order_type_check;
+      DO $$ BEGIN
+        IF NOT EXISTS (
+          SELECT 1 FROM ${schema}.range_plan_seed_migrations
+          WHERE migration_key='repeat-order-type-collapse-v1'
+        ) THEN
+          UPDATE ${schema}.weekly_order_plan_lines
+             SET legacy_order_type=order_type,order_type='Repeat'
+           WHERE order_type IN ('Re-order','Replenishment');
+          UPDATE ${schema}.range_plan_rows
+             SET legacy_reorder_style_count=reorder_style_count,
+                 legacy_replenishment_style_count=replenishment_style_count,
+                 legacy_reorder_units=reorder_units,
+                 legacy_replenishment_units=replenishment_units,
+                 repeat_style_count=reorder_style_count+replenishment_style_count,
+                 repeat_units=reorder_units+replenishment_units,
+                 reorder_style_count=reorder_style_count+replenishment_style_count,
+                 replenishment_style_count=0,
+                 reorder_units=reorder_units+replenishment_units,
+                 replenishment_units=0;
+          INSERT INTO ${schema}.range_plan_seed_migrations (migration_key)
+          VALUES ('repeat-order-type-collapse-v1');
+        END IF;
+      END $$;
+      ALTER TABLE ${schema}.weekly_order_plan_lines
+        ADD CONSTRAINT weekly_order_plan_lines_order_type_check
+        CHECK (order_type IN ('New','Repeat','Range Refreshed'));
+      UPDATE ${schema}.l10_scorecard_metrics
+         SET active=FALSE
+       WHERE LOWER(measurable) IN ('no. of replenishment units ordered','no. of reorder units ordered');
+    `],
     ["style development reassignment context and availability", `
       ALTER TABLE ${schema}.style_development_tracker
         ADD COLUMN IF NOT EXISTS pattern_effort_days NUMERIC;
@@ -3461,7 +3502,8 @@ async function ensureSchema() {
       available_colourways TEXT[] NOT NULL DEFAULT '{}',
       selected_colourways TEXT[] NOT NULL DEFAULT '{}',
       estimated_quantity INTEGER NOT NULL CHECK (estimated_quantity > 0),
-      order_type TEXT NOT NULL CHECK (order_type IN ('New','Re-order','Replenishment','Range Refreshed')),
+      order_type TEXT NOT NULL CHECK (order_type IN ('New','Repeat','Range Refreshed')),
+      legacy_order_type TEXT,
       order_stage TEXT NOT NULL CHECK (order_stage IN ('CAD Marker Making','Buying Requisition','Buying Production Order','Production Sample','Set Sampling','Set Sample Fitting','Approved for Production')),
       data_quality_flags TEXT[] NOT NULL DEFAULT '{}',
       created_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
@@ -7069,14 +7111,13 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
   const expectedUnitCost = optionalNumber(row.expectedUnitCost);
   const newStyleCount = Number(row.newStyleCount ?? 0);
   const pipelineNewStylesAvailable = Number(row.pipelineNewStylesAvailable ?? 0);
-  const reorderStyleCount = Number(row.reorderStyleCount ?? 0);
-  const replenishmentStyleCount = Number(row.replenishmentStyleCount ?? 0);
+  const repeatStyleCount = Number(row.repeatStyleCount
+    ?? (Number(row.reorderStyleCount ?? 0) + Number(row.replenishmentStyleCount ?? 0)));
   const aosUnits = Number(row.aosUnits ?? rangePlanAosDefault());
   const newStyleAosUnits = Number(row.newStyleAosUnits ?? 300);
   const newUnits = newStyleCount * newStyleAosUnits;
-  const reorderUnits = reorderStyleCount * aosUnits;
-  const replenishmentUnits = replenishmentStyleCount * aosUnits;
-  const totalUnitsImplied = Number(row.plannedUnitsCalculated ?? (newUnits + reorderUnits + replenishmentUnits));
+  const repeatUnits = repeatStyleCount * aosUnits;
+  const totalUnitsImplied = Number(row.plannedUnitsCalculated ?? (newUnits + repeatUnits));
   const effectivePrice = sellingPrice ?? asp;
   const orderedStyles = Number(row.orderedStyles ?? 0);
   const orderedUnits = Number(row.orderedUnits ?? 0);
@@ -7085,7 +7126,7 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
   const orderedNewStyles = Number(row.orderedNewStyles ?? 0);
   const plannedPendingNewStyles = Number(row.plannedPendingNewStyles ?? 0);
   const remainingNewStyles = Math.max(0, newStyleCount - orderedNewStyles - plannedPendingNewStyles);
-  const remainingRepeatStyles = Math.max(0, reorderStyleCount + replenishmentStyleCount
+  const remainingRepeatStyles = Math.max(0, repeatStyleCount
     - Math.max(0, orderedStyles - orderedNewStyles)
     - Math.max(0, plannedPendingStyles - plannedPendingNewStyles));
   const projectedUnits = orderedUnits + plannedPendingUnits
@@ -7100,16 +7141,19 @@ function rangePlanRowPayload(row: Record<string, unknown>) {
     newStyleCount,
     pipelineNewStylesAvailable,
     newStylesGap: newStyleCount - pipelineNewStylesAvailable,
-    reorderStyleCount,
-    replenishmentStyleCount,
+    repeatStyleCount,
+    // Compatibility keys are intentionally retained for older consumers.
+    reorderStyleCount: repeatStyleCount,
+    replenishmentStyleCount: 0,
     styleCountMin: Number(row.styleCountMin ?? 0),
     styleCountMax: Number(row.styleCountMax ?? 0),
     aosUnits,
     newStyleAosUnits,
     totalUnitsImplied,
     newUnits,
-    reorderUnits,
-    replenishmentUnits,
+    repeatUnits,
+    reorderUnits: repeatUnits,
+    replenishmentUnits: 0,
     orderedStyles,
     orderedUnits,
     plannedPendingStyles,
@@ -7580,10 +7624,10 @@ router.get("/range-plan", async (req, res, next) => {
               : ["1900-01-01", "1900-01-01"];
      const rowsResult = await pool.query(
        `SELECT r.id,r.season_id AS "seasonId",r.sub_category AS "subCategory",r.product_category AS "productCategory",r.tier::text,
-         r.style_count_target AS "styleCountTarget",r.new_style_count AS "newStyleCount",r.reorder_style_count AS "reorderStyleCount",
+         r.style_count_target AS "styleCountTarget",r.new_style_count AS "newStyleCount",r.repeat_style_count AS "repeatStyleCount",r.reorder_style_count AS "reorderStyleCount",
          r.replenishment_style_count AS "replenishmentStyleCount",r.style_count_min AS "styleCountMin",r.style_count_max AS "styleCountMax",
          r.aos_units AS "aosUnits",r.new_style_aos_units AS "newStyleAosUnits",r.planned_units_calculated AS "plannedUnitsCalculated",
-         r.total_units_implied AS "totalUnitsImplied",r.new_units AS "newUnits",r.reorder_units AS "reorderUnits",
+          r.total_units_implied AS "totalUnitsImplied",r.new_units AS "newUnits",r.repeat_units AS "repeatUnits",r.reorder_units AS "reorderUnits",
          r.replenishment_units AS "replenishmentUnits",r.opening_stock_units AS "openingStockUnits",r.units_sold_last_month AS "unitsSoldLastMonth",
          r.expected_unit_cost AS "expectedUnitCost",r.selling_price AS "sellingPrice",r.selling_price AS asp,r.notes,
          0 AS "orderedStyles",0 AS "orderedUnits",0 AS "orderedNewStyles",0 AS "plannedPendingStyles",0 AS "plannedPendingUnits",0 AS "plannedPendingNewStyles",0 AS "pipelineNewStylesAvailable"
@@ -8328,7 +8372,7 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
     const existing = await pool.query(
       `SELECT style_count_target AS "styleCountTarget",aos_units AS "aosUnits",
         new_style_aos_units AS "newStyleAosUnits",
-        new_style_count AS "newStyleCount",reorder_style_count AS "reorderStyleCount",
+        new_style_count AS "newStyleCount",repeat_style_count AS "repeatStyleCount",reorder_style_count AS "reorderStyleCount",
         replenishment_style_count AS "replenishmentStyleCount",
         new_units AS "newUnits",reorder_units AS "reorderUnits",replenishment_units AS "replenishmentUnits",
         opening_stock_units AS "openingStockUnits",units_sold_last_month AS "unitsSoldLastMonth",
@@ -8371,17 +8415,17 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
     const lifecycleWholeNumber = (bodyKey: string, existingKey: string) =>
       req.body?.[bodyKey] === undefined ? Number(existing.rows[0][existingKey] ?? 0) : Number(req.body[bodyKey]);
     const newStyleCount = lifecycleWholeNumber("newStyleCount", "newStyleCount");
-    const reorderStyleCount = lifecycleWholeNumber("reorderStyleCount", "reorderStyleCount");
-    const replenishmentStyleCount = lifecycleWholeNumber("replenishmentStyleCount", "replenishmentStyleCount");
+    const repeatStyleCount = req.body?.repeatStyleCount === undefined
+      ? Number(existing.rows[0].repeatStyleCount ?? existing.rows[0].reorderStyleCount ?? 0)
+      : Number(req.body.repeatStyleCount);
     const newUnits = lifecycleWholeNumber("newUnits", "newUnits");
-    const reorderUnits = lifecycleWholeNumber("reorderUnits", "reorderUnits");
-    const replenishmentUnits = lifecycleWholeNumber("replenishmentUnits", "replenishmentUnits");
+    const repeatUnits = repeatStyleCount * aosUnits;
     const validOptionalWholeNumber = (value: number | null) => value === null || (Number.isInteger(value) && value >= 0);
     const validOptionalNumber = (value: number | null) => value === null || (Number.isFinite(value) && value >= 0);
     if (!Number.isInteger(styleCountTarget) || styleCountTarget < 0 ||
       !Number.isInteger(aosUnits) || aosUnits < 0 ||
       !Number.isInteger(newStyleAosUnits) || newStyleAosUnits < 0 ||
-      ![newStyleCount,reorderStyleCount,replenishmentStyleCount,newUnits,reorderUnits,replenishmentUnits]
+      ![newStyleCount,repeatStyleCount,newUnits,repeatUnits]
         .every((value) => Number.isInteger(value) && value >= 0) ||
       !validOptionalWholeNumber(openingStockUnits) || !validOptionalWholeNumber(unitsSoldLastMonth) ||
       !validOptionalNumber(expectedUnitCost) || !validOptionalNumber(sellingPrice) ||
@@ -8393,24 +8437,23 @@ router.put("/range-plan/rows/:id", async (req, res, next) => {
       `UPDATE ${schema}.range_plan_rows
        SET style_count_target=$1,aos_units=$2,opening_stock_units=$3,units_sold_last_month=$4,
            expected_unit_cost=$5,selling_price=$6,notes=$7,
-           new_style_count=$8,reorder_style_count=$9,replenishment_style_count=$10,
-           new_units=$11,reorder_units=$12,replenishment_units=$13,new_style_aos_units=$14
-       WHERE id=$15
+            new_style_count=$8,repeat_style_count=$9,reorder_style_count=$9,replenishment_style_count=0,
+            new_units=$10,repeat_units=$11,reorder_units=$11,replenishment_units=0,new_style_aos_units=$12
+       WHERE id=$13
        RETURNING id,season_id AS "seasonId",sub_category AS "subCategory",
          product_category AS "productCategory",tier::text,
          style_count_target AS "styleCountTarget",
-         new_style_count AS "newStyleCount",reorder_style_count AS "reorderStyleCount",
+          new_style_count AS "newStyleCount",repeat_style_count AS "repeatStyleCount",reorder_style_count AS "reorderStyleCount",
          replenishment_style_count AS "replenishmentStyleCount",style_count_min AS "styleCountMin",
          style_count_max AS "styleCountMax",aos_units AS "aosUnits",
          new_style_aos_units AS "newStyleAosUnits",
          planned_units_calculated AS "plannedUnitsCalculated",
-         total_units_implied AS "totalUnitsImplied",new_units AS "newUnits",
+          total_units_implied AS "totalUnitsImplied",new_units AS "newUnits",repeat_units AS "repeatUnits",
          reorder_units AS "reorderUnits",replenishment_units AS "replenishmentUnits",
          opening_stock_units AS "openingStockUnits",units_sold_last_month AS "unitsSoldLastMonth",
          expected_unit_cost AS "expectedUnitCost",selling_price AS "sellingPrice",notes`,
       [styleCountTarget, aosUnits, openingStockUnits, unitsSoldLastMonth, expectedUnitCost, sellingPrice, notes,
-       newStyleCount, reorderStyleCount, replenishmentStyleCount, newUnits, reorderUnits, replenishmentUnits,
-       newStyleAosUnits, rowId],
+       newStyleCount, repeatStyleCount, newUnits, repeatUnits, newStyleAosUnits, rowId],
     );
     res.json(rangePlanRowPayload(result.rows[0]));
   } catch (error) {
@@ -8759,7 +8802,7 @@ router.post("/assortment-plan/add-selected", async (req: AuthRequest, res, next)
           brand,fabric,fabric_product_id,target_order_week,image_url,available_colourways,selected_colourways,
           estimated_quantity,order_type,order_stage,created_by)
          VALUES ($1,$2,$3,'catalogue',$4,$5,$6,NULL,$7,$8,$9,$10,$11,$12,NULL,
-           $13,$14,$15,300,'Re-order','Buying Requisition',$16)`,
+           $13,$14,$15,300,'Repeat','Buying Requisition',$16)`,
         [plan.rows[0].id, sequence, `W${isoWeek}${String(sequence).padStart(3, "0")}`, style.style_key,
           style.style_number, style.style_name, style.tier, style.category, style.sub_category, style.brand,
           style.fabric, style.fabric_product_id,
@@ -10300,8 +10343,8 @@ async function workspaceHomeFocus() {
        planStyles: number; planUnits: number; planNewUnits: number; planNewStyles: number;
        actualStyles: number; pendingStyles: number;
       actualUnits: number; pendingUnits: number; actualNewUnits: number;
-      pendingNewUnits: number; actualNewStyles: number; replenishmentUnits: number;
-      reorderUnits: number; productionOrders: number; monthlyPlanUnits: number;
+       pendingNewUnits: number; actualNewStyles: number; repeatUnits: number;
+       productionOrders: number; monthlyPlanUnits: number;
       monthLabel: string; monthlyNewnessTargetUnits: number; monthlyPlannedNewUnits: number;
       monthlyPlannedNewStyles: number; monthlyPlannedTotalUnits: number;
     }>(`
@@ -10383,8 +10426,9 @@ async function workspaceHomeFocus() {
          ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE ${newnessSql("lifecycle_type")}),0))::float AS "actualNewUnits",
          ROUND(COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan WHERE ${newnessSql("order_type")}),0))::float AS "pendingNewUnits",
         (SELECT COUNT(*)::int FROM actual_by_style WHERE ${newnessSql("lifecycle_type")}) AS "actualNewStyles",
-         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) LIKE 'replen%'),0))::float AS "replenishmentUnits",
-         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) IN ('re-order','reorder','repeat')),0))::float AS "reorderUnits",
+         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style
+           WHERE LOWER(lifecycle_type) LIKE 'replen%'
+              OR LOWER(lifecycle_type) IN ('re-order','reorder','repeat')),0))::float AS "repeatUnits",
         COALESCE((SELECT SUM(orders) FROM actual_by_style),0)::int AS "productionOrders",
         COALESCE((SELECT units FROM monthly_plan),0)::float AS "monthlyPlanUnits",
         COALESCE((SELECT newness_target_units FROM monthly_plan),0)::float AS "monthlyNewnessTargetUnits",
@@ -10468,8 +10512,7 @@ async function workspaceHomeFocus() {
           'vivo input cogs',
           'avg vivo production order size',
           '% of new units ordered vs total',
-          'no. of replenishment units ordered',
-          'no. of reorder units ordered',
+          'no. of repeat units ordered',
           'no. of new styles ordered',
           'no. of adopted styles in the pipeline',
           'no. of samples per approved style'
@@ -10496,8 +10539,7 @@ async function workspaceHomeFocus() {
     { key: "input_cogs", measurable: "Vivo Input COGS", value: cogsResult.rows[0]?.value ?? null, note: `${cogsResult.rows[0]?.costedRows ?? 0}/${cogsResult.rows[0]?.totalRows ?? 0} ${week.monthLabel} plan rows costed` },
     { key: "average_order_size", measurable: "Avg Vivo Production Order Size", value: Number(week.productionOrders) ? Number(week.actualUnits) / Number(week.productionOrders) : null, note: "Dated in-house production orders this week" },
     { key: "new_units_pct", measurable: "% of NEW units ordered vs TOTAL", value: Number(week.actualUnits) ? Number(week.actualNewUnits) / Number(week.actualUnits) * 100 : null, note: `${week.monthLabel} holds an absolute ${monthlyNewness.targetUnits.toLocaleString()}-unit newness commitment; this percentage is an outcome.` },
-    { key: "replenishment_units", measurable: "No. of Replenishment Units Ordered", value: Number(week.replenishmentUnits), note: "Dated in-house production orders this week" },
-    { key: "reorder_units", measurable: "No. of Reorder Units Ordered", value: Number(week.reorderUnits), note: "Dated in-house production orders this week" },
+    { key: "repeat_units", measurable: "No. of Repeat Units Ordered", value: Number(week.repeatUnits), note: "Dated in-house production orders this week" },
     { key: "new_styles_ordered", measurable: "No. of New Styles Ordered", value: Number(week.actualNewStyles), note: "Distinct dated new styles this week" },
     { key: "adopted_styles_pipeline", measurable: "No. of Adopted Styles in the pipeline", value: Number(waiting.adoptedStylesPipeline), note: "Canonical Q3 tracker styles marked NEW" },
     { key: "samples_per_approved_style", measurable: "No. of samples per approved style", value: scorecardByName.get("no. of samples per approved style")?.latestValue ?? null, note: "Latest L10 entry until sample-round events are recorded" },
@@ -12862,7 +12904,7 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const isoYear = Number(body.isoYear);
     const isoWeek = Number(body.isoWeek);
     const quantity = Number(body.estimatedQuantity);
-    const validTypes = ["New", "Re-order", "Replenishment", "Range Refreshed"];
+    const validTypes = ["New", "Repeat", "Range Refreshed"];
     const validStages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample", "Set Sampling", "Set Sample Fitting", "Approved for Production"];
     if (!Number.isInteger(isoYear) || !Number.isInteger(isoWeek) || isoWeek < 1 || isoWeek > 53 || !Number.isInteger(quantity) || quantity <= 0) {
       res.status(400).json({ error: "A valid week and estimated quantity are required" }); return;
@@ -12947,7 +12989,7 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
   try {
     const quantity = Number(req.body?.estimatedQuantity);
     const stages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample", "Set Sampling", "Set Sample Fitting", "Approved for Production"];
-    const types = ["New", "Re-order", "Replenishment", "Range Refreshed"];
+    const types = ["New", "Repeat", "Range Refreshed"];
     if (!Number.isInteger(quantity) || quantity <= 0 || !stages.includes(req.body?.orderStage) || !types.includes(req.body?.orderType)) {
       res.status(400).json({ error: "Quantity, order type and stage are required" }); return;
     }

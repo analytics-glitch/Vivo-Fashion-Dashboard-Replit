@@ -50,16 +50,14 @@ type RangePlanRow = {
   newStyleCount: number;
   pipelineNewStylesAvailable: number;
   newStylesGap: number;
-  reorderStyleCount: number;
-  replenishmentStyleCount: number;
+  repeatStyleCount: number;
   styleCountMin: number;
   styleCountMax: number;
   aosUnits: number;
   newStyleAosUnits: number;
   totalUnitsImplied: number;
   newUnits: number;
-  reorderUnits: number;
-  replenishmentUnits: number;
+  repeatUnits: number;
   plannedPendingStyles: number;
   plannedPendingUnits: number;
   orderedStyles: number;
@@ -356,13 +354,13 @@ function RangePlanPage() {
   }, [season?.id, season?.stockSalesReport?.id, season?.stockSalesReport?.reportMonth, season?.stockSalesReport?.pulledAt, season?.stockSalesReport?.reportUrl]);
   const isActualPlusPlan = planningDisclosure !== null;
   const visibleRows = useMemo(() => rows.map((row) => {
-    if (tierFilter === 'All tiers') return { ...row, styleCountTarget: row.newStyleCount + row.reorderStyleCount + row.replenishmentStyleCount };
+    if (tierFilter === 'All tiers') return { ...row, styleCountTarget: row.newStyleCount + row.repeatStyleCount };
     if (tierFilter === 'New/Test') {
       return { ...row, styleCountTarget: row.newStyleCount, totalUnitsImplied: row.newUnits, potentialFpRevenue: row.newUnits * Number(row.sellingPrice ?? 0) };
     }
     if (row.tier !== tierFilter) return { ...row, styleCountTarget: 0, totalUnitsImplied: 0, potentialFpRevenue: 0 };
-    const carryStyleCount = row.reorderStyleCount + row.replenishmentStyleCount;
-    const carryUnits = row.reorderUnits + row.replenishmentUnits;
+    const carryStyleCount = row.repeatStyleCount;
+    const carryUnits = row.repeatUnits;
     return { ...row, newStyleCount: 0, styleCountTarget: carryStyleCount, totalUnitsImplied: carryUnits, potentialFpRevenue: carryUnits * Number(row.sellingPrice ?? 0) };
   }).filter((row) => tierFilter === 'All tiers' || row.styleCountTarget > 0 || row.totalUnitsImplied > 0), [rows, tierFilter]);
   const quarterlyPlans = (payload?.seasons ?? []).filter((candidate) => candidate.cadence === 'quarterly');
@@ -389,7 +387,7 @@ function RangePlanPage() {
      return { totalStyles, totalUnits, newStyles, newUnits, newnessPct, effectiveNewAos, requiredNewUnits, impliedNewStyles, newnessShortfallUnits, newnessShortfallStyles, targetPctOfCapacity, meetsNewnessTarget: newUnits >= requiredNewUnits, estimatedCogs, capacityPct, potentialFpRevenue, costedRowCount: costedRows.length };
   }, [visibleRows, rows, season]);
 
-  const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'newStyleCount' | 'reorderStyleCount' | 'replenishmentStyleCount' | 'newStyleAosUnits' | 'aosUnits' | 'openingStockUnits' | 'unitsSoldLastMonth' | 'expectedUnitCost' | 'sellingPrice' | 'notes', value: string) => {
+  const saveRow = (row: RangePlanRow, field: 'styleCountTarget' | 'newStyleCount' | 'repeatStyleCount' | 'newStyleAosUnits' | 'aosUnits' | 'openingStockUnits' | 'unitsSoldLastMonth' | 'expectedUnitCost' | 'sellingPrice' | 'notes', value: string) => {
     if (isActualPlusPlan) return;
     const optional = field === 'openingStockUnits' || field === 'unitsSoldLastMonth' || field === 'expectedUnitCost' || field === 'sellingPrice';
     const parsed = optional && value.trim() === '' ? null : Math.max(0, Number(value || 0));
@@ -402,9 +400,9 @@ function RangePlanPage() {
   };
   const exportCsv = () => {
     if (!season) return;
-     const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'New Styles Planned', 'Pipeline New Styles WK36-WK39', 'New Style Gap', 'Reorder Styles', 'Replenishment Styles', 'New Style AOS', 'Reorder / Replenishment AOS', 'New Units', 'Reorder Units', 'Replenishment Units', 'Total Units', 'Share of Units', 'Styles Ordered by Date', 'Styles Planned Not Raised', 'Style Balance to Ordered', 'Units Ordered by Date', 'Units Planned Not Raised', 'Unit Balance to Ordered', 'Projected Units', 'Ceiling Status', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %'];
+     const header = ['Product Category', 'Sub-Category', 'Opening Stock Units', 'Units Sold Last Month', 'Weeks of Cover', 'Planned Styles', 'New Styles Planned', 'Pipeline New Styles WK36-WK39', 'New Style Gap', 'Repeat Styles', 'New Style AOS', 'Repeat AOS', 'New Units', 'Repeat Units', 'Total Units', 'Share of Units', 'Styles Ordered by Date', 'Styles Planned Not Raised', 'Style Balance to Ordered', 'Units Ordered by Date', 'Units Planned Not Raised', 'Unit Balance to Ordered', 'Projected Units', 'Ceiling Status', 'Expected Unit Cost', 'Average Selling Price', 'Gross Revenue Potential', 'Input COGS %'];
      const lines = visibleRows.map((row) => {
-          const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, row.weeksOfCover, row.styleCountTarget, row.newStyleCount, row.pipelineNewStylesAvailable, row.newStylesGap, row.reorderStyleCount, row.replenishmentStyleCount, row.newStyleAosUnits, row.aosUnits, row.newUnits, row.reorderUnits, row.replenishmentUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.orderedStyles, row.plannedPendingStyles, row.balanceStyles, row.orderedUnits, row.plannedPendingUnits, row.balanceUnits, row.projectedUnits, row.ceilingBreached ? 'Ceiling breached' : 'Within ceiling', row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, row.inputCogsPct];
+          const values = [row.productCategory, row.subCategory, row.openingStockUnits, row.unitsSoldLastMonth, row.weeksOfCover, row.styleCountTarget, row.newStyleCount, row.pipelineNewStylesAvailable, row.newStylesGap, row.repeatStyleCount, row.newStyleAosUnits, row.aosUnits, row.newUnits, row.repeatUnits, row.totalUnitsImplied, totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits : 0, row.orderedStyles, row.plannedPendingStyles, row.balanceStyles, row.orderedUnits, row.plannedPendingUnits, row.balanceUnits, row.projectedUnits, row.ceilingBreached ? 'Ceiling breached' : 'Within ceiling', row.expectedUnitCost, row.sellingPrice, row.potentialFpRevenue, row.inputCogsPct];
        return values.map((value) => `"${String(value ?? '').replaceAll('"', '""')}"`).join(',');
      });
     const blob = new Blob([[header.join(','), ...lines].join('\n')], { type: 'text/csv;charset=utf-8' });
@@ -511,7 +509,7 @@ function RangePlanPage() {
           </div>
           <dl>
             <div><dt>{planningDisclosure.actualLabel}</dt><dd>{numberFormat(planningDisclosure.actualOrders)} styles · {numberFormat(planningDisclosure.actualUnits)} units</dd></div>
-            <div><dt>{planningDisclosure.planLabel}</dt><dd>{numberFormat(totals.newStyles + rows.reduce((sum, row) => sum + row.reorderStyleCount + row.replenishmentStyleCount, 0))} styles · {numberFormat(planningDisclosure.planUnits)} units</dd></div>
+            <div><dt>{planningDisclosure.planLabel}</dt><dd>{numberFormat(totals.newStyles + rows.reduce((sum, row) => sum + row.repeatStyleCount, 0))} styles · {numberFormat(planningDisclosure.planUnits)} units</dd></div>
             <div><dt>Quarter total</dt><dd>{numberFormat(totals.totalStyles)} styles · {numberFormat(totals.totalUnits)} units</dd></div>
             <div><dt>Tracker boundary</dt><dd>June-booked: {planningDisclosure.juneBookedOrders} / {numberFormat(planningDisclosure.juneBookedUnits)} units · September placed: {planningDisclosure.septemberPlacedOrders} / {numberFormat(planningDisclosure.septemberPlacedUnits)} units</dd></div>
           </dl>
@@ -593,7 +591,7 @@ function RangePlanPage() {
           <div className="range-matrix-card">
             <div className="range-table-scroll">
               <table className="range-table range-monthly-table">
-                 <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>WOC</th><th>Planned Styles</th><th>New Styles <small>Plan need</small></th><th>Pipeline NEW <small>WK36–WK39</small></th><th>Pipeline Gap</th><th>Reorder Styles</th><th>Replen Styles</th><th>New AOS</th><th>Reorder / Replen AOS</th><th>Total Units</th><th>New Units</th><th>Reorder Units</th><th>Replen Units</th><th>Share</th><th>Styles Ordered <small>dated</small></th><th>Styles Planned <small>not raised</small></th><th>Style Balance <small>to ordered</small></th><th>Units Ordered <small>dated</small></th><th>Units Planned <small>not raised</small></th><th>Unit Balance <small>to ordered</small></th><th>Projected Units</th><th>Order Status</th><th>Unit Cost</th><th>Selling Price</th><th>Gross Revenue</th><th>Input COGS</th></tr></thead>
+                 <thead><tr><th>Sub-Category</th><th>Opening Stock</th><th>WOC</th><th>Planned Styles</th><th>New Styles <small>Plan need</small></th><th>Pipeline NEW <small>WK36–WK39</small></th><th>Pipeline Gap</th><th>Repeat Styles</th><th>New AOS</th><th>Repeat AOS</th><th>Total Units</th><th>New Units</th><th>Repeat Units</th><th>Share</th><th>Styles Ordered <small>dated</small></th><th>Styles Planned <small>not raised</small></th><th>Style Balance <small>to ordered</small></th><th>Units Ordered <small>dated</small></th><th>Units Planned <small>not raised</small></th><th>Unit Balance <small>to ordered</small></th><th>Projected Units</th><th>Order Status</th><th>Unit Cost</th><th>Selling Price</th><th>Gross Revenue</th><th>Input COGS</th></tr></thead>
                 <tbody>
                   {monthlyCategoryOrder.map((category) => {
                     const categoryRows = visibleRows.filter((row) => row.productCategory === category);
@@ -604,7 +602,7 @@ function RangePlanPage() {
                     const categoryPipelineGap = categoryRows.reduce((sum, row) => sum + row.newStylesGap, 0);
                     return (
                       <Fragment key={category}>
-                        <tr className="range-tier-heading range-category-heading"><td colSpan={28}><strong>{category}</strong><span>{categoryRows.length} sub-categories</span></td></tr>
+                        <tr className="range-tier-heading range-category-heading"><td colSpan={26}><strong>{category}</strong><span>{categoryRows.length} sub-categories</span></td></tr>
                         {categoryRows.map((row) => {
                            const weeksOfCover = row.weeksOfCover;
                           const shareOfUnits = totals.totalUnits ? row.totalUnitsImplied / totals.totalUnits * 100 : 0;
@@ -621,14 +619,12 @@ function RangePlanPage() {
                               <td><InlineCell disabled={isActualPlusPlan} value={row.newStyleCount} kind="number" ariaLabel={`${row.subCategory} new styles`} onSave={(value) => saveRow(row, 'newStyleCount', value)} /></td>
                                <td className="range-pipeline-available">{numberFormat(row.pipelineNewStylesAvailable)}</td>
                                <td className={row.newStylesGap > 0 ? 'range-pipeline-gap shortfall' : row.newStylesGap < 0 ? 'range-pipeline-gap surplus' : 'range-readonly'}>{row.newStylesGap > 0 ? `${numberFormat(row.newStylesGap)} short` : row.newStylesGap < 0 ? `${numberFormat(Math.abs(row.newStylesGap))} surplus` : '—'}</td>
-                              <td><InlineCell disabled={isActualPlusPlan} value={row.reorderStyleCount} kind="number" ariaLabel={`${row.subCategory} reorder styles`} onSave={(value) => saveRow(row, 'reorderStyleCount', value)} /></td>
-                              <td><InlineCell disabled={isActualPlusPlan} value={row.replenishmentStyleCount} kind="number" ariaLabel={`${row.subCategory} replenishment styles`} onSave={(value) => saveRow(row, 'replenishmentStyleCount', value)} /></td>
+                               <td><InlineCell disabled={isActualPlusPlan} value={row.repeatStyleCount} kind="number" ariaLabel={`${row.subCategory} repeat styles`} onSave={(value) => saveRow(row, 'repeatStyleCount', value)} /></td>
                               <td><InlineCell disabled={isActualPlusPlan} value={row.newStyleAosUnits} kind="number" ariaLabel={`${row.subCategory} new style average order size`} onSave={(value) => saveRow(row, 'newStyleAosUnits', value)} /></td>
-                              <td><InlineCell disabled={isActualPlusPlan} value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} reorder and replenishment average order size`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
+                               <td><InlineCell disabled={isActualPlusPlan} value={row.aosUnits} kind="number" ariaLabel={`${row.subCategory} repeat average order size`} onSave={(value) => saveRow(row, 'aosUnits', value)} /></td>
                               <td className="range-total-cell">{numberFormat(row.totalUnitsImplied)}</td>
                               <td className="range-readonly">{numberFormat(row.newUnits)}</td>
-                              <td className="range-readonly">{numberFormat(row.reorderUnits)}</td>
-                              <td className="range-readonly">{numberFormat(row.replenishmentUnits)}</td>
+                               <td className="range-readonly">{numberFormat(row.repeatUnits)}</td>
                               <td className="range-readonly">{shareOfUnits.toFixed(1)}%</td>
                                <td className="range-progress-cell">{numberFormat(row.orderedStyles)}</td>
                                 <td className="range-commitment-cell">{numberFormat(row.plannedPendingStyles)}</td>

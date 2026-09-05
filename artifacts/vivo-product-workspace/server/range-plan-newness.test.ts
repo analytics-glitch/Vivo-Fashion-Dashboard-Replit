@@ -59,16 +59,14 @@ test("Range Refreshed remains distinct but counts as newness", () => {
   assert.equal(isNewnessOrderType("Range Refreshed"), true);
   assert.equal(isNewnessOrderType("range_refreshed"), true);
   assert.equal(isNewnessOrderType("RR"), true);
-  assert.equal(isNewnessOrderType("Re-order"), false);
-  assert.equal(isNewnessOrderType("Replenishment"), false);
+  assert.equal(isNewnessOrderType("Repeat"), false);
 });
 
 test("week 36 newness includes the 400 Range Refreshed units", () => {
   const lines = [
     { type: "New", units: 2_160 },
     { type: "Range Refreshed", units: 400 },
-    { type: "Re-order", units: 1_395 },
-    { type: "Replenishment", units: 1_950 },
+    { type: "Repeat", units: 3_345 },
   ];
   const total = lines.reduce((sum, line) => sum + line.units, 0);
   const newUnits = lines.filter((line) => isNewnessOrderType(line.type)).reduce((sum, line) => sum + line.units, 0);

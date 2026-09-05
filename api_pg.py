@@ -4556,18 +4556,144 @@ _ODOO_RETIRED_STYLES_SQL = (
     "HAVING BOOL_OR(status = 'Retired') AND NOT BOOL_OR(status = 'Active')"
 )
 
-_RETIRED_SET_CACHE = {"at": 0.0, "set": frozenset()}
 _RETIRED_SET_TTL = 300  # seconds; products sync hourly, so 5 min is plenty fresh
+_ODOO_STATUS_SETS_SQL = """
+    SELECT style_name,
+           BOOL_OR(status = 'Active') AS has_active,
+           BOOL_OR(status = 'Retired') AS has_retired,
+           BOOL_OR(status = 'Archived') AS has_archived
+    FROM all_products_clean
+    WHERE COALESCE(style_name,'') <> ''
+    GROUP BY style_name
+"""
+_STATUS_SETS_CACHE = {
+    "at": 0.0,
+    "sets": {
+        "active": frozenset(),
+        "retired": frozenset(),
+        "archived": frozenset(),
+    },
+}
+_STATUS_SETS_LOCK = threading.Lock()
+_STATUS_HEALTH_STATE = {"status": "unknown", "detail": None}
+_MIN_STATUS_SET_RATIO = 0.20
+
+
+def _record_product_status_health(action, detail):
+    level = log.error if action == "product_status_snapshot_rejected" else log.info
+    level("%s: %s", action, detail)
+    try:
+        _users_exec(
+            "INSERT INTO sync_health_log "
+            "(checked_at,api_healthy,sync_healthy,action_taken,notes) "
+            "VALUES (now(),true,%s,%s,%s)",
+            (action != "product_status_snapshot_rejected", action, str(detail)[:500]),
+        )
+    except Exception as event_error:
+        log.error("Could not record product status health event: %s", event_error)
+
+
+def _read_odoo_status_sets_snapshot():
+    """Read every lifecycle status in one PostgreSQL statement/snapshot."""
+    pool = _get_pool()
+    conn = pool.getconn()
+    try:
+        conn.autocommit = True
+        cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cur.execute(_ODOO_STATUS_SETS_SQL)
+        rows = cur.fetchall()
+        cur.close()
+    except Exception:
+        pool.putconn(conn, close=True)
+        raise
+    else:
+        pool.putconn(conn)
+    return _build_odoo_status_sets(rows)
+
+
+def _build_odoo_status_sets(rows):
+    """Pure guarded projection used by the single-snapshot database reader."""
+    active = set()
+    retired = set()
+    archived = set()
+    for row in rows:
+        name = _norm_style(row.get("style_name"))
+        if not name:
+            continue
+        has_active = bool(row.get("has_active"))
+        if has_active:
+            active.add(name)
+        if bool(row.get("has_retired")) and not has_active:
+            retired.add(name)
+        if bool(row.get("has_archived")):
+            archived.add(name)
+    sets = {
+        "active": frozenset(active),
+        "retired": frozenset(retired),
+        "archived": frozenset(archived),
+    }
+    populated = [name for name, values in sets.items() if values]
+    empty = [name for name, values in sets.items() if not values]
+    if populated and empty:
+        raise RuntimeError(
+            "implausible product status snapshot rejected: "
+            + ", ".join(f"{name}={len(values)}" for name, values in sets.items())
+        )
+    if not populated:
+        raise RuntimeError("implausible product status snapshot rejected: all status sets are empty")
+    return sets
+
+
+def _odoo_status_sets():
+    """Atomically publish one guarded Active/Retired/Archived snapshot."""
+    now = time.time()
+    if now - _STATUS_SETS_CACHE["at"] <= _RETIRED_SET_TTL:
+        return _STATUS_SETS_CACHE["sets"]
+    with _STATUS_SETS_LOCK:
+        now = time.time()
+        if now - _STATUS_SETS_CACHE["at"] <= _RETIRED_SET_TTL:
+            return _STATUS_SETS_CACHE["sets"]
+        try:
+            sets = _read_odoo_status_sets_snapshot()
+            previous = _STATUS_SETS_CACHE["sets"]
+            if _STATUS_SETS_CACHE["at"] > 0:
+                collapsed = [
+                    name for name, values in sets.items()
+                    if previous[name]
+                    and len(values) < max(1, int(len(previous[name]) * _MIN_STATUS_SET_RATIO))
+                ]
+                if collapsed:
+                    raise RuntimeError(
+                        "implausible product status snapshot rejected after sharp collapse: "
+                        + ", ".join(
+                            f"{name}={len(sets[name])} (previous={len(previous[name])})"
+                            for name in collapsed
+                        )
+                    )
+        except Exception as exc:
+            detail = str(exc)
+            if _STATUS_HEALTH_STATE["status"] != "error" or _STATUS_HEALTH_STATE["detail"] != detail:
+                _record_product_status_health("product_status_snapshot_rejected", detail)
+            _STATUS_HEALTH_STATE.update(status="error", detail=detail)
+            # Keep serving the last complete generation. If this process has no
+            # previous generation yet, fail explicitly rather than cache empties.
+            if _STATUS_SETS_CACHE["at"] <= 0:
+                raise
+            return _STATUS_SETS_CACHE["sets"]
+        _STATUS_SETS_CACHE["sets"] = sets
+        _STATUS_SETS_CACHE["at"] = now
+        if _STATUS_HEALTH_STATE["status"] == "error":
+            _record_product_status_health(
+                "product_status_snapshot_ok",
+                "product lifecycle snapshot recovered: "
+                + ", ".join(f"{name}={len(values)}" for name, values in sets.items()),
+            )
+        _STATUS_HEALTH_STATE.update(status="ok", detail=None)
+        return sets
 
 def _odoo_retired_styles():
     """Normalized set of style names Odoo marks Retired (cached briefly)."""
-    now = time.time()
-    if now - _RETIRED_SET_CACHE["at"] > _RETIRED_SET_TTL:
-        rows = run_query(_ODOO_RETIRED_STYLES_SQL, ttl=_RETIRED_SET_TTL) or []
-        _RETIRED_SET_CACHE["set"] = frozenset(
-            _norm_style(r["style_name"]) for r in rows)
-        _RETIRED_SET_CACHE["at"] = now
-    return _RETIRED_SET_CACHE["set"]
+    return _odoo_status_sets()["retired"]
 
 # Non-product / housekeeping "style" names that sometimes carry a stray
 # status='Active' SKU row in Odoo (test data, catch-all sample buckets) —
@@ -4585,17 +4711,9 @@ _ODOO_ACTIVE_STYLES_SQL = (
     "WHERE COALESCE(style_name,'') <> '' "
     "GROUP BY style_name HAVING BOOL_OR(status = 'Active')"
 )
-_ACTIVE_STATUS_SET_CACHE = {"at": 0.0, "set": frozenset()}
-
 def _odoo_active_status_styles():
     """Normalized set of style names Odoo marks status='Active' (cached briefly)."""
-    now = time.time()
-    if now - _ACTIVE_STATUS_SET_CACHE["at"] > _RETIRED_SET_TTL:
-        rows = run_query(_ODOO_ACTIVE_STYLES_SQL, ttl=_RETIRED_SET_TTL) or []
-        _ACTIVE_STATUS_SET_CACHE["set"] = frozenset(
-            _norm_style(r["style_name"]) for r in rows)
-        _ACTIVE_STATUS_SET_CACHE["at"] = now
-    return _ACTIVE_STATUS_SET_CACHE["set"]
+    return _odoo_status_sets()["active"]
 
 # Styles Odoo currently flags status='Archived' on at least one SKU row — the
 # literal Odoo Status field, not the dashboard's former catch-all "Archived"
@@ -4610,17 +4728,9 @@ _ODOO_ARCHIVED_STYLES_SQL = (
     "WHERE COALESCE(style_name,'') <> '' "
     "GROUP BY style_name HAVING BOOL_OR(status = 'Archived')"
 )
-_ARCHIVED_STATUS_SET_CACHE = {"at": 0.0, "set": frozenset()}
-
 def _odoo_archived_status_styles():
     """Normalized set of style names Odoo marks status='Archived' (cached briefly)."""
-    now = time.time()
-    if now - _ARCHIVED_STATUS_SET_CACHE["at"] > _RETIRED_SET_TTL:
-        rows = run_query(_ODOO_ARCHIVED_STYLES_SQL, ttl=_RETIRED_SET_TTL) or []
-        _ARCHIVED_STATUS_SET_CACHE["set"] = frozenset(
-            _norm_style(r["style_name"]) for r in rows)
-        _ARCHIVED_STATUS_SET_CACHE["at"] = now
-    return _ARCHIVED_STATUS_SET_CACHE["set"]
+    return _odoo_status_sets()["archived"]
 
 # Rec types that the shared Transfer Tracking report + assign endpoints accept.
 _TRANSFER_REC_TYPES = {"replenish", "warehouse_return"}
@@ -36780,7 +36890,48 @@ def _data_quality_report_dict():
     for c in checks:
         c["status"] = "ok" if c["score"] >= 80 else "alert"
     from datetime import datetime, timezone
+    product_health_rows = run_query(
+        "WITH events AS ("
+        " SELECT action_taken,notes,checked_at,"
+        " CASE WHEN action_taken LIKE 'product_rebuild_%' THEN 'rebuild' ELSE 'snapshot' END AS stream"
+        " FROM sync_health_log"
+        " WHERE action_taken IN ('product_rebuild_aborted','product_rebuild_ok',"
+        "'product_status_snapshot_rejected','product_status_snapshot_ok')"
+        "), latest AS ("
+        " SELECT DISTINCT ON (stream) stream,action_taken,notes,checked_at"
+        " FROM events ORDER BY stream,checked_at DESC"
+        ") SELECT * FROM latest ORDER BY stream",
+        ttl=60,
+    ) or []
+    product_health = {"status": "unknown", "detail": None, "checked_at": None}
+    if product_health_rows:
+        failures = [
+            event for event in product_health_rows
+            if event.get("action_taken") in {
+                "product_rebuild_aborted", "product_status_snapshot_rejected"
+            }
+        ]
+        latest_at = max(
+            (event.get("checked_at") for event in product_health_rows if event.get("checked_at")),
+            default=None,
+        )
+        product_health = {
+            "status": "error" if failures else "ok",
+            "detail": "; ".join(str(event.get("notes") or event.get("action_taken")) for event in failures)
+                      if failures else "Product rebuild and lifecycle snapshot checks are healthy",
+            "checked_at": latest_at.isoformat() if latest_at else None,
+            "streams": {
+                event["stream"]: {
+                    "status": "error" if event.get("action_taken") in {
+                        "product_rebuild_aborted", "product_status_snapshot_rejected"
+                    } else "ok",
+                    "action": event.get("action_taken"),
+                }
+                for event in product_health_rows
+            },
+        }
     return {"overall_score": overall, "checks": checks,
+            "product_table_health": product_health,
             "checked_at": datetime.now(timezone.utc).isoformat()}
 
 

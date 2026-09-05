@@ -84,6 +84,7 @@
 - [Style-grain single row](style-grain-single-row.md) — top-skus/SOR/velocity must GROUP BY style_name only (MAX dims); collection/product_type in the grain splits style units across rows.
 - [Ranked LIMIT before allocator](ranked-limit-before-allocator.md) — a small top-N cap upstream of a shared-pool (warehouse) allocator both hides valid rows and misallocates the pool; cap must be a generous safety bound + truncated flag.
 - Product master: [colour from name](product-color-name-authoritative.md) Odoo attr = stale-on-rename fallback, nightly self-heal, "Off - Shoulder" wart; [subcat vote](product-subcat-vote-vs-classifier.md) must fill NULL rows too or the keyword classifier re-poisons daily; [category map](product-category-map-drift.md) CATEGORY_MAP(sub_category) not Odoo's raw column; [qty column](inventory-quantity-column-canon.md) `available` is canon — available_quantity doesn't exist.
+- [Product master atomic rebuild](product-master-atomic-rebuild.md) — stage, validate, back up, replace, and remove the stage in one transaction; lifecycle caches use one guarded snapshot.
 - [PLM Style Team](style-team-assignments.md) — workspace styles use nullable workspace-user role FKs; migrate owner to Designer only when names match and retain owner as a legacy fallback.
 - [Rebuild transform OOM + bg reaping](transform-oom-batching.md) — stream all_sales rebuild in 50k batches (fetchall OOM-killed silently); nohup in agent bash gets reaped — run batch jobs as workflows; merge-restarts auto-run destructive batch workflows.
 - [Sales by Hour data sources](sales-by-hour-sources.md) — hourly sales = raw order headers split at the cutover; raw_shopify_orders.total_price is 0 (join shopify_sales lines); never import sync_incremental from api_pg (env-free odoo_locations.py).
@@ -108,13 +109,9 @@
 - [Merch rollup fast-path](merch-rollup-fastpath.md) — rollup_merch_style_day + incr_sales(loaded_at>wm) UNION = always-current; status filter must fall back to original SQL (changes prod CTE before GROUP BY).
 - [Colour-style status is derived](colour-style-status-derived.md) — classify each style×colour from its own Odoo rows; Active Colour KPI then requires that colourway to have stock.
 - [Colourway key noise](colourway-key-noise.md) — color_print keys carry "X - X / code / size" noise; clean+noisy twins coexist per style as distinct rows; tidy display only, raw keys stay, collision ⇒ raw label.
-- Community core: [API](community-public-api.md), [events](community-events-waitlist.md), [branding](johari-branding.md), [guest mode](community-guest-mode.md) — self-auth, locking, tiers, fences.
-- Community data: [quiz](community-style-quiz.md), [DPA](community-dpa-consent.md), [surveys](community-survey.md), [contact](community-contact-us.md) — canonical inputs, consent, idempotency.
-- Community content: [feed](community-feed-posts.md), [winners](community-winner-model.md), [home](community-home-structure.md), [Edits](community-vivo-edits.md) — visibility and mirroring rules.
-- Community commerce: [Shop](community-shop-filters.md), [try-on](community-tryon.md), [Styled](community-styled-for-you.md), [referrals](community-referrals.md) — consent, caps, attribution.
-- Community campaigns: [articles](community-campaign-articles.md), [redemption](community-entry-pipeline.md) — points only at canonical milestones; keep privacy and role gates.
-- Community navigation: [handoffs](strictmode-sessionstorage-handoff.md), [stores](community-find-a-store.md), [composer](community-composer-handoff.md) — tap-only state and secondary placement.
-- Community native AI: [credential bridge](community-native-credential-bridge.md), [Gemini image](gemini-image-tryon.md) — fixed trusted origin and exact REST payload casing.
+- Community core/data: [API](community-public-api.md), [events](community-events-waitlist.md), [guest](community-guest-mode.md), [DPA](community-dpa-consent.md), [surveys](community-survey.md).
+- Community content/commerce: [feed](community-feed-posts.md), [winners](community-winner-model.md), [Shop](community-shop-filters.md), [try-on](community-tryon.md), [referrals](community-referrals.md).
+- Community navigation/AI: [handoffs](strictmode-sessionstorage-handoff.md), [stores](community-find-a-store.md), [composer](community-composer-handoff.md), [Gemini](gemini-image-tryon.md).
 - [Johari notification consent](johari-notification-consent.md) — keep soft-prompt dismissal separate from OS permission; reconcile the OS on every native evaluation and route denial nudges to Settings.
 - [vivo-bi cookie-only web auth](vivo-bi-cookie-only-auth.md) — staff SPA uses only the httpOnly session cookie (no vivo_token/Bearer); login has account+IP lockout; e2e auth via addCookies.
 - [Staff 2FA flow](staff-2fa-flow.md) — password/Google/native auth share a short-lived challenge before normal session creation; existing sessions survive reset.
@@ -130,12 +127,8 @@
 - [Stock Mix price attainment](stock-mix-price-attainment.md) — % Full Price is VAT-inclusive achieved selling value ÷ weighted full retail value; do not reuse the zero-discount unit KPI.
 - [Style Tracker % Recv](style-tracker-warehouse-pct.md) — receipts-first shared batch calc feeds board/endpoint/gate; names-first match grain; dated styles never fall back to stock.
 - [Disposable PostgreSQL tests](disposable-postgres-tests.md) — concurrency tests must run on a local throwaway cluster via TEST_DATABASE_URL, never DATABASE_URL.
-- [PD Flow stage persistence](pd-flow-stage-persistence.md) — Excel bootstrap snapshots may seed missing styles, but lifecycle state belongs to the append-only movement log.
-- [Production workspace revision integrity](production-workspace-revision-integrity.md) — frozen-plan inputs must be revision-scoped and cross-plan references guarded in both API and database.
-- [Production Workspace e2e fixtures](production-workspace-e2e-fixtures.md) — build plan inputs in draft, then approve; cleanup must reopen run-owned plans before removing inputs.
-- [Release-proof evidence hygiene](release-proof-evidence-hygiene.md) — browser traces can retain session tokens; sanitize and validate every retained proof bundle before review.
-- [Production workspace feasibility governance](production-workspace-feasibility-governance.md) — capacity, targets, SAMs, and readiness must be approved, dated, and auditable before a plan is feasible.
-- [Production assignment scope](production-assignment-scope.md) — production users see plan-backed facts only as owner or active assignee; scope source rows before aggregates and fail closed.
+- Production workspace: [stage history](pd-flow-stage-persistence.md), [revision integrity](production-workspace-revision-integrity.md), [e2e fixtures](production-workspace-e2e-fixtures.md).
+- Production governance: [evidence](release-proof-evidence-hygiene.md), [feasibility](production-workspace-feasibility-governance.md), [assignment scope](production-assignment-scope.md).
 - [Command Centre refresh failures](command-centre-refresh-errors.md) — retain last-known operational context, but visibly disclose every failed refresh.
 - [Retiring routed artifacts](artifact-service-retirement.md) — remove obsolete services through validated, service-free manifests or their old route claims can create false outages.
 - [Behavioral DB coverage](behavioral-db-coverage.md) — source-text assertions do not validate transactional guarantees; critical workflow contracts need disposable-Postgres execution.

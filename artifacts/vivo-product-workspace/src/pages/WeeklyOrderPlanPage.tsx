@@ -46,7 +46,7 @@ type PlanPayload = {
   }[];
 };
 const stages = ['CAD Marker Making', 'Buying Requisition', 'Buying Production Order', 'Production Sample', 'Set Sampling', 'Set Sample Fitting', 'Approved for Production'];
-const orderTypes = ['New', 'Re-order', 'Replenishment', 'Range Refreshed'];
+const orderTypes = ['New', 'Range Refreshed', 'Repeat'];
 
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: 'include', ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } });
@@ -84,7 +84,7 @@ function SourcePicker({ week, onClose }: { week: number; onClose: () => void }) 
     queryKey: ['weekly-order-sources', source, search],
     queryFn: () => jsonFetch(`/api/workspace/weekly-order-plan/sources?source=${source}&search=${encodeURIComponent(search)}`),
   });
-  useEffect(() => { setSelected(null); setColours([]); setOrderType(source === 'development' ? 'New' : 'Re-order'); }, [source]);
+  useEffect(() => { setSelected(null); setColours([]); setOrderType(source === 'development' ? 'New' : 'Repeat'); }, [source]);
   const add = useMutation({
     mutationFn: () => jsonFetch('/api/workspace/weekly-order-plan/lines', {
       method: 'POST', body: JSON.stringify({
@@ -103,7 +103,7 @@ function SourcePicker({ week, onClose }: { week: number; onClose: () => void }) 
         <div className="weekly-results">
           {sources.isLoading ? <p>Searching source records…</p> : sources.data?.items.length ? sources.data.items.map((style) =>
             <button key={`${style.source}-${style.sourceId}`} className={selected?.sourceId === style.sourceId ? 'selected' : ''} onClick={() => {
-              setSelected(style); setColours([]); setOrderType(style.source === 'development' ? (style.styleType === 'RR' ? 'Range Refreshed' : 'New') : 'Re-order');
+              setSelected(style); setColours([]); setOrderType(style.source === 'development' ? (style.styleType === 'RR' ? 'Range Refreshed' : 'New') : 'Repeat');
             }}>
               <StyleImage style={style} /><span><strong>{style.styleName}</strong><b>{style.styleNumber}</b><small>{[style.brand, style.category, style.subCategory, style.tier].filter(Boolean).join(' · ')}</small><em>{style.fabric || 'Fabric pending'} · {Math.round(style.availableMetres || 0).toLocaleString()}m available</em></span>
             </button>

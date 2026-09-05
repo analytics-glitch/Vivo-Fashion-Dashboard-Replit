@@ -56,10 +56,11 @@ const DataQualityStatusPill = () => {
   if (!allowed) return null;
 
   const endpointError = !!data?.error;
+  const productTableError = data?.product_table_health?.status === "error";
   const score = typeof data?.overall_score === "number" ? data.overall_score : null;
   const status = loading
     ? "loading"
-    : endpointError || score === null ? "red"
+    : endpointError || productTableError || score === null ? "red"
       : score > 90 ? "green"
         : score >= 75 ? "amber"
           : "red";
@@ -76,6 +77,7 @@ const DataQualityStatusPill = () => {
   const label = loading
     ? "DQ —"
     : endpointError ? "DQ offline"
+      : productTableError ? "DQ product"
       : `DQ ${Math.round(score)}`;
 
   const checkColor = (s) =>
@@ -117,6 +119,12 @@ const DataQualityStatusPill = () => {
               Data quality endpoint unreachable: {data.error}
             </div>
           ) : (
+            <>
+            {productTableError && (
+              <div className="mb-2 rounded-md bg-rose-50 border border-rose-200 px-3 py-2 text-rose-700 text-[12px]">
+                Product table refresh blocked: {data.product_table_health.detail || "the previous complete table remains in service"}
+              </div>
+            )}
             <div className="space-y-1">
               {(data.checks || []).map((c) => (
                 <div
@@ -138,6 +146,7 @@ const DataQualityStatusPill = () => {
                 </div>
               ))}
             </div>
+            </>
           )}
 
           <div className="mt-3 pt-3 border-t border-border flex items-center justify-between">
