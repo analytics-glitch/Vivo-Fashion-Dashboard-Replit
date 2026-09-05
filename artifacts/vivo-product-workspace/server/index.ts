@@ -10182,6 +10182,17 @@ async function workspaceHomeFocus() {
         ORDER BY meeting.meeting_date DESC,e.updated_at DESC LIMIT 1
       ) latest ON TRUE
       WHERE m.active
+        AND LOWER(m.measurable)=ANY(ARRAY[
+          'total in-house units ordered',
+          'vivo input cogs',
+          'avg vivo production order size',
+          '% of new units ordered vs total',
+          'no. of replenishment units ordered',
+          'no. of reorder units ordered',
+          'no. of new styles ordered',
+          'no. of adopted styles in the pipeline',
+          'no. of samples per approved style'
+        ])
     `),
   ]);
 
@@ -10264,20 +10275,7 @@ async function workspaceHomeFocus() {
 
 router.get("/dashboard", async (_req, res, next) => {
   try {
-    const [styles, boards, plans, recent, focus, stageBreakdown] = await Promise.all([
-      pool.query<{ status: string; count: string }>(`SELECT status,COUNT(*)::int AS count FROM ${schema}.styles s WHERE ${allowedBrand("s")} GROUP BY status ORDER BY count DESC`),
-      pool.query<{ id: number; title: string; description: string }>(`SELECT id,title,description FROM ${schema}.boards ORDER BY id`),
-      pool.query<{ count: string; avg_progress: string; avg_margin: string }>(`SELECT COUNT(*)::int AS count,COALESCE(AVG(s.progress),0)::float AS avg_progress,COALESCE(AVG(c.margin),0)::float AS avg_margin FROM ${schema}.plan_styles ps JOIN ${schema}.styles s ON s.id=ps.style_id LEFT JOIN ${schema}.cost_estimates c ON c.style_id=s.id WHERE ${allowedBrand("s")}`),
-      pool.query(`SELECT 'Plan' AS type,'Q3 2026 assortment plan is live' AS title,'15 styles are in the decision room' AS detail,'2026-08-15T09:24:00.000Z' AS time UNION ALL SELECT 'PLM','Mara Column Dress moved to fit review','Proto round 2 is due 18 Aug','2026-08-14T15:10:00.000Z' UNION ALL SELECT 'Board','Aisha left a note on Leadership review','The retail edit is ready for a read','2026-08-13T11:42:00.000Z'`),
-      workspaceHomeFocus(),
-      pool.query<{ stage: string; count: number }>(`
-        SELECT INITCAP(COALESCE(NULLIF(BTRIM(status),''),'Unstaged')) AS stage,COUNT(*)::int AS count
-        FROM ${schema}.style_development_tracker
-        WHERE COALESCE(exit_status,'active')='active'
-        GROUP BY 1 ORDER BY count DESC,stage
-      `),
-    ]);
-    const countByStatus = Object.fromEntries(styles.rows.map((row) => [row.status.toLowerCase().replaceAll(" ", "_"), row.count]));
+    const focus = await workspaceHomeFocus();
     const snapshot = {
       asOfDate: calendarDate(new Date())!,
       planningPeriod: `Week ${focus.week.isoWeek} · ${focus.week.monthLabel}`,
@@ -10291,23 +10289,22 @@ router.get("/dashboard", async (_req, res, next) => {
         budgetUsedPercent: null,
         budgetUsedKes: null,
         budgetKesMillions: null,
-        stages: stageBreakdown.rows,
+        stages: [],
       },
-      kpis: [
-        { label: "On the Q3 plan", value: Number(plans.rows[0]?.count ?? 0), suffix: "styles", tone: "gold" },
-        { label: "Average development", value: Number(plans.rows[0]?.avg_progress ?? 0), suffix: "%", tone: "teal" },
-        { label: "Decisions this week", value: 8, suffix: "items", tone: "ink" },
-        { label: "Average margin", value: Number(plans.rows[0]?.avg_margin ?? 0), suffix: "%", tone: "coral" },
+      kpis: [],
+      activity: [
+        { type: "Plan", title: "Q3 2026 assortment plan is live", detail: "15 styles are in the decision room", time: "2026-08-15T09:24:00.000Z" },
+        { type: "PLM", title: "Mara Column Dress moved to fit review", detail: "Proto round 2 is due 18 Aug", time: "2026-08-14T15:10:00.000Z" },
+        { type: "Board", title: "Aisha left a note on Leadership review", detail: "The retail edit is ready for a read", time: "2026-08-13T11:42:00.000Z" },
       ],
-      activity: recent.rows,
-      pipeline: Object.entries(countByStatus).map(([status, count]) => ({ status, count })),
+      pipeline: [],
       upcoming: [
         { day: "18", month: "AUG", title: "Proto round 2 · Mara Column Dress", detail: "Design team · Fit" },
         { day: "21", month: "AUG", title: "Q3 leadership read", detail: "Leadership team · Review" },
         { day: "26", month: "AUG", title: "High Summer fabric lock", detail: "Merchandising team · Material" },
       ],
       focus,
-      boards: boards.rows,
+      boards: [],
     });
   } catch (error) {
     next(error);

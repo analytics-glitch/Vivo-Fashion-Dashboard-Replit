@@ -359,13 +359,14 @@ function Progress({ value = 0 }: { value?: number | null }) { const safe = Math.
 function StatusPill({ value }: { value: unknown }) { const label = fmt(value, 'In progress'); return <span className={`status-pill status-${label.toLowerCase().replaceAll(' ', '-')}`}><i />{label}</span>; }
 
 type FocusWeek = { isoYear: number; isoWeek: number; stylesCommitted: number; unitsCommitted: number; weeklyPaceUnits: number; monthlyPlanUnits: number; monthLabel: string; varianceUnits: number; status: string };
-type FocusNewness = { newUnits: number; totalUnits: number; pct: number; targetUnits: number; targetPctOfCapacity: number; plannedNewStyles: number; impliedStyles: number; shortfallUnits: number; shortfallStyles: number; meetsTarget: boolean; monthLabel: string; explanation: string };
+type FocusNewness = { newUnits: number; totalUnits: number; capacityUnits: number; pct: number; targetUnits: number; targetPctOfCapacity: number; plannedNewStyles: number; impliedStyles: number; shortfallUnits: number; shortfallStyles: number; meetsTarget: boolean; monthLabel: string; explanation: string };
 type FocusGap = { subCategory: string; plannedNewStyles: number; availableNewStyles: number; balance: number; status: string };
 type FocusWaiting = { sampleApprovals: number; setSampleApprovals: number; fabricBlocks: number; total: number };
 type FocusScorecard = { key: string; owner: string; measurable: string; goal: string; value: number | null; uom: string; onTrack: boolean | null; available: boolean; note?: string };
 type WorkspaceDashboardFocus = { week: FocusWeek; newness: FocusNewness; gaps: FocusGap[]; waiting: FocusWaiting; scorecard: FocusScorecard[] };
 
 function Dashboard() {
+  const [showAllGaps, setShowAllGaps] = useState(false);
   const dashboard = useGetWorkspaceDashboard({ query: { queryKey: getGetWorkspaceDashboardQueryKey() } });
   const birthdays = useQuery<TodayBirthday[]>({
     queryKey: ['workspace', 'team', 'birthdays', 'today'],
@@ -383,6 +384,8 @@ function Dashboard() {
   const data = dashboard.data;
   const snapshot: WorkspaceDashboardSnapshot = data.snapshot;
   const focus = (data as any).focus as WorkspaceDashboardFocus | undefined;
+  const materialGaps = focus?.gaps.filter((gap) => Math.abs(gap.balance) > 1) ?? [];
+  const visibleGaps = showAllGaps ? focus?.gaps ?? [] : materialGaps;
 
   const snapshotDate = new Date(`${snapshot.asOfDate}T12:00:00`);
   const snapshotDateLabel = Number.isNaN(snapshotDate.getTime())
@@ -427,7 +430,7 @@ function Dashboard() {
               </h3>
               <div className="dash-tile-main">
                 <span className="dash-tile-value">{Math.round(focus.week.unitsCommitted).toLocaleString()}</span>
-                <span className="dash-tile-sub">units committed across {focus.week.stylesCommitted} styles</span>
+                <span className="dash-tile-sub">units planned across {focus.week.stylesCommitted} styles</span>
               </div>
               <div className={`dash-tile-status ${focus.week.varianceUnits < 0 ? 'danger' : 'success'}`}>
                 {focus.week.varianceUnits < 0 ? <CircleAlert size={14} /> : <Check size={14} />}
@@ -457,33 +460,20 @@ function Dashboard() {
                   </span>
                 </div>
               </div>
-            </div>
-
-            <div className="dash-action-tile" data-testid="tile-gaps">
-              <h3 className="dash-tile-title">
-                Style Gaps
-                <Columns3 size={14} />
-              </h3>
-              <div className="dash-gap-list">
-                {focus.gaps.length > 0 ? (
-                  focus.gaps.map((gap) => (
-                    <div key={gap.subCategory} className={`dash-gap-item ${gap.balance < 0 ? 'shortfall' : gap.balance > 0 ? 'surplus' : ''}`}>
-                      <span><b>{gap.subCategory}</b><small>{gap.availableNewStyles} ready / {gap.plannedNewStyles} planned</small></span>
-                      <strong>{gap.balance > 0 ? '+' : ''}{gap.balance}</strong>
-                    </div>
-                  ))
-                ) : (
-                  <span className="dash-tile-sub" style={{ padding: '8px 0' }}>All categories balanced</span>
-                )}
+              <div className={`dash-capacity-line ${focus.newness.totalUnits > focus.newness.capacityUnits ? 'over' : ''}`}>
+                {Math.round(focus.newness.totalUnits).toLocaleString()} planned vs {Math.round(focus.newness.capacityUnits).toLocaleString()} capacity
+                {focus.newness.totalUnits > focus.newness.capacityUnits
+                  ? ` · ${Math.round(focus.newness.totalUnits - focus.newness.capacityUnits).toLocaleString()} over`
+                  : ' · within capacity'}
               </div>
             </div>
 
             <Link href="/product-workspace/style-development" className="dash-action-tile" data-testid="tile-waiting">
               <h3 className="dash-tile-title">
-                Waiting on you
+                Needs attention
                 <Clock3 size={14} />
               </h3>
-              <div className="dash-waiting-list" style={{ marginTop: 'auto' }}>
+              <div className="dash-waiting-list">
                 <div className={`dash-waiting-item ${focus.waiting.sampleApprovals > 0 ? 'critical' : ''}`}>
                   <span>Sample approvals</span>
                   <strong>{focus.waiting.sampleApprovals}</strong>
@@ -499,6 +489,34 @@ function Dashboard() {
               </div>
             </Link>
           </div>
+        )}
+
+        {focus && (
+          <section className="dash-gaps-section" data-testid="section-style-gaps">
+            <div className="dash-gaps-header">
+              <div><span className="eyebrow">Current month</span><h3>Style Gaps</h3></div>
+              {focus.gaps.length > materialGaps.length && (
+                <button type="button" className="dash-gaps-toggle" onClick={() => setShowAllGaps((current) => !current)} data-testid="button-toggle-all-gaps">
+                  {showAllGaps ? 'Show material gaps' : `Show all (${focus.gaps.length})`}
+                </button>
+              )}
+            </div>
+            <div className="dash-gaps-table-wrap">
+              <table className="dash-gaps-table">
+                <thead><tr><th>Subcategory</th><th>Scheduled</th><th>Planned</th><th>Gap</th></tr></thead>
+                <tbody>
+                  {visibleGaps.length ? visibleGaps.map((gap) => (
+                    <tr key={gap.subCategory}>
+                      <td>{gap.subCategory}</td>
+                      <td>{gap.availableNewStyles}</td>
+                      <td>{gap.plannedNewStyles}</td>
+                      <td><span className={`dash-gap-value ${gap.balance < 0 ? 'shortfall' : gap.balance > 0 ? 'surplus' : ''}`}><i />{gap.balance > 0 ? '+' : ''}{gap.balance}</span></td>
+                    </tr>
+                  )) : <tr><td colSpan={4} className="dash-gaps-empty">No material style gaps.</td></tr>}
+                </tbody>
+              </table>
+            </div>
+          </section>
         )}
 
         {focus?.scorecard && (
