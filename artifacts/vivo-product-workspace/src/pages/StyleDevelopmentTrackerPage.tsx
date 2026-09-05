@@ -362,6 +362,13 @@ export default function StyleDevelopmentTrackerPage() {
   const focusedPatternMaker = new URLSearchParams(window.location.search).get('patternMaker') || '';
   const [view, setView] = useState<'board' | 'list' | 'approvals' | 'standards' | 'capacity'>(initialView);
   const [search, setSearch] = useState('');
+  const [filtersOpen, setFiltersOpen] = useState(() => {
+    try {
+      return window.sessionStorage.getItem('vivo-style-development-filters-open') === 'true';
+    } catch {
+      return false;
+    }
+  });
   const [cardFields, setCardFields] = useState<CardFieldVisibility>(() => {
     try {
       const stored = window.localStorage.getItem('vivo-style-development-card-fields');
@@ -379,6 +386,14 @@ export default function StyleDevelopmentTrackerPage() {
       // Preferences are optional; the board remains usable when storage is unavailable.
     }
   }, [cardFields]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem('vivo-style-development-filters-open', String(filtersOpen));
+    } catch {
+      // Session preferences are optional; filters still work when storage is unavailable.
+    }
+  }, [filtersOpen]);
 
   const [filters, setFilters] = useState({
     stage: 'All',
@@ -513,6 +528,8 @@ export default function StyleDevelopmentTrackerPage() {
       return matchSearch && matchStage && matchWeek && matchCategory && matchSubCategory && matchBrand && matchType && matchTier && matchPatternMaker && matchDesigner && matchCollection && matchTheme && matchKnitOrWoven && matchPrintOrSolid && matchStatus && matchBlocked;
     });
   }, [items, search, filters]);
+  const activeFilterCount = (search.trim() ? 1 : 0)
+    + Object.values(filters).filter(value => value !== 'All').length;
 
   const grouped = useMemo(() => {
     const values = new Map<string, TrackerStyle[]>();
@@ -605,6 +622,9 @@ export default function StyleDevelopmentTrackerPage() {
            <span className="tracker-kicker">Product Development Tracker / Q3 2026</span>
            <div className="tracker-header-title-row">
               <h1>Style development</h1>
+               <span className="tracker-header-count">
+                 {activeFilterCount > 0 ? <><strong>{filtered.length}</strong> of {items.length} styles</> : <><strong>{items.length}</strong> styles</>}
+               </span>
               {unassignedPmCount > 0 && (
                 <button className="tracker-header-metric" onClick={() => {
                   setView('board');
@@ -630,10 +650,45 @@ export default function StyleDevelopmentTrackerPage() {
 
       {(view === 'board' || view === 'list') && (
         <div className="tracker-filters-bar">
-          <div className="tracker-search">
-            <Search size={16} color="#8c8375" />
-            <input type="text" placeholder="Search numbers, styles, fabric..." value={search} onChange={e => setSearch(e.target.value)} />
+          <div className="tracker-filters-primary">
+            <div className="tracker-search">
+              <Search size={16} color="#8c8375" />
+              <input type="text" placeholder="Search numbers, styles, fabric..." value={search} onChange={e => setSearch(e.target.value)} />
+            </div>
+            <button
+              type="button"
+              className={`tracker-filters-toggle ${filtersOpen ? 'active' : ''}`}
+              aria-expanded={filtersOpen}
+              aria-controls="style-development-filters"
+              onClick={() => setFiltersOpen(open => !open)}
+            >
+              <SlidersHorizontal size={15} />
+              Filters
+              {activeFilterCount > 0 && <span>{activeFilterCount}</span>}
+            </button>
+            <div className="tracker-filter-select tracker-stacking-field">
+              <label>Choose a stacking field</label>
+              <select value={groupBy} onChange={e => setGroupBy(e.target.value as GroupByKey)}>
+                <option value="stage">Stage</option>
+                <option value="status">Status</option>
+                <option value="targetOrderWeek">Target Week</option>
+                <option value="category">Category</option>
+                <option value="subCategory">Sub-category</option>
+                <option value="type">Type</option>
+                <option value="tier">Tier</option>
+                <option value="brand">Brand</option>
+                <option value="patternMaker">Pattern Maker</option>
+                <option value="designer">Designer</option>
+                <option value="collection">Collection</option>
+                <option value="theme">Theme</option>
+                <option value="knitOrWoven">Knit or woven</option>
+                <option value="printOrSolid">Print or solid</option>
+                <option value="launchMonth">Launch month</option>
+                <option value="blocked">Blocked</option>
+              </select>
+            </div>
           </div>
+          {filtersOpen && <div className="tracker-filters-panel" id="style-development-filters">
           <div className="tracker-filter-select">
             <label>Stage</label>
             <select value={filters.stage} onChange={e => setFilters({...filters, stage: e.target.value})}>
@@ -747,28 +802,7 @@ export default function StyleDevelopmentTrackerPage() {
             </select>
           </div>
           <button className="tracker-filter-clear" onClick={clearFilters}>Clear</button>
-
-          <div className="tracker-filter-select" style={{ marginLeft: 'auto' }}>
-            <label>Choose a stacking field</label>
-            <select value={groupBy} onChange={e => setGroupBy(e.target.value as GroupByKey)}>
-              <option value="stage">Stage</option>
-              <option value="status">Status</option>
-              <option value="targetOrderWeek">Target Week</option>
-              <option value="category">Category</option>
-              <option value="subCategory">Sub-category</option>
-              <option value="type">Type</option>
-              <option value="tier">Tier</option>
-              <option value="brand">Brand</option>
-              <option value="patternMaker">Pattern Maker</option>
-              <option value="designer">Designer</option>
-              <option value="collection">Collection</option>
-              <option value="theme">Theme</option>
-              <option value="knitOrWoven">Knit or woven</option>
-              <option value="printOrSolid">Print or solid</option>
-              <option value="launchMonth">Launch month</option>
-              <option value="blocked">Blocked</option>
-            </select>
-          </div>
+          </div>}
         </div>
       )}
 
