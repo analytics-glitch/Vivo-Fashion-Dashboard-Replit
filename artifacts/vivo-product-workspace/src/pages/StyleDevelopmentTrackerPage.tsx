@@ -70,6 +70,7 @@ type TrackerStyle = {
   indicativeCogsKes?: number | null;
   indicativeCogsPct?: number | null;
   patternEffortDays?: number | null;
+  fabricConsumptionOverrideMetresPerUnit?: number | null;
   categoryMetresPerGarment?: number | null;
   adoptionReadiness?: { ready: boolean; missing: string[]; warnings: string[] };
   actionGatesEnabled?: boolean;

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, Route, Switch, Router as WouterRouter, useLocation, useParams } from 'wouter';
@@ -18,37 +18,45 @@ import {
 import type { WorkspaceBoard, WorkspaceDashboardSnapshot, WorkspacePlan, WorkspacePlanIndexItem, WorkspaceStyle, WorkspaceColorway } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import NotFound from '@/pages/not-found';
-import StyleDevelopmentTrackerPage from '@/pages/StyleDevelopmentTrackerPage';
-import SettingsPage from '@/pages/SettingsPage';
-import ShowcasePage from '@/pages/ShowcasePage';
-import FullCataloguePage from '@/pages/FullCataloguePage';
-import TeamDirectoryPage from '@/pages/TeamDirectoryPage';
-import L10Page from '@/pages/L10Page';
-import AssortmentPlanPage from '@/pages/AssortmentPlanPage';
-import RangePlanPage from '@/pages/RangePlanPage';
-import DefinitionsPage from '@/pages/DefinitionsPage';
-import ResourcesPage from '@/pages/ResourcesPage';
 import FeedbackPage, { PublicFeedbackPage, StyleFeedbackPanel, useStyleFeedback } from '@/pages/FeedbackPage';
-import WeeklyOrderPlanPage from '@/pages/WeeklyOrderPlanPage';
 import './index.css';
 import MultiSelectFilter from '@/components/MultiSelectFilter';
 import CatalogueSortControl, { type CatalogueSortKey } from '@/components/CatalogueSortControl';
 import GarmentImage from '@/components/GarmentImage';
 
-const queryClient = new QueryClient();
+const StyleDevelopmentTrackerPage = lazy(() => import('@/pages/StyleDevelopmentTrackerPage'));
+const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
+const ShowcasePage = lazy(() => import('@/pages/ShowcasePage'));
+const FullCataloguePage = lazy(() => import('@/pages/FullCataloguePage'));
+const TeamDirectoryPage = lazy(() => import('@/pages/TeamDirectoryPage'));
+const L10Page = lazy(() => import('@/pages/L10Page'));
+const AssortmentPlanPage = lazy(() => import('@/pages/AssortmentPlanPage'));
+const RangePlanPage = lazy(() => import('@/pages/RangePlanPage'));
+const DefinitionsPage = lazy(() => import('@/pages/DefinitionsPage'));
+const ResourcesPage = lazy(() => import('@/pages/ResourcesPage'));
+const WeeklyOrderPlanPage = lazy(() => import('@/pages/WeeklyOrderPlanPage'));
+
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      staleTime: 5 * 60_000,
+      refetchOnWindowFocus: false,
+    },
+  },
+});
 const nav = [
-  { href: '/product-workspace/', label: 'Workspace', icon: LayoutDashboard },
-  { href: '/product-workspace/plan', label: 'Assortment plan', icon: CalendarDays },
-  { href: '/product-workspace/rocks', label: 'Rocks', icon: Columns3 },
-  { href: '/product-workspace/style-development', label: 'Style development', icon: Package },
-  { href: '/product-workspace/feedback', label: 'Style feedback', icon: MessageCircle },
-  { href: '/product-workspace/showcase', label: 'Showcase', icon: GalleryHorizontalEnd },
-  { href: '/product-workspace/team', label: 'Meet the team', icon: UsersRound },
-  { href: '/product-workspace/l10', label: 'L10 Meeting', icon: ListChecks },
-  { href: '/product-workspace/range-plan', label: 'Range Plan', icon: BarChart3 },
-  { href: '/product-workspace/definitions', label: 'Definitions & data trust', icon: ShieldCheck },
+  { href: '/product-workspace/', label: 'Home', icon: LayoutDashboard },
+  { href: '/product-workspace/style-development', label: 'Style Development', icon: Package },
   { href: '/product-workspace/weekly-order-plan', label: 'Weekly Order Plan', icon: CalendarCheck2 },
+  { href: '/product-workspace/range-plan', label: 'Range Plan', icon: BarChart3 },
+  { href: '/product-workspace/plan', label: 'Assortment Plan', icon: CalendarDays },
+  { href: '/product-workspace/showcase', label: 'Showcase', icon: GalleryHorizontalEnd },
+  { href: '/product-workspace/l10', label: 'L10 Meeting', icon: ListChecks },
+  { href: '/product-workspace/rocks', label: 'Rocks', icon: Columns3 },
+  { href: '/product-workspace/feedback', label: 'Style Feedback', icon: MessageCircle },
+  { href: '/product-workspace/team', label: 'Meet the Team', icon: UsersRound },
   { href: '/product-workspace/resources', label: 'Resources', icon: Library },
+  { href: '/product-workspace/definitions', label: 'Definitions & Data Trust', icon: ShieldCheck },
 ];
 const workspaceMarkets = ['KE', 'UG', 'RW'].join(' · ');
 type TodayBirthday = { name: string; role: string };
@@ -824,7 +832,8 @@ function PulseAwareFeedbackRoute() {
   return isPulse ? <PublicFeedbackPage /> : <FeedbackPage />;
 }
 function LegacyCatalogueRedirect() { const [, setLocation] = useLocation(); useEffect(() => { setLocation('/product-workspace/plan', { replace: true }); }, [setLocation]); return null; }
-function Router() { const [location] = useLocation(); return <ErrorBoundary resetKey={location}><Switch><Route path="/feedback" component={PublicFeedbackPage} /><Route path="/feedback/" component={PublicFeedbackPage} /><Route path="/styles" component={LegacyCatalogueRedirect} /><Route path="/styles/:id" component={LegacyCatalogueRedirect} /><Route path="/product-workspace/login" component={Login} /><Route path="/product-workspace/" component={Dashboard} /><Route path="/product-workspace/plan" component={AssortmentPlanPage} /><Route path="/product-workspace/rocks" component={BoardPage} /><Route path="/product-workspace/board" component={BoardPage} /><Route path="/product-workspace/style-development" component={StyleDevelopmentTrackerPage} /><Route path="/product-workspace/plm" component={StyleDevelopmentTrackerPage} /><Route path="/product-workspace/feedback" component={PulseAwareFeedbackRoute} /><Route path="/product-workspace/settings" component={SettingsPage} /><Route path="/product-workspace/team" component={TeamDirectoryPage} /><Route path="/product-workspace/l10" component={L10Page} /><Route path="/product-workspace/range-plan" component={RangePlanPage} /><Route path="/product-workspace/definitions" component={DefinitionsPage} /><Route path="/product-workspace/weekly-order-plan" component={WeeklyOrderPlanPage} /><Route path="/product-workspace/showcase" component={ShowcasePage} /><Route path="/product-workspace/showcase/:id" component={ShowcasePage} /><Route path="/product-workspace/styles" component={LegacyCatalogueRedirect} /><Route path="/product-workspace/styles/:id" component={LegacyCatalogueRedirect} /><Route path="/product-workspace/resources" component={ResourcesPage} /><Route path="/product-workspace/resources/:id" component={ResourcesPage} /><Route component={NotFound} /></Switch></ErrorBoundary>; }
+function RouteLoadingState() { return <section className="page"><div className="range-plan-loading"><Clock3 size={20} />Loading workspace…</div></section>; }
+function Router() { const [location] = useLocation(); return <ErrorBoundary resetKey={location}><Suspense fallback={<RouteLoadingState />}><Switch><Route path="/feedback" component={PublicFeedbackPage} /><Route path="/feedback/" component={PublicFeedbackPage} /><Route path="/styles" component={LegacyCatalogueRedirect} /><Route path="/styles/:id" component={LegacyCatalogueRedirect} /><Route path="/product-workspace/login" component={Login} /><Route path="/product-workspace/" component={Dashboard} /><Route path="/product-workspace/plan" component={AssortmentPlanPage} /><Route path="/product-workspace/rocks" component={BoardPage} /><Route path="/product-workspace/board" component={BoardPage} /><Route path="/product-workspace/style-development" component={StyleDevelopmentTrackerPage} /><Route path="/product-workspace/plm" component={StyleDevelopmentTrackerPage} /><Route path="/product-workspace/feedback" component={PulseAwareFeedbackRoute} /><Route path="/product-workspace/settings" component={SettingsPage} /><Route path="/product-workspace/team" component={TeamDirectoryPage} /><Route path="/product-workspace/l10" component={L10Page} /><Route path="/product-workspace/range-plan" component={RangePlanPage} /><Route path="/product-workspace/definitions" component={DefinitionsPage} /><Route path="/product-workspace/weekly-order-plan" component={WeeklyOrderPlanPage} /><Route path="/product-workspace/showcase" component={ShowcasePage} /><Route path="/product-workspace/showcase/:id" component={ShowcasePage} /><Route path="/product-workspace/styles" component={LegacyCatalogueRedirect} /><Route path="/product-workspace/styles/:id" component={LegacyCatalogueRedirect} /><Route path="/product-workspace/resources" component={ResourcesPage} /><Route path="/product-workspace/resources/:id" component={ResourcesPage} /><Route component={NotFound} /></Switch></Suspense></ErrorBoundary>; }
 function AppEntry() { const [location] = useLocation(); const publicFeedback = location === '/feedback' || location === '/feedback/'; const publicPulse = location === '/product-workspace/feedback' && new URLSearchParams(window.location.search).has('style') && ['investigate', 'champion'].includes(new URLSearchParams(window.location.search).get('mode') || ''); return publicFeedback || publicPulse ? <Router /> : <Shell><Router /></Shell>; }
 function App() { return <QueryClientProvider client={queryClient}><WouterRouter><AppEntry /></WouterRouter></QueryClientProvider>; }
 export default App;

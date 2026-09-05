@@ -56,6 +56,7 @@ import { calendarDate, legacyCalendarDate, styleDateInput } from "./calendar-dat
 import {
   DEFAULT_NEW_STYLE_ORDER_UNITS,
   calculateNewnessCommitment,
+  isNewnessOrderType,
   weeklyNewnessTarget,
 } from "./range-plan-newness.js";
 
@@ -67,6 +68,8 @@ if (!databaseUrl) {
 const pool = new Pool({
   connectionString: databaseUrl,
   connectionTimeoutMillis: 3000,
+  max: 24,
+  idleTimeoutMillis: 30_000,
 });
 
 const app = express();
@@ -82,6 +85,8 @@ app.use(cookieParser());
 
 const router = express.Router();
 const schema = "product_workspace";
+const newnessSql = (expression: string) =>
+  `LOWER(REGEXP_REPLACE(BTRIM(COALESCE(${expression},'')),'[_-]+',' ','g')) IN ('new','range refreshed','rr')`;
 /**
  * Workspace deliberately consumes commercial facts from BI rather than reading
  * Odoo replica tables.  Keep this boundary small: callers only ever see the
@@ -89,9 +94,10 @@ const schema = "product_workspace";
  * substituted with a database query.
  */
 type BiWorkspaceSource = { styles: Array<Record<string, any>>; orders: Array<Record<string, any>>; definitions?: unknown; reconciliations?: unknown; [key: string]: any };
-let biWorkspaceCache: { value: BiWorkspaceSource; expiresAt: number } | null = null;
+let biWorkspaceCache: { value: BiWorkspaceSource; expiresAt: number; staleUntil: number } | null = null;
 let biWorkspaceFlight: Promise<BiWorkspaceSource> | null = null;
-const BI_WORKSPACE_TTL_MS = 15_000;
+const BI_WORKSPACE_TTL_MS = 60_000;
+const BI_WORKSPACE_STALE_MS = 5 * 60_000;
 const biWorkspaceUrl = () => `http://127.0.0.1:${process.env.BI_API_PORT ?? "8080"}/api/internal/product-workspace-source`;
 class BiSourceUnavailable extends Error {
   status = 503;
@@ -128,13 +134,25 @@ function biRequest<T>(url: string, method: "GET" | "POST", body?: unknown): Prom
   });
 }
 async function biWorkspaceSource() {
-  if (biWorkspaceCache && biWorkspaceCache.expiresAt > Date.now()) return biWorkspaceCache.value;
+  const now = Date.now();
+  if (biWorkspaceCache && biWorkspaceCache.expiresAt > now) return biWorkspaceCache.value;
   if (!biWorkspaceFlight) {
     biWorkspaceFlight = biRequest<BiWorkspaceSource>(biWorkspaceUrl(), "GET").then((value) => {
       if (!Array.isArray(value.styles) || !Array.isArray(value.orders)) throw new BiSourceUnavailable("BI source has an invalid payload");
-      biWorkspaceCache = { value, expiresAt: Date.now() + BI_WORKSPACE_TTL_MS };
+      const refreshedAt = Date.now();
+      biWorkspaceCache = {
+        value,
+        expiresAt: refreshedAt + BI_WORKSPACE_TTL_MS,
+        staleUntil: refreshedAt + BI_WORKSPACE_TTL_MS + BI_WORKSPACE_STALE_MS,
+      };
       return value;
     }).finally(() => { biWorkspaceFlight = null; });
+  }
+  if (biWorkspaceCache && biWorkspaceCache.staleUntil > now) {
+    void biWorkspaceFlight.catch((error) => {
+      console.error("Unable to refresh BI workspace source; serving the last complete document", error);
+    });
+    return biWorkspaceCache.value;
   }
   return biWorkspaceFlight;
 }
@@ -1004,12 +1022,12 @@ async function rangePlanHealth() {
     if (!stageColumn) return empty;
      const activeWhere = `${allowedBrand("s")} AND LOWER(REPLACE(COALESCE(NULLIF(TRIM(s.${stageColumn}),''),''),'_',' ')) NOT IN ('dropped','archived')`;
     const styleCountExpression = columns.has("id") ? "COUNT(DISTINCT s.id)" : "COUNT(*)";
-    const repeatExpression = repeatColumn ? `LOWER(TRIM(COALESCE(s.${repeatColumn},'')))` : "''";
+    const repeatExpression = repeatColumn ? `s.${repeatColumn}` : "''";
     const newRepeat = repeatColumn
       ? await pool.query<{ newCount: number; repeatCount: number; total: number }>(
         `SELECT
-           COUNT(*) FILTER (WHERE ${repeatExpression}='new')::int AS "newCount",
-           COUNT(*) FILTER (WHERE ${repeatExpression}<>'new')::int AS "repeatCount",
+           COUNT(*) FILTER (WHERE ${newnessSql(repeatExpression)})::int AS "newCount",
+           COUNT(*) FILTER (WHERE NOT (${newnessSql(repeatExpression)}))::int AS "repeatCount",
            COUNT(*)::int AS total
          FROM public.pd_styles s WHERE ${activeWhere}`,
       )
@@ -1375,8 +1393,20 @@ async function ensureStyleDevelopmentTrackerData() {
        ADD COLUMN IF NOT EXISTS exit_reason TEXT,
        ADD COLUMN IF NOT EXISTS exited_at TIMESTAMPTZ,
        ADD COLUMN IF NOT EXISTS exit_stage TEXT,
+       ADD COLUMN IF NOT EXISTS fabric_consumption_override_m_per_unit NUMERIC(8,2)
+         CHECK (fabric_consumption_override_m_per_unit IS NULL OR fabric_consumption_override_m_per_unit > 0),
       ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       ALTER COLUMN target_order_week DROP NOT NULL;
+    CREATE TABLE IF NOT EXISTS ${schema}.subcategory_fabric_consumption_rates (
+      subcategory TEXT PRIMARY KEY,
+      expected_metres_per_unit NUMERIC(8,2)
+        CHECK (expected_metres_per_unit IS NULL OR expected_metres_per_unit > 0),
+      confidence TEXT NOT NULL CHECK (confidence IN ('high','medium','low','estimate','not_set')),
+      historical_order_count INTEGER NOT NULL DEFAULT 0 CHECK (historical_order_count >= 0),
+      is_estimate BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
+    );
     CREATE INDEX IF NOT EXISTS style_development_tracker_week_idx
       ON ${schema}.style_development_tracker (target_order_week, status);
     CREATE TABLE IF NOT EXISTS ${schema}.style_development_history (
@@ -1777,6 +1807,89 @@ async function ensureStyleDevelopmentTrackerData() {
   } finally {
     client.release();
   }
+}
+
+async function ensureFabricConsumptionRates() {
+  await pool.query(`
+    ALTER TABLE ${schema}.style_development_tracker
+      ADD COLUMN IF NOT EXISTS fabric_consumption_override_m_per_unit NUMERIC(8,2)
+        CHECK (fabric_consumption_override_m_per_unit IS NULL OR fabric_consumption_override_m_per_unit > 0);
+    CREATE TABLE IF NOT EXISTS ${schema}.subcategory_fabric_consumption_rates (
+      subcategory TEXT PRIMARY KEY,
+      expected_metres_per_unit NUMERIC(8,2)
+        CHECK (expected_metres_per_unit IS NULL OR expected_metres_per_unit > 0),
+      confidence TEXT NOT NULL CHECK (confidence IN ('high','medium','low','estimate','not_set','business_confirmed')),
+      historical_order_count INTEGER NOT NULL DEFAULT 0 CHECK (historical_order_count >= 0),
+      is_estimate BOOLEAN NOT NULL DEFAULT FALSE,
+      is_business_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
+    );
+    ALTER TABLE ${schema}.subcategory_fabric_consumption_rates
+      ADD COLUMN IF NOT EXISTS is_business_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      DROP CONSTRAINT IF EXISTS subcategory_fabric_consumption_rates_confidence_check;
+    ALTER TABLE ${schema}.subcategory_fabric_consumption_rates
+      ADD CONSTRAINT subcategory_fabric_consumption_rates_confidence_check
+      CHECK (confidence IN ('high','medium','low','estimate','not_set','business_confirmed'));
+  `);
+  const taxonomy = [
+    "Bodysuits","Fitted Tops","Kaftan Tops","Loose & Oversized Tops","Loose Tops",
+    "Midriff & Crop Tops","Relaxed Tops","T-shirts & Tank Tops","Kaftan Dresses",
+    "Knee Length Dresses","Maxi Dresses","Midi & Capri Dresses","Short & Mini Dresses",
+    "Culottes & Capri Pants","Full Length Pants","Jumpsuits & Playsuits","Leggings",
+    "Shorts & Skorts","Hoodies & Sweatshirts","Jackets & Coats","Sweaters & Ponchos",
+    "Waterfalls & Kimonos","Knee Length Skirts","Maxi Skirts","Midi & Capri Skirts",
+    "Short & Mini Skirts","Men's Tops","Men's Bottoms","Men's Outerwear","Accessories",
+    "Bangles & Bracelets","Belts","Body Mists & Fragrances","Earrings","Necklaces","Rings","Scarves",
+  ];
+  const seeds: Record<string, [number, number, boolean, boolean?]> = {
+    "Full Length Pants":[1.55,19,false],"Relaxed Tops":[1.30,18,false],
+    "Knee Length Dresses":[1.60,17,false],"Maxi Dresses":[2.85,10,false],
+    "Loose & Oversized Tops":[1.50,10,false,true],"Waterfalls & Kimonos":[1.25,6,false],
+    "Kaftan Dresses":[2.50,4,false],"Sweaters & Ponchos":[1.10,3,false],
+    "Jumpsuits & Playsuits":[2.85,1,false],"Midi & Capri Dresses":[1.90,1,false],
+    "Jackets & Coats":[1.50,2,false],"Fitted Tops":[1.25,2,false],
+    "Hoodies & Sweatshirts":[0.90,1,false],"T-shirts & Tank Tops":[0.65,2,false],
+    "Knee Length Skirts":[0.80,2,false],"Maxi Skirts":[0.80,2,false],
+    "Midi & Capri Skirts":[0.80,2,false],"Short & Mini Skirts":[0.80,2,false],
+    "Short & Mini Dresses":[1.40,0,true],"Kaftan Tops":[1.60,0,true],
+    "Bodysuits":[0.80,0,true],"Midriff & Crop Tops":[0.75,0,true],
+    "Culottes & Capri Pants":[1.35,0,true],"Shorts & Skorts":[0.95,0,true],
+    "Leggings":[0.85,0,true],
+  };
+  for (const subcategory of taxonomy) {
+    const seed = seeds[subcategory];
+    const rate = seed?.[0] ?? null;
+    const orders = seed?.[1] ?? 0;
+    const estimate = seed?.[2] ?? false;
+    const businessConfirmed = seed?.[3] ?? false;
+    const confidence = businessConfirmed ? "business_confirmed" : estimate ? "estimate" : rate === null ? "not_set" : orders >= 10 ? "high" : orders >= 3 ? "medium" : "low";
+    await pool.query(
+      `INSERT INTO ${schema}.subcategory_fabric_consumption_rates
+        (subcategory,expected_metres_per_unit,confidence,historical_order_count,is_estimate,is_business_confirmed)
+       VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT (subcategory) DO NOTHING`,
+      [subcategory, rate, confidence, orders, estimate, businessConfirmed],
+    );
+  }
+  await pool.query(
+    `UPDATE ${schema}.subcategory_fabric_consumption_rates
+        SET expected_metres_per_unit=1.50,confidence='business_confirmed',
+            is_estimate=FALSE,is_business_confirmed=TRUE,updated_at=NOW()
+      WHERE subcategory='Loose & Oversized Tops'
+        AND expected_metres_per_unit=1.10
+        AND is_business_confirmed=FALSE`,
+  );
+}
+
+let fabricConsumptionReady: Promise<void> | null = null;
+function ensureFabricConsumptionRatesReady() {
+  if (!fabricConsumptionReady) {
+    fabricConsumptionReady = ensureFabricConsumptionRates().catch((error) => {
+      fabricConsumptionReady = null;
+      throw error;
+    });
+  }
+  return fabricConsumptionReady;
 }
 
 async function ensureRangePlanNewnessData() {
@@ -3669,6 +3782,7 @@ async function ensureSchema() {
   await ensureRangePlanData();
   await ensureStockSalesReportArchive();
   await ensureStyleDevelopmentTrackerData();
+  await ensureFabricConsumptionRates();
 
   for (const fabric of fabrics) {
     await pool.query(
@@ -5227,6 +5341,57 @@ router.post("/feedback/public", async (req, res, next) => {
 
 router.use(requireUser);
 
+router.get("/fabric-consumption-rates", async (_req, res, next) => {
+  try {
+    await ensureFabricConsumptionRatesReady();
+    const result = await pool.query(
+      `SELECT r.subcategory,
+        r.expected_metres_per_unit::float AS "expectedMetresPerUnit",
+        r.confidence,r.historical_order_count AS "historicalOrderCount",
+        r.is_estimate AS "isEstimate",r.is_business_confirmed AS "businessConfirmed",
+        r.updated_at AS "updatedAt",
+        COALESCE(u.name,'System seed') AS "updatedBy"
+       FROM ${schema}.subcategory_fabric_consumption_rates r
+       LEFT JOIN ${schema}.users u ON u.id=r.updated_by
+       ORDER BY r.subcategory`,
+    );
+    res.json({ items: result.rows });
+  } catch (error) { next(error); }
+});
+
+router.patch("/fabric-consumption-rates/:subcategory", async (req: AuthRequest, res, next) => {
+  try {
+    await ensureFabricConsumptionRatesReady();
+    const subcategory = decodeURIComponent(String(req.params.subcategory ?? "")).trim();
+    const rate = req.body?.expectedMetresPerUnit === null || req.body?.expectedMetresPerUnit === ""
+      ? null : Number(req.body?.expectedMetresPerUnit);
+    const orders = Number(req.body?.historicalOrderCount ?? 0);
+    const estimate = Boolean(req.body?.isEstimate);
+    const businessConfirmed = Boolean(req.body?.businessConfirmed);
+    if (!subcategory) throw new Error("Subcategory is required");
+    if (rate !== null && (!Number.isFinite(rate) || rate <= 0)) throw new Error("Rate must be greater than zero");
+    if (!Number.isInteger(orders) || orders < 0) throw new Error("Historical order count must be a non-negative whole number");
+    const confidence = businessConfirmed ? "business_confirmed" : estimate ? "estimate" : rate === null ? "not_set" : orders >= 10 ? "high" : orders >= 3 ? "medium" : "low";
+    const result = await pool.query(
+      `UPDATE ${schema}.subcategory_fabric_consumption_rates
+          SET expected_metres_per_unit=$2,confidence=$3,historical_order_count=$4,
+              is_estimate=$5,is_business_confirmed=$6,updated_at=NOW(),updated_by=$7
+        WHERE subcategory=$1
+        RETURNING subcategory,expected_metres_per_unit::float AS "expectedMetresPerUnit",
+          confidence,historical_order_count AS "historicalOrderCount",is_estimate AS "isEstimate",
+          is_business_confirmed AS "businessConfirmed",updated_at AS "updatedAt"`,
+      [subcategory, rate, confidence, orders, estimate, businessConfirmed, req.workspaceUser?.id ?? null],
+    );
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Subcategory rate not found" });
+      return;
+    }
+    res.json({ ...result.rows[0], updatedBy: req.workspaceUser?.name ?? "Workspace user" });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Rate could not be updated" });
+  }
+});
+
 function styleDevelopmentStateFromTrackerStatus(value: unknown): { stage: StyleDevelopmentStage; status: StyleDevelopmentStatus } {
   const normalized = String(value ?? "").trim().toLowerCase();
   const states: Record<string, { stage: StyleDevelopmentStage; status: StyleDevelopmentStatus }> = {
@@ -5543,6 +5708,7 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
       t.brand,du.name AS designer,t.designer_user_id AS "designerUserId",
       t.collection_name AS collection,t.theme,t.knit_or_woven AS "knitOrWoven",
       t.print_or_solid AS "printOrSolid",
+      t.fabric_consumption_override_m_per_unit::float AS "fabricConsumptionOverrideMetresPerUnit",
       COALESCE(wu.name,route.name,NULLIF(BTRIM(t.pattern_maker),'')) AS "patternMaker",
       CASE
         WHEN t.pattern_maker_user_id IS NOT NULL THEN 'user:' || t.pattern_maker_user_id::text
@@ -6412,6 +6578,7 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
       season: "season",
       intendedSellingPriceKes: "intended_selling_price_kes",
       patternEffortDays: "pattern_effort_days",
+      fabricConsumptionOverrideMetresPerUnit: "fabric_consumption_override_m_per_unit",
       exitStatus: "exit_status",
       exitReason: "exit_reason",
       reason: "exit_reason",
@@ -6501,6 +6668,11 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
         value = value === null || value === "" ? null : Number(value);
         const sellingPrice = value === null ? null : Number(value);
         if (sellingPrice !== null && (!Number.isFinite(sellingPrice) || sellingPrice < 0)) throw new Error("Intended selling price must be a non-negative number");
+      } else if (key === "fabricConsumptionOverrideMetresPerUnit") {
+        value = value === null || value === "" ? null : Number(value);
+        if (value !== null && (!Number.isFinite(Number(value)) || Number(value) <= 0)) {
+          throw new Error("Fabric consumption override must be greater than zero");
+        }
       }
       else if (key === "exitReason" || key === "reason") value = value ? String(value).trim() : null;
       else if (key === "adoptionDate") value = styleDateInput(value, "Adoption Date");
@@ -6939,8 +7111,8 @@ function assortmentStylePayload(row: Record<string, unknown>) {
   };
 }
 
-async function assortmentPlanData(quarter: string, activeOnly = false) {
-  const bi = await biWorkspaceSource();
+async function assortmentPlanData(quarter: string, activeOnly = false, source?: BiWorkspaceSource) {
+  const bi = source ?? await biWorkspaceSource();
   const membership = await pool.query(
     `SELECT LOWER(BTRIM(style_id)) AS style_key,'excluded' AS intent
        FROM ${schema}.assortment_exclusions
@@ -7379,7 +7551,7 @@ router.get("/range-plan", async (req, res, next) => {
          ordered AS (
            SELECT sub_category,
              COUNT(DISTINCT style_key)::int AS ordered_styles,
-             COUNT(DISTINCT style_key) FILTER (WHERE LOWER(COALESCE(lifecycle_type,''))='new')::int AS ordered_new_styles,
+              COUNT(DISTINCT style_key) FILTER (WHERE ${newnessSql("lifecycle_type")})::int AS ordered_new_styles,
              COALESCE(SUM(order_qty),0)::numeric AS ordered_units
            FROM ordered_base
            WHERE sub_category IS NOT NULL
@@ -7405,7 +7577,7 @@ router.get("/range-plan", async (req, res, next) => {
            planned_pending AS (
             SELECT sub_category,
                COUNT(DISTINCT COALESCE(style_key,style_name_key))::int AS pending_styles,
-               COUNT(DISTINCT COALESCE(style_key,style_name_key)) FILTER (WHERE LOWER(COALESCE(order_type,''))='new')::int AS pending_new_styles,
+               COUNT(DISTINCT COALESCE(style_key,style_name_key)) FILTER (WHERE ${newnessSql("order_type")})::int AS pending_new_styles,
                COALESCE(SUM(quantity),0)::numeric AS pending_units
              FROM planned_pending_base
             WHERE sub_category IS NOT NULL
@@ -7721,14 +7893,20 @@ router.get("/range-plan", async (req, res, next) => {
 
 router.get("/assortment-plan", async (_req, res, next) => {
   try {
-    const selectedAssortment = await assortmentPlanData(CURRENT_ASSORTMENT_SCOPE, true);
-    const bi = await biWorkspaceSource();
-    const seasons = (await pool.query(
+    const requestStartedAt = performance.now();
+    let biMs = 0;
+    const biPromise = (async () => {
+      const startedAt = performance.now();
+      const value = await biWorkspaceSource();
+      biMs = performance.now() - startedAt;
+      return value;
+    })();
+    const seasonsPromise = pool.query(
       `SELECT id,season_name AS "seasonName",status
          FROM ${schema}.range_plan_seasons
         ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END,season_year DESC,id DESC`,
-    )).rows;
-    const weeklyDestinations = (await pool.query(
+    );
+    const weeklyDestinationsPromise = pool.query(
       `WITH upcoming AS (
          SELECT (date_trunc('week',CURRENT_DATE)::date+(n*7))::date AS start_date
          FROM generate_series(0,11) AS n
@@ -7743,9 +7921,21 @@ router.get("/assortment-plan", async (_req, res, next) => {
          ON p.iso_year=EXTRACT(ISOYEAR FROM start_date)::int
         AND p.iso_week=EXTRACT(WEEK FROM start_date)::int
        ORDER BY start_date`,
-    )).rows;
-    res.json({
-      assortmentStyles: selectedAssortment.styles,
+    );
+    const [bi, seasonsResult, weeklyDestinationsResult] = await Promise.all([
+      biPromise,
+      seasonsPromise,
+      weeklyDestinationsPromise,
+    ]);
+    const selectedAssortment = await assortmentPlanData(CURRENT_ASSORTMENT_SCOPE, true, bi);
+    const assortmentStyles = selectedAssortment.styles.map((style) => ({
+      ...style,
+      image: style.styleNumber
+        ? `/api/workspace/assortment-image/${encodeURIComponent(style.styleNumber)}`
+        : style.image,
+    }));
+    const payload = {
+      assortmentStyles,
       assortmentSummary: {
         total: selectedAssortment.total,
         counts: selectedAssortment.counts,
@@ -7754,11 +7944,17 @@ router.get("/assortment-plan", async (_req, res, next) => {
         filterOptions: selectedAssortment.filterOptions,
       },
       assortmentFilterOptions: selectedAssortment.filterOptions,
-      seasons,
-      weeklyDestinations,
+      seasons: seasonsResult.rows,
+      weeklyDestinations: weeklyDestinationsResult.rows,
       reconciliations: Array.isArray(bi.reconciliations) ? bi.reconciliations : [],
       sourceStatus: Array.isArray(bi.sourceStatus) ? bi.sourceStatus : [],
-    });
+    };
+    const serializationStartedAt = performance.now();
+    const serialized = JSON.stringify(payload);
+    const serializationMs = performance.now() - serializationStartedAt;
+    const totalMs = performance.now() - requestStartedAt;
+    res.setHeader("Server-Timing", `bi;dur=${biMs.toFixed(1)}, serialize;dur=${serializationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`);
+    res.type("json").send(serialized);
   } catch (error) {
     next(error);
   }
@@ -7774,7 +7970,7 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
     const style = (await getBiWorkspaceSource()).styles.map(biStyle)
       .find((candidate) => candidate.styleNumber.toLowerCase() === styleNumber.toLowerCase());
     if (style?.image) {
-      res.setHeader("Cache-Control", "private, max-age=3600, stale-while-revalidate=86400");
+      res.setHeader("Cache-Control", "private, max-age=604800, stale-while-revalidate=2592000");
       if (/^https?:\/\//.test(String(style.image))) { res.redirect(String(style.image)); return; }
       const image = String(style.image).replace(/^data:image\/[^;]+;base64,/, "");
       res.type("jpeg").send(Buffer.from(image, "base64"));
@@ -7795,12 +7991,12 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
     );
     const raw = result.rows[0]?.image;
     if (!raw) {
-      res.setHeader("Cache-Control", "private, max-age=300");
+      res.setHeader("Cache-Control", "private, max-age=86400");
       res.status(404).end();
       return;
     }
     const image = String(raw).replace(/^data:image\/[^;]+;base64,/, "");
-    res.setHeader("Cache-Control", "private, max-age=3600, stale-while-revalidate=86400");
+    res.setHeader("Cache-Control", "private, max-age=604800, stale-while-revalidate=2592000");
     res.type("jpeg").send(Buffer.from(image, "base64"));
   } catch (error) {
     next(error);
@@ -10025,7 +10221,8 @@ async function workspaceHomeFocus() {
   const [weekResult, gapResult, waitingResult, cogsResult, scorecardRows] = await Promise.all([
     pool.query<{
       isoYear: number; isoWeek: number; startDate: string; endDate: string;
-      planStyles: number; planUnits: number; actualStyles: number; pendingStyles: number;
+       planStyles: number; planUnits: number; planNewUnits: number; planNewStyles: number;
+       actualStyles: number; pendingStyles: number;
       actualUnits: number; pendingUnits: number; actualNewUnits: number;
       pendingNewUnits: number; actualNewStyles: number; replenishmentUnits: number;
       reorderUnits: number; productionOrders: number; monthlyPlanUnits: number;
@@ -10092,6 +10289,14 @@ async function workspaceHomeFocus() {
           END)::int
          FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id) AS "planStyles",
         COALESCE((SELECT SUM(l.estimated_quantity) FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id),0)::float AS "planUnits",
+        COALESCE((SELECT SUM(l.estimated_quantity) FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id
+          WHERE ${newnessSql("l.order_type")}),0)::float AS "planNewUnits",
+        (SELECT COUNT(DISTINCT CASE
+            WHEN NULLIF(BTRIM(l.style_number),'') IS NOT NULL THEN 'number:' || LOWER(BTRIM(l.style_number))
+            ELSE 'name:' || LOWER(BTRIM(l.style_name))
+          END)::int
+         FROM ${schema}.weekly_order_plan_lines l JOIN selected_plan p ON p.id=l.plan_id
+         WHERE ${newnessSql("l.order_type")}) AS "planNewStyles",
         (SELECT COUNT(*)::int FROM actual_by_style) AS "actualStyles",
         (SELECT COUNT(DISTINCT CASE
             WHEN NULLIF(BTRIM(style_number),'') IS NOT NULL THEN 'number:' || LOWER(BTRIM(style_number))
@@ -10099,11 +10304,11 @@ async function workspaceHomeFocus() {
           END)::int FROM pending_plan) AS "pendingStyles",
          ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style),0))::float AS "actualUnits",
          ROUND(COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan),0))::float AS "pendingUnits",
-         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type)='new'),0))::float AS "actualNewUnits",
-         ROUND(COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan WHERE LOWER(order_type)='new'),0))::float AS "pendingNewUnits",
-        (SELECT COUNT(*)::int FROM actual_by_style WHERE LOWER(lifecycle_type)='new') AS "actualNewStyles",
+         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE ${newnessSql("lifecycle_type")}),0))::float AS "actualNewUnits",
+         ROUND(COALESCE((SELECT SUM(estimated_quantity) FROM pending_plan WHERE ${newnessSql("order_type")}),0))::float AS "pendingNewUnits",
+        (SELECT COUNT(*)::int FROM actual_by_style WHERE ${newnessSql("lifecycle_type")}) AS "actualNewStyles",
          ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) LIKE 'replen%'),0))::float AS "replenishmentUnits",
-         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) IN ('re-order','reorder','repeat','rr')),0))::float AS "reorderUnits",
+         ROUND(COALESCE((SELECT SUM(units) FROM actual_by_style WHERE LOWER(lifecycle_type) IN ('re-order','reorder','repeat')),0))::float AS "reorderUnits",
         COALESCE((SELECT SUM(orders) FROM actual_by_style),0)::int AS "productionOrders",
         COALESCE((SELECT units FROM monthly_plan),0)::float AS "monthlyPlanUnits",
         COALESCE((SELECT newness_target_units FROM monthly_plan),0)::float AS "monthlyNewnessTargetUnits",
@@ -10203,11 +10408,11 @@ async function workspaceHomeFocus() {
   const weeklyPaceUnits = Number(week.monthlyPlanUnits) / 4;
   const monthlyNewness = calculateNewnessCommitment({
     targetUnits: Number(week.monthlyNewnessTargetUnits),
-    plannedNewUnits: Number(week.monthlyPlannedNewUnits),
-    plannedTotalUnits: Number(week.monthlyPlannedTotalUnits),
+    plannedNewUnits: Number(week.planNewUnits),
+    plannedTotalUnits: Number(week.planUnits),
     capacityUnits: Number(week.monthlyPlanUnits),
     orderSizeUnits: DEFAULT_NEW_STYLE_ORDER_UNITS,
-    plannedNewStyles: Number(week.monthlyPlannedNewStyles),
+    plannedNewStyles: Number(week.planNewStyles),
   });
   const scorecardByName = new Map(scorecardRows.rows.map((row) => [row.measurable.toLowerCase(), row]));
   const scorecardDefinition = [
@@ -12432,7 +12637,7 @@ router.get("/weekly-order-plan", async (req, res, next) => {
     const summaryBase = lines.rows.reduce<{ units: number; newUnits: number; notRaisedUnits: number }>((acc, line) => {
       const units = Number(line.estimatedQuantity);
       acc.units += units;
-      if (line.orderType === "New") acc.newUnits += units;
+       if (isNewnessOrderType(line.orderType)) acc.newUnits += units;
       if (!line.firstOrderDate) {
         acc.notRaisedUnits += units;
       }
@@ -12465,10 +12670,10 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       targetUnits: Number(row.targetUnits),
     })));
     const actualNewUnits = actualOrders.rows
-      .filter((order) => String(order.orderType ?? "").trim().toLowerCase() === "new")
+      .filter((order) => isNewnessOrderType(order.orderType))
       .reduce((sum, order) => sum + Number(order.quantity ?? 0), 0);
     const pendingNewUnits = lines.rows
-      .filter((line) => !line.firstOrderDate && String(line.orderType ?? "").trim().toLowerCase() === "new")
+      .filter((line) => !line.firstOrderDate && isNewnessOrderType(line.orderType))
       .reduce((sum, line) => sum + Number(line.estimatedQuantity ?? 0), 0);
     const committedNewUnits = actualNewUnits + pendingNewUnits;
     const newnessShortfallUnits = Math.max(0, weeklyNewness.targetUnits - committedNewUnits);
@@ -12931,6 +13136,7 @@ httpServer.listen(port, "0.0.0.0", () => {
     })
     .catch(async (error) => {
       console.error("Unable to initialise workspace database", error);
+      await ensureFabricConsumptionRates();
       await ensureRangePlanNewnessData();
       await ensureRecentWorkspaceMigrations();
       await ensureStyleDevelopmentTrackerData();

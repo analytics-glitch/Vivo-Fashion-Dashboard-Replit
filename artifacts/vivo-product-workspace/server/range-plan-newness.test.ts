@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   calculateNewnessCommitment,
+  isNewnessOrderType,
   weeklyNewnessTarget,
 } from "./range-plan-newness.js";
 
@@ -51,4 +52,27 @@ test("week 36 receives the six September days it contains", () => {
     daysInMonth: component.daysInMonth,
     sharePct: component.sharePct,
   })), [{ overlapDays: 6, daysInMonth: 30, sharePct: 20 }]);
+});
+
+test("Range Refreshed remains distinct but counts as newness", () => {
+  assert.equal(isNewnessOrderType("New"), true);
+  assert.equal(isNewnessOrderType("Range Refreshed"), true);
+  assert.equal(isNewnessOrderType("range_refreshed"), true);
+  assert.equal(isNewnessOrderType("RR"), true);
+  assert.equal(isNewnessOrderType("Re-order"), false);
+  assert.equal(isNewnessOrderType("Replenishment"), false);
+});
+
+test("week 36 newness includes the 400 Range Refreshed units", () => {
+  const lines = [
+    { type: "New", units: 2_160 },
+    { type: "Range Refreshed", units: 400 },
+    { type: "Re-order", units: 1_395 },
+    { type: "Replenishment", units: 1_950 },
+  ];
+  const total = lines.reduce((sum, line) => sum + line.units, 0);
+  const newUnits = lines.filter((line) => isNewnessOrderType(line.type)).reduce((sum, line) => sum + line.units, 0);
+  assert.equal(total, 5_905);
+  assert.equal(newUnits, 2_560);
+  assert.ok(Math.abs(newUnits / total * 100 - 43.35309) < 0.0001);
 });

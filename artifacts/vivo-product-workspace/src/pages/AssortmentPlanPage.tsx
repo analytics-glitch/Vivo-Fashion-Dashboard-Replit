@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { CheckSquare, ChevronDown, RefreshCw, Search, Target, X } from 'lucide-react';
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
@@ -25,6 +25,7 @@ type Payload = { assortmentStyles: Style[]; assortmentSummary: Summary; seasons?
 
 const filterDefinitions: Array<{ key: FilterKey; label: string }> = [{ key: 'tier', label: 'Tier' }, { key: 'status', label: 'Status' }, { key: 'category', label: 'Category' }, { key: 'subCategory', label: 'Sub-category' }, { key: 'fabricCategory', label: 'Fabric Category' }, { key: 'brand', label: 'Brand' }, { key: 'primaryColour', label: 'Primary Colour' }, { key: 'edit', label: 'Edit' }];
 const emptyFilters: AssortmentFilterState = { tier: [], status: ['Active'], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [] };
+const emptyStyles: Style[] = [];
 const n = (value: number | null | undefined, digits = 0) => value == null || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat('en-KE', { maximumFractionDigits: digits }).format(Number(value));
 const pct = (value: number | null | undefined) => value == null ? '—' : `${n(value, 1)}%`;
 const isBiStyle = (style: Style) => style.source === 'bi' || style.source === 'all_products_clean';
@@ -78,11 +79,26 @@ export default function AssortmentPlanPage() {
     sessionStorage.removeItem('workspace_focus_assortment_search');
     window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-assortment-search]')?.focus());
   }, []);
+  const assortmentStyles = assortment.data?.assortmentStyles ?? emptyStyles;
+  const styles = useMemo(
+    () => sortAssortmentStyles(
+      assortmentStyles.filter((style) => matchesAssortmentFilters(style, filters) && matchesStyleCatalogueSearch(style, search)),
+      sort,
+    ),
+    [assortmentStyles, filters, search, sort],
+  );
+  const selectedStyles = useMemo(
+    () => styles.filter((style) => isBiStyle(style) && selected.includes(style.id)),
+    [selected, styles],
+  );
+  const activeCount = useMemo(
+    () => Object.values(filters).flat().length + (search.trim() ? 1 : 0),
+    [filters, search],
+  );
+  const assortmentCounts = useMemo(() => countAssortmentStyles(styles), [styles]);
   if (assortment.isLoading) return <section className="page"><div className="range-plan-loading"><RefreshCw size={20} />Loading assortment plan…</div></section>;
   if (assortment.isError || !assortment.data) return <section className="page"><div className="range-plan-error"><Target size={22} /><h2>Assortment Plan is unavailable</h2><button className="button button-dark" onClick={() => assortment.refetch()} data-testid="button-retry-assortment">Try again</button></div></section>;
   const data = assortment.data; const options = data.assortmentFilterOptions ?? data.assortmentSummary.filterOptions ?? ({} as Record<FilterKey, string[]>);
-  const styles = sortAssortmentStyles(data.assortmentStyles.filter((style) => matchesAssortmentFilters(style, filters) && matchesStyleCatalogueSearch(style, search)), sort);
-  const selectedStyles = styles.filter((s) => isBiStyle(s) && selected.includes(s.id)); const activeCount = Object.values(filters).flat().length + (search.trim() ? 1 : 0);
   const toggle = (id: string) => setSelected((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id]);
   const cardAction = (style: Style) => <div className="assortment-card-actions">{isBiStyle(style) && <><button type="button" className="assortment-card-button" disabled={exclude.isPending} onClick={() => exclude.mutate({ styleId: style.styleNumber, excluded: !style.excluded })} data-testid={`button-exclude-style-${style.id}`}>{style.excluded ? 'Include in assortment' : 'Exclude from assortment'} <X size={13} /></button><DestinationPicker seasons={data.seasons ?? []} weeks={data.weeklyDestinations ?? []} disabled={add.isPending} onPick={(destination) => add.mutate({ styles: [style], destination })} /></>}</div>;
   return <section className="page assortment-plan-page">
@@ -90,7 +106,7 @@ export default function AssortmentPlanPage() {
     {(data.reconciliations ?? []).filter(reconciliationFailed).length > 0 && <div className="assortment-reconciliation-failure" role="alert" data-testid="status-assortment-reconciliation-failure"><Target size={18} /><div><strong>BI reconciliation failed — headline assortment figures are not trusted</strong><span>{(data.reconciliations ?? []).filter(reconciliationFailed).map((item) => item.name ?? item.metric ?? item.label ?? item.error ?? item.message).join(' · ')}</span></div></div>}
     <div className="assortment-current-count" data-testid="text-assortment-filtered-count"><strong>{n(styles.length)}</strong><span>styles matching filters</span></div>
     <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter assortment</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div><label className="assortment-search-field"><Search size={16} aria-hidden="true" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search style, number or designer…" data-assortment-search data-testid="input-assortment-search" /></label>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={[...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><button type="button" className="assortment-clear-filters" onClick={() => { setSearch(''); setFilters(emptyFilters); }} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
-    <div className="assortment-summary-bar"><div className="assortment-summary-lead"><Target size={17} /><span>Styles shown</span><strong>{n(styles.length)}</strong></div>{Object.entries(countAssortmentStyles(styles)).slice(1).map(([key, value]) => <div className="assortment-summary-item" key={key}><span>{key}</span><strong>{n(value)}</strong></div>)}</div>
+    <div className="assortment-summary-bar"><div className="assortment-summary-lead"><Target size={17} /><span>Styles shown</span><strong>{n(styles.length)}</strong></div>{Object.entries(assortmentCounts).slice(1).map(([key, value]) => <div className="assortment-summary-item" key={key}><span>{key}</span><strong>{n(value)}</strong></div>)}</div>
     <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter(isBiStyle).map((s) => s.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div><div className="assortment-card-grid">{styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} />)}</div></> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>
     {selectedStyles.length > 0 && <aside className="assortment-bulk-bar"><CheckSquare size={18} /><strong>{selectedStyles.length} selected</strong><DestinationPicker seasons={data.seasons ?? []} weeks={data.weeklyDestinations ?? []} disabled={add.isPending} onPick={(destination) => add.mutate({ styles: selectedStyles, destination })} /><button type="button" onClick={() => setSelected([])} data-testid="button-clear-bulk-selection">Clear</button></aside>}
     {toast && <div className="assortment-toast" role="status" data-testid="status-assortment-add">{toast}</div>}{(exclude.isError || add.isError) && <div className="form-error">{add.error instanceof Error ? add.error.message : 'That assortment change could not be saved.'}</div>}

@@ -1,5 +1,10 @@
 export const DEFAULT_NEW_STYLE_ORDER_UNITS = 300;
 
+export function isNewnessOrderType(value: unknown) {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  return normalized === "new" || normalized === "range refreshed" || normalized === "rr";
+}
+
 export type NewnessCommitment = {
   targetUnits: number;
   plannedNewUnits: number;

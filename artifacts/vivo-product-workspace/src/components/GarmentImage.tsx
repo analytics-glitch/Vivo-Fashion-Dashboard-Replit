@@ -50,12 +50,14 @@ export default function GarmentImage({ source, styleKey, image, alt, className =
   useEffect(() => {
     let cancelled = false;
     setPersistedImage(null);
-    if (!canonicalImageUrl) return undefined;
+    // A supplied route image is already authoritative and the <img> below is
+    // lazy. Avoid an eager HEAD probe for every off-screen catalogue card.
+    if (!canonicalImageUrl || image) return undefined;
     void fetch(canonicalImageUrl, { method: 'HEAD', credentials: 'include' })
       .then((response) => { if (!cancelled && response.ok) setPersistedImage(canonicalImageUrl); })
       .catch(() => undefined);
     return () => { cancelled = true; };
-  }, [canonicalImageUrl]);
+  }, [canonicalImageUrl, image]);
 
   useEffect(() => {
     setFailedImage(null);

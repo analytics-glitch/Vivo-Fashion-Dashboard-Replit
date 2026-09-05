@@ -3023,6 +3023,21 @@ a { color: inherit; text-decoration: none; }
 .availability-list span { display: flex; flex-direction: column; }
 .availability-list small { color: #736d64; }
 .tracker-field-wide { grid-column: 1/-1; }
+.fabric-rate-table-wrap { overflow-x: auto; border: 1px solid #ddd8cc; border-radius: 8px; background: #fff; }
+.fabric-rate-table { width: 100%; border-collapse: collapse; min-width: 900px; }
+.fabric-rate-table th,.fabric-rate-table td { padding: 10px 12px; border-bottom: 1px solid #ebe7df; text-align: left; vertical-align: middle; }
+.fabric-rate-table th { color: #766e62; font: 600 10px var(--app-font-mono); text-transform: uppercase; background: #f8f6f2; }
+.fabric-rate-table td { font-size: 12px; }
+.fabric-rate-table td input[type="number"] { width: 96px; padding: 7px 8px; border: 1px solid #d8d0c2; border-radius: 5px; background: #fbfaf8; }
+.fabric-rate-table td:nth-child(6) span,.fabric-rate-table td:nth-child(6) small { display: block; }
+.fabric-rate-table td:nth-child(6) small { color: #837b70; margin-top: 2px; }
+.fabric-confidence { display: inline-flex; padding: 4px 7px; border-radius: 999px; font: 600 10px var(--app-font-mono); background: #eeeae3; }
+.fabric-confidence.high { color: #356340; background: #eaf3eb; }
+.fabric-confidence.medium { color: #755d1a; background: #f7efcf; }
+.fabric-confidence.low { color: #944827; background: #fbe9df; }
+.fabric-confidence.estimate { color: #66558a; background: #eee9f7; }
+.fabric-estimate-check { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+.fabric-rate-error { display: block; color: #a13f27; max-width: 130px; }
 @media (max-width: 900px) {
   .availability-form { grid-template-columns: 1fr 1fr; }
   .capacity-event-grid { grid-template-columns: 1fr; }
