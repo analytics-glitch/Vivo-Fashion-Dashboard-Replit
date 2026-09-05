@@ -1822,11 +1822,13 @@ async function ensureFabricConsumptionRates() {
       historical_order_count INTEGER NOT NULL DEFAULT 0 CHECK (historical_order_count >= 0),
       is_estimate BOOLEAN NOT NULL DEFAULT FALSE,
       is_business_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      is_non_garment BOOLEAN NOT NULL DEFAULT FALSE,
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
     );
     ALTER TABLE ${schema}.subcategory_fabric_consumption_rates
       ADD COLUMN IF NOT EXISTS is_business_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+      ADD COLUMN IF NOT EXISTS is_non_garment BOOLEAN NOT NULL DEFAULT FALSE,
       DROP CONSTRAINT IF EXISTS subcategory_fabric_consumption_rates_confidence_check;
     ALTER TABLE ${schema}.subcategory_fabric_consumption_rates
       ADD CONSTRAINT subcategory_fabric_consumption_rates_confidence_check
@@ -1879,6 +1881,72 @@ async function ensureFabricConsumptionRates() {
         AND expected_metres_per_unit=1.10
         AND is_business_confirmed=FALSE`,
   );
+  await pool.query(
+    `UPDATE ${schema}.subcategory_fabric_consumption_rates
+        SET is_non_garment=TRUE,updated_at=NOW()
+      WHERE subcategory = ANY($1::text[])
+        AND is_non_garment=FALSE
+        AND expected_metres_per_unit IS NULL
+        AND confidence='not_set'
+        AND updated_by IS NULL`,
+    [[
+      "Accessories",
+      "Bangles & Bracelets",
+      "Belts",
+      "Body Mists & Fragrances",
+      "Earrings",
+      "Necklaces",
+      "Rings",
+    ]],
+  );
+  const correctedSkirtRates: Array<[string, number]> = [
+    ["Maxi Skirts", 1.80],
+    ["Midi & Capri Skirts", 1.30],
+    ["Knee Length Skirts", 1.00],
+    ["Short & Mini Skirts", 0.80],
+  ];
+  for (const [subcategory, rate] of correctedSkirtRates) {
+    await pool.query(
+      `UPDATE ${schema}.subcategory_fabric_consumption_rates
+          SET expected_metres_per_unit=$2,confidence='estimate',
+              historical_order_count=0,is_estimate=TRUE,
+              is_business_confirmed=FALSE,updated_at=NOW()
+        WHERE subcategory=$1
+          AND expected_metres_per_unit=0.80
+          AND historical_order_count=2
+          AND is_estimate=FALSE
+          AND is_business_confirmed=FALSE`,
+      [subcategory, rate],
+    );
+  }
+  const unsetGarmentEstimates: Record<string, number> = {
+    "Shirts & Blouses": 1.60,
+    "Co-ords & Sets": 2.60,
+    "Dungarees & Overalls": 2.70,
+    "Nightwear & Loungewear": 2.00,
+    "Swimwear": 0.60,
+    "Camisoles & Vests": 0.80,
+    "Tunics": 1.70,
+    "Ponchos": 1.60,
+    "Scarves & Wraps": 1.00,
+    "Blazers": 2.00,
+    "Cardigans": 1.50,
+    "Waistcoats": 1.10,
+    "Palazzo Pants": 2.20,
+    "Wide Leg Pants": 1.90,
+  };
+  for (const [subcategory, rate] of Object.entries(unsetGarmentEstimates)) {
+    await pool.query(
+      `UPDATE ${schema}.subcategory_fabric_consumption_rates
+          SET expected_metres_per_unit=$2,confidence='estimate',
+              historical_order_count=0,is_estimate=TRUE,
+              is_business_confirmed=FALSE,updated_at=NOW()
+        WHERE subcategory=$1
+          AND expected_metres_per_unit IS NULL
+          AND is_non_garment=FALSE`,
+      [subcategory, rate],
+    );
+  }
 }
 
 let fabricConsumptionReady: Promise<void> | null = null;
@@ -5349,10 +5417,12 @@ router.get("/fabric-consumption-rates", async (_req, res, next) => {
         r.expected_metres_per_unit::float AS "expectedMetresPerUnit",
         r.confidence,r.historical_order_count AS "historicalOrderCount",
         r.is_estimate AS "isEstimate",r.is_business_confirmed AS "businessConfirmed",
+        r.is_non_garment AS "isNonGarment",
         r.updated_at AS "updatedAt",
         COALESCE(u.name,'System seed') AS "updatedBy"
        FROM ${schema}.subcategory_fabric_consumption_rates r
        LEFT JOIN ${schema}.users u ON u.id=r.updated_by
+       WHERE r.is_non_garment=FALSE
        ORDER BY r.subcategory`,
     );
     res.json({ items: result.rows });
@@ -5368,6 +5438,9 @@ router.patch("/fabric-consumption-rates/:subcategory", async (req: AuthRequest, 
     const orders = Number(req.body?.historicalOrderCount ?? 0);
     const estimate = Boolean(req.body?.isEstimate);
     const businessConfirmed = Boolean(req.body?.businessConfirmed);
+    const isNonGarment = req.body?.isNonGarment === undefined
+      ? null
+      : Boolean(req.body.isNonGarment);
     if (!subcategory) throw new Error("Subcategory is required");
     if (rate !== null && (!Number.isFinite(rate) || rate <= 0)) throw new Error("Rate must be greater than zero");
     if (!Number.isInteger(orders) || orders < 0) throw new Error("Historical order count must be a non-negative whole number");
@@ -5375,12 +5448,15 @@ router.patch("/fabric-consumption-rates/:subcategory", async (req: AuthRequest, 
     const result = await pool.query(
       `UPDATE ${schema}.subcategory_fabric_consumption_rates
           SET expected_metres_per_unit=$2,confidence=$3,historical_order_count=$4,
-              is_estimate=$5,is_business_confirmed=$6,updated_at=NOW(),updated_by=$7
+              is_estimate=$5,is_business_confirmed=$6,
+              is_non_garment=COALESCE($7,is_non_garment),
+              updated_at=NOW(),updated_by=$8
         WHERE subcategory=$1
         RETURNING subcategory,expected_metres_per_unit::float AS "expectedMetresPerUnit",
           confidence,historical_order_count AS "historicalOrderCount",is_estimate AS "isEstimate",
-          is_business_confirmed AS "businessConfirmed",updated_at AS "updatedAt"`,
-      [subcategory, rate, confidence, orders, estimate, businessConfirmed, req.workspaceUser?.id ?? null],
+          is_business_confirmed AS "businessConfirmed",is_non_garment AS "isNonGarment",
+          updated_at AS "updatedAt"`,
+      [subcategory, rate, confidence, orders, estimate, businessConfirmed, isNonGarment, req.workspaceUser?.id ?? null],
     );
     if (!result.rows[0]) {
       res.status(404).json({ error: "Subcategory rate not found" });

@@ -13,6 +13,7 @@ type FabricRate = {
   historicalOrderCount: number;
   isEstimate: boolean;
   businessConfirmed: boolean;
+  isNonGarment: boolean;
   updatedAt: string;
   updatedBy: string;
 };
@@ -37,8 +38,8 @@ function FabricRateRow({ item }: { item: FabricRate }) {
     setIsEstimate(item.isEstimate);
     setBusinessConfirmed(item.businessConfirmed);
   }, [item]);
-  const update = useMutation({
-    mutationFn: async () => {
+  const update = useMutation<unknown, Error, boolean>({
+    mutationFn: async (isNonGarment) => {
       const response = await fetch(`/api/workspace/fabric-consumption-rates/${encodeURIComponent(item.subcategory)}`, {
         method: 'PATCH',
         credentials: 'include',
@@ -48,6 +49,7 @@ function FabricRateRow({ item }: { item: FabricRate }) {
           historicalOrderCount: Number(orders),
           isEstimate,
           businessConfirmed,
+          isNonGarment,
         }),
       });
       if (!response.ok) throw new Error((await response.json()).error || 'Rate could not be saved');
@@ -68,7 +70,7 @@ function FabricRateRow({ item }: { item: FabricRate }) {
       setIsEstimate(event.target.value === 'estimate');
     }} aria-label={`${item.subcategory} value basis`}><option value="history">Order history</option><option value="business">Business confirmed</option><option value="estimate">Estimate</option></select></td>
     <td><span>{item.updatedBy}</span><small>{new Date(item.updatedAt).toLocaleString('en-GB')}</small></td>
-    <td><button className="icon-button" type="button" disabled={!dirty || update.isPending} onClick={() => update.mutate()} aria-label={`Save ${item.subcategory}`}><Save size={16} /></button>{update.isError && <small className="fabric-rate-error">{update.error.message}</small>}</td>
+    <td><div className="fabric-rate-actions"><button className="icon-button" type="button" disabled={!dirty || update.isPending} onClick={() => update.mutate(false)} aria-label={`Save ${item.subcategory}`}><Save size={16} /></button><button className="button button-small" type="button" disabled={update.isPending} onClick={() => update.mutate(true)} aria-label={`Mark ${item.subcategory} as non-garment`}>Non-garment</button></div>{update.isError && <small className="fabric-rate-error">{update.error.message}</small>}</td>
   </tr>;
 }
 
