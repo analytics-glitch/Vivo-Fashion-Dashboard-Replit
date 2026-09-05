@@ -25,6 +25,12 @@ export type AssortmentSortableStyle = AssortmentFilterableStyle & {
   sellThroughPct?: number | null;
   daysSinceLastSale?: number | null;
 };
+
+export type AssortmentSearchableStyle = {
+  styleNumber?: string | null;
+  name?: string | null;
+  designer?: string | null;
+};
 export type AssortmentSortKey =
   | 'units_desc'
   | 'revenue_desc'
@@ -47,6 +53,18 @@ export function matchesAssortmentFilters(
   return assortmentFilterKeys.every((key) => (
     filters[key].length === 0 || filters[key].includes(String(style[key] ?? ''))
   ));
+}
+
+// Keep the catalogue search contract: one case-insensitive partial match across
+// the style identity and its designer.
+export function matchesStyleCatalogueSearch(
+  style: AssortmentSearchableStyle,
+  search: string,
+) {
+  const term = search.trim().toLocaleLowerCase();
+  if (!term) return true;
+  return [style.styleNumber, style.name, style.designer]
+    .some((value) => String(value ?? '').toLocaleLowerCase().includes(term));
 }
 
 export function countAssortmentStyles(styles: AssortmentFilterableStyle[]) {

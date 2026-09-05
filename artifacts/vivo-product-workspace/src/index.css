@@ -1176,6 +1176,11 @@ a { color: inherit; text-decoration: none; }
 .assortment-filter-toolbar .msf { flex: 1 1 160px; min-width: 160px; padding: 0; border: 0; }
 .assortment-filter-toolbar .msf-button { width: 100%; max-width: none; }
 .assortment-filter-toolbar .catalogue-sort-control { flex: 1 1 190px; min-width: 190px; }
+.assortment-current-count { display: flex; align-items: baseline; gap: 8px; margin: 0 0 14px; color: #55504a; font: 11px var(--app-font-mono); text-transform: uppercase; letter-spacing: .04em; }
+.assortment-current-count strong { color: #1A1A2E; font-size: 18px; }
+.assortment-search-field { display: flex; flex: 1 1 240px; min-width: 220px; height: 42px; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid #d8d0c5; background: #fff; color: #6f685f; }
+.assortment-search-field:focus-within { border-color: #1A1A2E; box-shadow: 0 0 0 1px #1A1A2E; }
+.assortment-search-field input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: #1A1A2E; font: 12px var(--app-font-sans); }
 .assortment-clear-filters { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; min-height: 38px; padding: 0 11px; border: 1px solid var(--line); background: var(--paper); color: #b3403a; cursor: pointer; font: 10px var(--app-font-mono); white-space: nowrap; }
 .assortment-clear-filters:disabled { color: #b6b0a6; cursor: default; }
 .assortment-style-section { margin-bottom: 44px; }
@@ -1256,7 +1261,8 @@ a { color: inherit; text-decoration: none; }
   .assortment-quarter-tabs button { min-width: 132px; }
   .assortment-filter-toolbar { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: stretch; margin-right: 0; margin-left: 0; padding: 12px; }
   .assortment-filter-intro { position: static; grid-column: 1 / -1; background: transparent; }
-  .assortment-filter-toolbar .msf, .assortment-filter-toolbar .catalogue-sort-control, .assortment-clear-filters { min-width: 0; width: 100%; }
+  .assortment-filter-toolbar .msf, .assortment-filter-toolbar .catalogue-sort-control, .assortment-search-field, .assortment-clear-filters { min-width: 0; width: 100%; }
+  .assortment-search-field { grid-column: 1 / -1; }
   .assortment-filter-toolbar .msf { min-width: 0; }
   .assortment-filter-toolbar .catalogue-sort-control { min-width: 0; }
   .assortment-filter-toolbar .msf-menu { right: 0; left: auto; width: min(270px, calc(100vw - 48px)); }

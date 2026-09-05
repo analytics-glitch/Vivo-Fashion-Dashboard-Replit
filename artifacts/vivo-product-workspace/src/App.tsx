@@ -256,6 +256,29 @@ function Shell({ children }: { children: ReactNode }) {
     setIdentity(picked);
     setIdentityOpen(false);
   };
+  const focusAssortmentSearch = () => {
+    if (location === '/product-workspace/plan') {
+      document.querySelector<HTMLInputElement>('[data-assortment-search]')?.focus();
+      return;
+    }
+    sessionStorage.setItem('workspace_focus_assortment_search', '1');
+    setLocation('/product-workspace/plan');
+  };
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        if (location === '/product-workspace/plan') {
+          document.querySelector<HTMLInputElement>('[data-assortment-search]')?.focus();
+        } else {
+          sessionStorage.setItem('workspace_focus_assortment_search', '1');
+          setLocation('/product-workspace/plan');
+        }
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [location, setLocation]);
   const login = location.includes('/login');
   if (login) return <>{children}</>;
   if (session.isLoading) return <LoadingState />;
@@ -316,7 +339,7 @@ function Shell({ children }: { children: ReactNode }) {
           </a>
           <button className="icon-button mobile-menu" onClick={() => { setSidebarCollapsed(false); setMobileOpen(true); }} aria-label="Open menu" data-testid="button-open-menu"><Menu size={20} /></button>
           <div className="topbar-context"><span className="topbar-dot" /> Live workspace <span className="slash">/</span> Q3 2026</div>
-          <div className="topbar-actions"><button className="topbar-action" onClick={() => setLocation('/product-workspace/plan')} data-testid="button-search"><Search size={16} /> <span>Search workspace</span><kbd>⌘ K</kbd></button><button className="icon-button" onClick={() => setLocation('/product-workspace/')} data-testid="button-notifications"><CircleAlert size={18} /></button><button className="identity-pill" onClick={() => setIdentityOpen(true)} data-testid="button-identity-pill">{identity ? <>Signed in as <b>{identity.name}</b> · {identity.role}</> : 'Who are you?'}</button></div>
+          <div className="topbar-actions"><button className="topbar-action" onClick={focusAssortmentSearch} data-testid="button-search"><Search size={16} /> <span>Search assortment</span><kbd>⌘ K</kbd></button><button className="icon-button" onClick={() => setLocation('/product-workspace/')} data-testid="button-notifications"><CircleAlert size={18} /></button><button className="identity-pill" onClick={() => setIdentityOpen(true)} data-testid="button-identity-pill">{identity ? <>Signed in as <b>{identity.name}</b> · {identity.role}</> : 'Who are you?'}</button></div>
         </header>
         {children}
       </main>

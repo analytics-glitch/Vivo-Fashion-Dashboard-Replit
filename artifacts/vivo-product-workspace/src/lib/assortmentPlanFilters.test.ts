@@ -3,8 +3,8 @@ import test from 'node:test';
 import {
   assortmentFilterKeys,
   countAssortmentStyles,
-  filteredAssortmentQuarterCounts,
   matchesAssortmentFilters,
+  matchesStyleCatalogueSearch,
   sortAssortmentStyles,
   type AssortmentFilterState,
   type AssortmentFilterableStyle,
@@ -72,7 +72,7 @@ test('a null active tier stays visible unfiltered and is excluded by tier select
   assert.equal(matchesAssortmentFilters(unclassified, filters), false);
 });
 
-test('tier summaries and both quarter badges use the filtered style sets', () => {
+test('tier summaries use the filtered active assortment', () => {
   const tier2 = { ...activeStyle, tier: 'Tier 2 · Core' };
   assert.deepEqual(countAssortmentStyles([activeStyle, tier2, retiredStyle]), {
     total: 3,
@@ -83,15 +83,15 @@ test('tier summaries and both quarter badges use the filtered style sets', () =>
     retired: 1,
   });
 
-  const filters = emptyFilters();
-  filters.status = ['Active'];
-  assert.deepEqual(filteredAssortmentQuarterCounts({
-    'Q3 2026': [activeStyle, retiredStyle],
-    'Q4 2026': [activeStyle, tier2, retiredStyle],
-  }, filters), {
-    'Q3 2026': 1,
-    'Q4 2026': 2,
-  });
+});
+
+test('catalogue search matches partial style number, name, or designer case-insensitively', () => {
+  const style = { styleNumber: 'V0525028', name: 'Alba Maxi Dress', designer: 'Merchandising Team' };
+  assert.equal(matchesStyleCatalogueSearch(style, '25028'), true);
+  assert.equal(matchesStyleCatalogueSearch(style, 'MAXI'), true);
+  assert.equal(matchesStyleCatalogueSearch(style, 'chandising'), true);
+  assert.equal(matchesStyleCatalogueSearch(style, 'trousers'), false);
+  assert.equal(matchesStyleCatalogueSearch(style, '  '), true);
 });
 
 test('catalogue-style sorting is deterministic and places null metrics last', () => {

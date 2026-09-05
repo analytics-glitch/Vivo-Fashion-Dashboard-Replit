@@ -156,7 +156,7 @@ function biStyle(style: Record<string, any>) {
     subCategory: String(biValue(style, "subCategory", "subcategory", "sub_category", "productType", "product_type") ?? ""),
     fabricCategory: String(biValue(style, "fabricCategory", "fabric_category") ?? ""),
     brand: String(biValue(style, "brand") ?? ""), primaryColour: String(biValue(style, "primaryColour", "primary_colour", "colorPrint", "color_print") ?? ""),
-    edit: String(biValue(style, "edit", "collection") ?? ""), stage: "Carry-over", designer: "Merchandising",
+    edit: String(biValue(style, "edit", "collection") ?? ""), stage: "Carry-over", designer: String(biValue(style, "designer", "designOwner", "design_owner", "owner") ?? "Merchandising"),
     season: "", rangeTier: tier || null,
     tier: status.toLowerCase() === "retired" ? "Retired" : tier === "NOOS" || tier === "Tier 1" ? "Tier 1 · NOOS" : tier === "Core" || tier === "Tier 2" ? "Tier 2 · Core" : tier === "Recent" || tier === "Tier 3" ? "Tier 3 · Recent" : tier === "New" || tier === "Tier 4" ? "Tier 4 · New" : "Untiered",
     status: status[0]?.toUpperCase() + status.slice(1).toLowerCase(),
@@ -212,6 +212,7 @@ const PLM_LAUNCH_ROUTES = ["DTC", "Wholesale", "Marketplace", "Omnichannel"] as 
 const PLM_STYLE_CLASSIFICATIONS = ["Core", "Fashion", "Seasonal", "Test"] as const;
 const PLM_RANGE_TIERS = ["Tier 1", "Tier 2", "Tier 3", "Tier 4"] as const;
 const PLM_SEASONS = ["Q3 2026", "Q4 2026"] as const;
+const CURRENT_ASSORTMENT_SCOPE = "current";
 const RANGE_PLAN_SEASON_SEEDS = [
   { seasonName: "Q3 2026", revenueTarget: 0, factoryCapacityUnits: 83000, cadence: "quarterly" as const, otbMonths: ["2026-07-01", "2026-08-01", "2026-09-01"] as const },
   { seasonName: "Q4 2026", revenueTarget: 450000000, factoryCapacityUnits: 90000, cadence: "quarterly" as const, otbMonths: ["2026-10-01", "2026-11-01", "2026-12-01"] as const },
@@ -2641,10 +2642,16 @@ async function ensureRecentWorkspaceMigrations() {
         source TEXT NOT NULL,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (season, style_id, source),
-        CHECK (season IN ('Q3 2026','Q4 2026')),
+        CHECK (season IN ('current')),
         CHECK (source IN ('all_products_clean','pd_styles'))
       );
       CREATE INDEX IF NOT EXISTS assortment_exclusions_season_idx ON ${schema}.assortment_exclusions (season, source);
+    `],
+    ["current assortment exclusion scope", `
+      ALTER TABLE ${schema}.assortment_exclusions DROP CONSTRAINT IF EXISTS assortment_exclusions_season_check;
+      UPDATE ${schema}.assortment_exclusions SET season='current' WHERE season IN ('Q3 2026','Q4 2026');
+      ALTER TABLE ${schema}.assortment_exclusions
+        ADD CONSTRAINT assortment_exclusions_season_check CHECK (season IN ('current'));
     `],
     ["workspace style season", `
       ALTER TABLE ${schema}.styles ADD COLUMN IF NOT EXISTS season TEXT NOT NULL DEFAULT 'Q3 2026';
@@ -2843,7 +2850,7 @@ async function ensureSchema() {
        source TEXT NOT NULL,
        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
        PRIMARY KEY (season, style_id, source),
-       CHECK (season IN ('Q3 2026','Q4 2026')),
+       CHECK (season IN ('current')),
        CHECK (source IN ('all_products_clean','pd_styles'))
      );
      CREATE INDEX IF NOT EXISTS assortment_exclusions_season_idx ON ${schema}.assortment_exclusions (season, source);
@@ -6932,7 +6939,7 @@ function assortmentStylePayload(row: Record<string, unknown>) {
   };
 }
 
-async function assortmentPlanData(quarter: string) {
+async function assortmentPlanData(quarter: string, activeOnly = false) {
   const bi = await biWorkspaceSource();
   const membership = await pool.query(
     `SELECT LOWER(BTRIM(style_id)) AS style_key,'excluded' AS intent
@@ -6946,7 +6953,7 @@ async function assortmentPlanData(quarter: string) {
   );
   const intent = new Map(membership.rows.map((row) => [String(row.style_key), String(row.intent)]));
   const styles = bi.styles.map(biStyle)
-    .filter((style) => style.styleNumber && ["active", "retired"].includes(style.status.toLowerCase()))
+    .filter((style) => style.styleNumber && (activeOnly ? style.status.toLowerCase() === "active" : ["active", "retired"].includes(style.status.toLowerCase())))
     .map((style) => ({ ...style, season: quarter, excluded: intent.get(style.styleNumber.toLowerCase()) === "excluded" && intent.get(style.styleNumber.toLowerCase()) !== "member" }));
   const breakdown = (field: "category" | "stage") => Object.entries(styles.reduce((counts: Record<string, number>, row) => {
     const value = String(row[field] ?? "Uncategorised"); counts[value] = (counts[value] ?? 0) + 1; return counts;
@@ -6957,7 +6964,7 @@ async function assortmentPlanData(quarter: string) {
     styles, carryOverStyles: styles, newStyles: [], total: styles.length,
     counts: { total: styles.length, tier1: countTier("Tier 1 · NOOS"), tier2: countTier("Tier 2 · Core"), tier3: countTier("Tier 3 · Recent"), tier4: countTier("Tier 4 · New"), retired: countTier("Retired"), noos: countTier("Tier 1 · NOOS"), core: countTier("Tier 2 · Core"), recent: countTier("Tier 3 · Recent"), newTest: countTier("Tier 4 · New") },
     categoryBreakdown: breakdown("category"), stageBreakdown: breakdown("stage"),
-    filterOptions: { tier: [...ASSORTMENT_TIER_FILTERS], status: ["Active", "Retired"], category: options("category"), subCategory: options("subCategory"), fabricCategory: options("fabricCategory"), brand: options("brand"), primaryColour: options("primaryColour"), edit: options("edit") },
+    filterOptions: { tier: [...ASSORTMENT_TIER_FILTERS], status: activeOnly ? ["Active"] : ["Active", "Retired"], category: options("category"), subCategory: options("subCategory"), fabricCategory: options("fabricCategory"), brand: options("brand"), primaryColour: options("primaryColour"), edit: options("edit") },
   };
   /*
   const catalogueResult = await pool.query(
@@ -7712,6 +7719,51 @@ router.get("/range-plan", async (req, res, next) => {
   }
 });
 
+router.get("/assortment-plan", async (_req, res, next) => {
+  try {
+    const selectedAssortment = await assortmentPlanData(CURRENT_ASSORTMENT_SCOPE, true);
+    const bi = await biWorkspaceSource();
+    const seasons = (await pool.query(
+      `SELECT id,season_name AS "seasonName",status
+         FROM ${schema}.range_plan_seasons
+        ORDER BY CASE WHEN status='active' THEN 0 ELSE 1 END,season_year DESC,id DESC`,
+    )).rows;
+    const weeklyDestinations = (await pool.query(
+      `WITH upcoming AS (
+         SELECT (date_trunc('week',CURRENT_DATE)::date+(n*7))::date AS start_date
+         FROM generate_series(0,11) AS n
+       )
+       SELECT EXTRACT(ISOYEAR FROM start_date)::int AS "isoYear",
+         EXTRACT(WEEK FROM start_date)::int AS "isoWeek",
+         'W'||lpad(EXTRACT(WEEK FROM start_date)::int::text,2,'0')||' · '||
+         to_char(start_date,'DD Mon')||'–'||to_char(start_date+6,'DD Mon') AS label,
+         COALESCE(p.status,'draft') AS status
+       FROM upcoming
+       LEFT JOIN ${schema}.weekly_order_plans p
+         ON p.iso_year=EXTRACT(ISOYEAR FROM start_date)::int
+        AND p.iso_week=EXTRACT(WEEK FROM start_date)::int
+       ORDER BY start_date`,
+    )).rows;
+    res.json({
+      assortmentStyles: selectedAssortment.styles,
+      assortmentSummary: {
+        total: selectedAssortment.total,
+        counts: selectedAssortment.counts,
+        categoryBreakdown: selectedAssortment.categoryBreakdown,
+        stageBreakdown: selectedAssortment.stageBreakdown,
+        filterOptions: selectedAssortment.filterOptions,
+      },
+      assortmentFilterOptions: selectedAssortment.filterOptions,
+      seasons,
+      weeklyDestinations,
+      reconciliations: Array.isArray(bi.reconciliations) ? bi.reconciliations : [],
+      sourceStatus: Array.isArray(bi.sourceStatus) ? bi.sourceStatus : [],
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next) => {
   try {
     const styleNumber = decodeURIComponent(String(req.params.styleNumber ?? "")).trim();
@@ -7721,13 +7773,13 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
     }
     const style = (await getBiWorkspaceSource()).styles.map(biStyle)
       .find((candidate) => candidate.styleNumber.toLowerCase() === styleNumber.toLowerCase());
-    if (!style?.image) { res.status(404).end(); return; }
-    if (/^https?:\/\//.test(String(style.image))) { res.redirect(String(style.image)); return; }
-    const image = String(style.image).replace(/^data:image\/[^;]+;base64,/, "");
-    res.setHeader("Cache-Control", "private, max-age=3600");
-    res.type("jpeg").send(Buffer.from(image, "base64"));
-    return;
-    /*
+    if (style?.image) {
+      res.setHeader("Cache-Control", "private, max-age=3600, stale-while-revalidate=86400");
+      if (/^https?:\/\//.test(String(style.image))) { res.redirect(String(style.image)); return; }
+      const image = String(style.image).replace(/^data:image\/[^;]+;base64,/, "");
+      res.type("jpeg").send(Buffer.from(image, "base64"));
+      return;
+    }
     const result = await pool.query(
       `SELECT i.image_512 AS image
        FROM public.all_products_clean p
@@ -7735,7 +7787,7 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
        JOIN public.product_images i ON i.tmpl_id=m.tmpl_id
        WHERE ${allowedBrand("p")}
          AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
-          AND COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),''))=$1
+          AND LOWER(COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),'')))=LOWER($1)
          AND i.image_512 IS NOT NULL AND i.image_512 <> ''
        ORDER BY p.sku
        LIMIT 1`,
@@ -7743,12 +7795,13 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
     );
     const raw = result.rows[0]?.image;
     if (!raw) {
+      res.setHeader("Cache-Control", "private, max-age=300");
       res.status(404).end();
       return;
     }
     const image = String(raw).replace(/^data:image\/[^;]+;base64,/, "");
-    res.setHeader("Cache-Control", "private, max-age=3600");
-    res.type("jpeg").send(Buffer.from(image, "base64")); */
+    res.setHeader("Cache-Control", "private, max-age=3600, stale-while-revalidate=86400");
+    res.type("jpeg").send(Buffer.from(image, "base64"));
   } catch (error) {
     next(error);
   }
@@ -7952,12 +8005,11 @@ router.post("/range-plan/styles/bulk-season", async (req: AuthRequest, res, next
 
 router.put("/range-plan/exclusions", async (req: AuthRequest, res, next) => {
   try {
-    const season = String(req.body?.season ?? "").trim();
     const source = String(req.body?.source ?? "").trim();
     const styleId = String(req.body?.styleId ?? "").trim();
     const excluded = req.body?.excluded !== false;
-    if (!PLM_SEASONS.includes(season as (typeof PLM_SEASONS)[number]) || !["all_products_clean", "bi", "catalogue"].includes(source) || !styleId || styleId.length > 200) {
-      res.status(400).json({ error: "A valid quarter, catalogue source and style are required" });
+    if (!["all_products_clean", "bi", "catalogue"].includes(source) || !styleId || styleId.length > 200) {
+      res.status(400).json({ error: "A valid catalogue source and style are required" });
       return;
     }
     const catalogueStyle = (await biWorkspaceSource()).styles.map(biStyle)
@@ -7984,15 +8036,15 @@ router.put("/range-plan/exclusions", async (req: AuthRequest, res, next) => {
         `INSERT INTO ${schema}.assortment_exclusions (season,style_id,source)
          VALUES ($1,$2,$3)
          ON CONFLICT (season,style_id,source) DO NOTHING`,
-         [season, styleId, storedSource],
+         [CURRENT_ASSORTMENT_SCOPE, styleId, storedSource],
       );
     } else {
       await pool.query(
         `DELETE FROM ${schema}.assortment_exclusions WHERE season=$1 AND style_id=$2 AND source=$3`,
-         [season, styleId, storedSource],
+         [CURRENT_ASSORTMENT_SCOPE, styleId, storedSource],
       );
     }
-    res.json({ season, styleId, source: "bi", excluded });
+    res.json({ styleId, source: "bi", excluded });
   } catch (error) {
     next(error);
   }

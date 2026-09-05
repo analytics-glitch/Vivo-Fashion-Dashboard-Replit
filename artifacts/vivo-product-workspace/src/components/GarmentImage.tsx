@@ -37,12 +37,14 @@ export default function GarmentImage({ source, styleKey, image, alt, className =
   const inputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
   const [persistedImage, setPersistedImage] = useState<string | null>(null);
+  const [failedImage, setFailedImage] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const key = String(styleKey ?? '').trim();
   const canonicalImageUrl = key ? `/api/workspace/garment-images/${source}/${encodeURIComponent(key)}` : null;
-  const currentImage = preview || persistedImage || image || null;
+  const imageCandidate = preview || persistedImage || image || null;
+  const currentImage = imageCandidate && imageCandidate !== failedImage ? imageCandidate : null;
   const uploading = progress !== null;
 
   useEffect(() => {
@@ -54,6 +56,10 @@ export default function GarmentImage({ source, styleKey, image, alt, className =
       .catch(() => undefined);
     return () => { cancelled = true; };
   }, [canonicalImageUrl]);
+
+  useEffect(() => {
+    setFailedImage(null);
+  }, [preview, persistedImage, image]);
 
   const chooseFile = async (file?: File) => {
     if (!file || uploading || !key) return;
@@ -106,7 +112,7 @@ export default function GarmentImage({ source, styleKey, image, alt, className =
 
   return (
     <div className={`garment-image ${className} ${currentImage ? 'has-image' : 'is-empty'}`}>
-      {currentImage ? <img src={currentImage} alt={alt} loading="lazy" /> : <ImagePlus aria-hidden="true" size={22} />}
+      {currentImage ? <img src={currentImage} alt={alt} loading="lazy" onError={() => setFailedImage(currentImage)} /> : <ImagePlus aria-hidden="true" size={22} />}
       {key ? (
         <label className="garment-image-action" onClick={(event) => { event.preventDefault(); event.stopPropagation(); inputRef.current?.click(); }}>
           {currentImage ? <><Pencil size={12} /> Update image</> : <><Upload size={13} /> Add image</>}
