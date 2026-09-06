@@ -1115,6 +1115,9 @@ def _users_exec(query, params=None, fetch=False):
     connections are short-lived (autocommit DDL) so the extra connection is
     closed immediately after use.
     """
+    is_merch_query = ("rollup_merch_style_day" in query
+                      or "/* merch" in query.lower())
+    acquire_started = time.monotonic()
     pool = _get_pool()
     _direct_fallback = False
     try:
@@ -1129,6 +1132,8 @@ def _users_exec(query, params=None, fetch=False):
         _direct_fallback = True
         log.debug("_users_exec: pool exhausted, using direct connection for: %s",
                   query.split()[0])
+    pool_wait_ms = (time.monotonic() - acquire_started) * 1000
+    query_started = time.monotonic()
     try:
         conn.autocommit = True
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1140,6 +1145,12 @@ def _users_exec(query, params=None, fetch=False):
         rows = [dict(r) for r in cur.fetchall()] if fetch else None
         cur.close()
     except Exception:
+        if is_merch_query:
+            log.warning(
+                "merch_db pool_wait_ms=%.1f query_ms=%.1f outcome=error source=%s",
+                pool_wait_ms, (time.monotonic() - query_started) * 1000,
+                "direct" if _direct_fallback else "pool",
+            )
         if _direct_fallback:
             try:
                 conn.close()
@@ -1153,6 +1164,13 @@ def _users_exec(query, params=None, fetch=False):
             conn.close()
         else:
             pool.putconn(conn)
+    if is_merch_query:
+        log.info(
+            "merch_db pool_wait_ms=%.1f query_ms=%.1f rows=%s source=%s",
+            pool_wait_ms, (time.monotonic() - query_started) * 1000,
+            len(rows) if rows is not None else 0,
+            "direct" if _direct_fallback else "pool",
+        )
     return rows
 
 
@@ -2372,6 +2390,44 @@ async def clerk_auth_gate(request: Request, call_next):
         return JSONResponse({"detail": "Quarterly scorecard access requires a leadership or admin role"}, status_code=403)
 
     return await call_next(request)
+
+
+@app.middleware("http")
+async def merch_request_timing(request: Request, call_next):
+    """Low-noise, structured request timing for the Merch API.
+
+    This intentionally records only /api/merch requests (rather than turning
+    every static/API response into a log line).  The id is accepted only when
+    it is a short printable token, otherwise a server id is minted, so it is
+    safe to put in logs and return to the browser/support ticket.
+    """
+    if not request.url.path.startswith("/api/merch"):
+        return await call_next(request)
+    supplied = request.headers.get("X-Request-ID", "")
+    request_id = supplied if re.fullmatch(r"[A-Za-z0-9._-]{8,80}", supplied) else uuid.uuid4().hex
+    started = time.monotonic()
+    request.state.request_id = request_id
+    try:
+        response = await call_next(request)
+    except Exception:
+        log.exception(
+            "merch_request request_id=%s path=%s status=500 e2e_ms=%.1f",
+            request_id, request.url.path, (time.monotonic() - started) * 1000)
+        raise
+    elapsed_ms = (time.monotonic() - started) * 1000
+    response.headers["X-Request-ID"] = request_id
+    response.headers["X-Response-Time-Ms"] = str(round(elapsed_ms, 1))
+    cache_status = getattr(request.state, "merch_cache_status", "unreported")
+    response.headers["X-Merch-Cache-Status"] = cache_status
+    # Content-Length is intentionally read after endpoint/GZip response
+    # construction; streaming responses simply report 0 rather than buffering.
+    response_bytes = response.headers.get("content-length", "0")
+    log.info(
+        "merch_request request_id=%s method=%s path=%s status=%s cache=%s bytes=%s e2e_ms=%.1f",
+        request_id, request.method, request.url.path, response.status_code,
+        cache_status, response_bytes, elapsed_ms)
+    return response
+
 
 # --- Deferred startup ------------------------------------------------------
 # DB-touching startup hooks (idempotent DDL / seeds / boot logging) used to run
@@ -5366,7 +5422,7 @@ ROLLUP_MAX_AGE_SEC = 2 * 3600    # rollups older than this → fall back to live
 # v2: rm_style +units_21d/units_42d; style_velocity +units_21d/units_30d/
 #     first_sale_date; sku_velocity +country; new store_style_sales/rm_months/
 #     rm_prod tables.
-_ROLLUP_SCHEMA_VER = 3
+_ROLLUP_SCHEMA_VER = 4
 
 # ── Merch rollup column registries ────────────────────────────────────────────
 # Each entry is (column_name, sql_type) for the NON-PRIMARY-KEY data columns of
@@ -5384,6 +5440,12 @@ _MERCH_STYLE_DAY_COLS: tuple = (
     ("gross_units", "int"),
     ("net_revenue", "numeric"),
     ("units_fp",    "int"),
+    # v4: the former units_fp is the legacy ticket-price heuristic.  These
+    # facts preserve the Merch KPI contract exactly: a full-price unit has a
+    # literal zero (or NULL) line discount, and sales value remains gross of
+    # VAT but net of the line discount.
+    ("units_zero_discount", "int"),
+    ("gross_sales_value",   "numeric"),
 )
 _MERCH_FIRST_SALE_COLS: tuple = (
     ("first_sale_date", "date"),
@@ -5619,6 +5681,16 @@ def _rollup_defs():
                   AND s.total_sales_kes::numeric
                       >= COALESCE(smp.mode_price, 0) * 0.95
             ), 0)::int                                               AS units_fp
+            ,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                WHERE s.sale_kind IN ('sale','order')
+                  AND COALESCE(s.discounts_kes, 0)::numeric = 0
+            ), 0)::int                                               AS units_zero_discount,
+            COALESCE(SUM(
+                s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric
+            ) FILTER (
+                WHERE s.sale_kind IN ('sale','order')
+            ), 0)                                                    AS gross_sales_value
         FROM all_sales s
         JOIN all_products_clean p ON p.sku = s.variant_sku
             AND p.style_name IS NOT NULL AND p.style_name <> ''
@@ -5912,7 +5984,7 @@ def run_sales_rollup_refresh(only=None, force=False):
                             is_noos      boolean,
                             sku_variants json
                         )""",
-                    # schema_ver 3 — Merch Hub rollups (created lazily so the
+                    # schema_ver 4 — Merch Hub rollups (created lazily so the
                     # live API never races with a hand-run CREATE TABLE on prod).
                     # ALTER TABLE ADD COLUMN IF NOT EXISTS is generated from
                     # _MERCH_STYLE_DAY_COLS so that adding a column to the list
@@ -5928,6 +6000,8 @@ def run_sales_rollup_refresh(only=None, force=False):
                             gross_units       int,
                             net_revenue       numeric,
                             units_fp          int,
+                            units_zero_discount int,
+                            gross_sales_value numeric,
                             PRIMARY KEY (style_name, sale_day, country, pos_location_name)
                         );
                         CREATE INDEX IF NOT EXISTS idx_rmsd_style_country

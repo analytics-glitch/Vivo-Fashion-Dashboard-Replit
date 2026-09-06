@@ -839,6 +839,32 @@ _CORE_TTL = 600       # seconds — same as the full-universe TTL
 _CORE_SWR_GRACE = 600  # serve stale for this many extra seconds while refreshing
 
 
+def _normalise_scope(value):
+    """Canonical comma-separated filter scope for SQL and cache keys.
+
+    Filter-bar selections are sets.  Sorting and dropping blank selections
+    avoids duplicate cache entries for equivalent requests such as
+    ``Kenya,Uganda`` and `` Uganda , Kenya ``.  Returning None retains the
+    established unscoped SQL semantics.
+    """
+    if value is None:
+        return None
+    parts = sorted({part.strip() for part in str(value).split(",") if part.strip()})
+    return ",".join(parts) if parts else None
+
+
+def _set_merch_request_cache_status(request, endpoint, result, styles=None):
+    """Attach request-local cache provenance for the timing middleware.
+
+    ``request.state`` is unique to the ASGI request, unlike a module global,
+    so concurrent Overview calls cannot overwrite one another's diagnosis.
+    """
+    parts = [f"endpoint={endpoint}:{result}"]
+    if styles:
+        parts.append(f"styles={styles}")
+    request.state.merch_cache_status = ",".join(parts)
+
+
 def _core_swr_get_or_compute(key, fn):
     """SWR-style read/write from _cache_store.
 
@@ -900,7 +926,7 @@ def _fetch_styles_core_sql(country, pos_location):
     the exact Python behaviour of the SQL status filter).
 
     Uses the merch_style_day + merch_first_sale rollups when fresh
-    (schema_ver 3); falls back to a live all_sales scan when stale."""
+    (schema_ver 4); falls back to a live all_sales scan when stale."""
     today      = date.today()
     six_mo_ago = str(today - timedelta(days=_SIX_MONTHS_DAYS))
     today_str  = str(today)
@@ -950,9 +976,15 @@ def _fetch_styles_core_sql(country, pos_location):
     # ── Rollup path (fast) ─────────────────────────────────────────────────
     use_rollup = (
         A is not None
-        and A._rollup_fresh("merch_style_day",  min_schema=3)
-        and A._rollup_fresh("merch_first_sale", min_schema=3)
+        and A._rollup_fresh("merch_style_day",  min_schema=4)
+        and A._rollup_fresh("merch_first_sale", min_schema=4)
     )
+    # Emitted only when the core cache is built/refreshed, not on every cache
+    # hit.  Combined with api_pg's request id timing this gives operators a
+    # useful cache/rollup-path explanation without log spam.
+    log.info("merch_core_query source=%s country=%s pos=%s",
+             "rollup_bridge" if use_rollup else "live",
+             bool(country), bool(pos_location))
 
     if use_rollup:
         # Look up the watermark: rows in all_sales loaded after this timestamp
@@ -1096,8 +1128,8 @@ colour_stock AS (
  * incr_sales — rows that arrived in all_sales after the rollup was built.
  * When %(wm)s IS NULL (first build / missing meta) this returns 0 rows
  * because "loaded_at > NULL" is NULL (falsy) in PostgreSQL — correct no-op.
- * Includes the same sku_mode_price join used in the rollup build so that
- * units_fp is calculated identically.
+ * Carries the v4 strict full-price and gross-sales facts as well as the legacy
+ * heuristic fact, keeping the union shape parity-safe for future readers.
  */
 incr_sales AS (
     SELECT p.style_name,
@@ -1112,7 +1144,14 @@ incr_sales AS (
                WHERE s.sale_kind IN ('sale','order')
                AND s.total_sales_kes::numeric
                    >= COALESCE(smp2.mode_price, 0) * 0.95
-           ), 0)::int                                                AS units_fp
+            ), 0)::int                                                AS units_fp,
+            COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                WHERE s.sale_kind IN ('sale','order')
+                  AND COALESCE(s.discounts_kes, 0)::numeric = 0
+            ), 0)::int                                                AS units_zero_discount,
+            COALESCE(SUM(
+                s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric
+            ) FILTER (WHERE s.sale_kind IN ('sale','order')), 0)      AS gross_sales_value
     FROM all_sales s
     JOIN all_products_clean p ON p.sku = s.variant_sku
         AND p.style_name IS NOT NULL AND p.style_name <> ''
@@ -1136,11 +1175,11 @@ incr_sales AS (
  */
 combined_sales AS (
     SELECT style_name, sale_day, country, pos_location_name,
-           gross_units, net_revenue, units_fp
+            gross_units, net_revenue, units_fp, units_zero_discount, gross_sales_value
     FROM rollup_merch_style_day
     UNION ALL
     SELECT style_name, sale_day, country, pos_location_name,
-           gross_units, net_revenue, units_fp
+            gross_units, net_revenue, units_fp, units_zero_discount, gross_sales_value
     FROM incr_sales
 ),
 rollup_6m AS (
@@ -1165,9 +1204,25 @@ rollup_life AS (
     {life_where}
     GROUP BY style_name
 ),
+incr_first_sale AS (
+    /* New styles since the snapshot need their launch-date fallback too. */
+    SELECT p.style_name, MIN(s.sale_date::date) AS first_sale_date
+    FROM all_sales s
+    JOIN all_products_clean p ON p.sku = s.variant_sku
+        AND p.style_name IS NOT NULL AND p.style_name <> ''
+        AND COALESCE(p.brand,'') NOT ILIKE '%%third party%%'
+    WHERE s.loaded_at > %(wm)s
+      AND s.sale_kind IN ('sale','order')
+    GROUP BY p.style_name
+),
 first_sale AS (
-    SELECT style_name, first_sale_date
-    FROM rollup_merch_first_sale
+    SELECT style_name, MIN(first_sale_date) AS first_sale_date
+    FROM (
+        SELECT style_name, first_sale_date FROM rollup_merch_first_sale
+        UNION ALL
+        SELECT style_name, first_sale_date FROM incr_first_sale
+    ) first_sale_facts
+    GROUP BY style_name
 ),
 /*
  * orders_6m — COUNT(DISTINCT order_id) per style in the 6-month window.
@@ -1465,6 +1520,8 @@ def _fetch_styles_core_cached(country, pos_location):
     One cached core rowset serves every brand/subcategory/tier/status/date
     combination for the same country+POS scope.  Python narrows the ~3.5k
     rows in _fetch_styles_fast_path — typically <1 ms."""
+    country = _normalise_scope(country)
+    pos_location = _normalise_scope(pos_location)
     key = f"merch_core|{country}|{pos_location}"
 
     def _compute():
@@ -1496,6 +1553,8 @@ def _fetch_period_overlay(period_from, period_to, country, pos_location):
 
     Reads rollup_merch_style_day (index scan — fast) when fresh; falls back
     to a live all_sales scan otherwise.  Cached 600 s per (dates, country, POS)."""
+    country = _normalise_scope(country)
+    pos_location = _normalise_scope(pos_location)
     key = (f"merch_period|{period_from}|{period_to}"
            f"|{country}|{pos_location}")
     return _cached(key, 600,
@@ -1509,11 +1568,16 @@ def _fetch_full_price_period_by_style(
 ):
     """Return strict zero-discount gross units by style for a selected window.
 
-    This is intentionally separate from the date-independent core rollup.  The
-    rollup's historical ``units_fp`` field predates the strict discount rule,
-    while this KPI must classify a unit as full price only when discounts_kes is
-    NULL/zero.  The result is cached alongside the period overlay.
+    v4 stores this exact fact in the day rollup.  Earlier ``units_fp`` remains
+    a legacy ticket-price heuristic and is never used for this KPI.  A healthy
+    v4 rollup is combined with the post-watermark incremental bridge; stale or
+    pre-v4 rollups use the equivalent live query. The result is cached alongside
+    the period overlay.
     """
+    country = _normalise_scope(country)
+    pos_location = _normalise_scope(pos_location)
+    brand = _normalise_scope(brand)
+    subcategory = _normalise_scope(subcategory)
     key = (
         f"merch_full_price_period|{period_from}|{period_to}|{country}|"
         f"{pos_location}|{brand}|{subcategory}"
@@ -1549,7 +1613,75 @@ def _fetch_full_price_period_by_style(
                 params["subcategories"] = subcategories
                 product_clause += " AND p.product_type = ANY(%(subcategories)s)"
 
-        rows = _db_exec(f"""
+        # v4 materialises precisely the two facts this KPI needs.  The
+        # incremental branch is deliberately watermark-bounded: it bridges
+        # rows loaded after the refresh snapshot without ever scanning the
+        # historical raw fact table on a healthy rollup path.
+        use_rollup = (A is not None
+                      and A._rollup_fresh("merch_style_day", min_schema=4))
+        log.info("merch_full_price_query source=%s country=%s pos=%s brand=%s subcategory=%s",
+                 "rollup_bridge" if use_rollup else "live",
+                 bool(country), bool(pos_location), bool(brand), bool(subcategory))
+        if use_rollup:
+            try:
+                wm_rows = _db_exec(
+                    "SELECT source_watermark FROM rollup_meta "
+                    "WHERE name = 'merch_style_day'", fetch=True)
+                params["wm"] = (wm_rows[0].get("source_watermark")
+                                if wm_rows else None)
+            except Exception:
+                params["wm"] = None
+            rollup_country = (
+                " AND msd.country = ANY(%(countries)s)" if "countries" in params else "")
+            rollup_pos = (
+                " AND msd.pos_location_name = ANY(%(pos_locations)s)"
+                if "pos_locations" in params else "")
+            sql = f"""
+                WITH eligible_styles AS (
+                    SELECT DISTINCT p.style_name
+                    FROM all_products_clean p
+                    WHERE TRUE {product_clause}
+                ),
+                incr AS (
+                    SELECT p.style_name, s.sale_date::date AS sale_day,
+                           COALESCE(s.country, '') AS country,
+                           COALESCE(s.pos_location_name, '') AS pos_location_name,
+                           COALESCE(SUM(s.ordered_item_quantity) FILTER (
+                               WHERE s.sale_kind IN ('sale','order')
+                                 AND COALESCE(s.discounts_kes, 0)::numeric = 0
+                           ), 0)::int AS units_zero_discount,
+                           COALESCE(SUM(s.total_sales_kes::numeric
+                               - COALESCE(s.discounts_kes, 0)::numeric) FILTER (
+                               WHERE s.sale_kind IN ('sale','order')
+                           ), 0) AS gross_sales_value
+                    FROM all_sales s
+                    JOIN all_products_clean p ON p.sku = s.variant_sku
+                    WHERE s.loaded_at > %(wm)s
+                      AND s.sale_date BETWEEN %(period_from)s AND %(period_to)s
+                      AND {_BASE_FILTERS}
+                      {product_clause} {country_clause} {pos_clause}
+                    GROUP BY p.style_name, s.sale_date::date,
+                             COALESCE(s.country, ''), COALESCE(s.pos_location_name, '')
+                ),
+                facts AS (
+                    SELECT msd.style_name, msd.units_zero_discount,
+                           msd.gross_sales_value
+                    FROM rollup_merch_style_day msd
+                    WHERE msd.sale_day BETWEEN %(period_from)s AND %(period_to)s
+                      {rollup_country} {rollup_pos}
+                    UNION ALL
+                    SELECT style_name, units_zero_discount, gross_sales_value
+                    FROM incr
+                )
+                SELECT f.style_name,
+                       COALESCE(SUM(f.units_zero_discount), 0) AS units_full_price_period,
+                       COALESCE(SUM(f.gross_sales_value), 0.0) AS sales_value_period
+                FROM facts f
+                JOIN eligible_styles es ON es.style_name = f.style_name
+                GROUP BY f.style_name
+            """
+        else:
+            sql = f"""
             SELECT
                 p.style_name,
                 COALESCE(SUM(s.ordered_item_quantity) FILTER (
@@ -1569,7 +1701,8 @@ def _fetch_full_price_period_by_style(
               {country_clause}
               {pos_clause}
             GROUP BY p.style_name
-        """, params, fetch=True) or []
+            """
+        rows = _db_exec(sql, params, fetch=True) or []
         return {
             r["style_name"]: {
                 "units_full_price_period": int(r.get("units_full_price_period") or 0),
@@ -1598,7 +1731,7 @@ def _fetch_period_overlay_sql(period_from, period_to, country, pos_location):
             pos_clause = " AND pos_location_name = ANY(%(pos_locations)s)"
 
     use_rollup = (A is not None
-                  and A._rollup_fresh("merch_style_day", min_schema=3))
+                  and A._rollup_fresh("merch_style_day", min_schema=4))
     if use_rollup:
         # Include incremental (since-watermark) for freshness — same pattern as core.
         try:
@@ -2868,6 +3001,11 @@ def _styles_cached(brand=None, subcategory=None, tier=None, status=None,
     incident). First caller computes; the rest block on the key's lock and
     then read the freshly-cached result. Callers run in Starlette's threadpool
     (sync-def routes), so blocking here never touches the event loop."""
+    brand = _normalise_scope(brand)
+    subcategory = _normalise_scope(subcategory)
+    tier = _normalise_scope(tier)
+    country = _normalise_scope(country)
+    pos_location = _normalise_scope(pos_location)
     key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
     now = _time.monotonic()
     entry = _cache_store.get(key)
@@ -2895,7 +3033,7 @@ _INFLIGHT = {}
 
 async def _styles_async(brand=None, subcategory=None, tier=None, status=None,
                         from_date=None, to_date=None, country=None,
-                        pos_location=None, ttl=600):
+                         pos_location=None, ttl=600, trace=None):
     """Async fan-out layer over _styles_cached for the Overview endpoints.
 
     The Overview tab's five requests (plus the KPI CSV export) arrive
@@ -2910,14 +3048,25 @@ async def _styles_async(brand=None, subcategory=None, tier=None, status=None,
     _INFLIGHT check-and-set below has no await point in between.
     """
     from starlette.concurrency import run_in_threadpool
+    brand = _normalise_scope(brand)
+    subcategory = _normalise_scope(subcategory)
+    tier = _normalise_scope(tier)
+    country = _normalise_scope(country)
+    pos_location = _normalise_scope(pos_location)
     key = f"merch_styles|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
     now = _time.monotonic()
     entry = _cache_store.get(key)
     if entry and (now - entry[0]) < ttl:
+        if trace is not None:
+            trace["styles"] = "hit"
         return entry[1]
     fut = _INFLIGHT.get(key)
     if fut is not None:
+        if trace is not None:
+            trace["styles"] = "inflight"
         return await fut
+    if trace is not None:
+        trace["styles"] = "miss"
     fut = asyncio.get_running_loop().create_future()
     # Mark exceptions as retrieved even if no sibling ever awaits the future,
     # so asyncio never logs "exception was never retrieved".
@@ -6697,9 +6846,11 @@ def register_merch_routes(app, api_pg_module):
         pos_location: Optional[str] = Query(None),
     ):
         """Full style universe — one row per style with all merchandising metrics."""
+        trace = {}
         result = await _styles_async(
             brand, subcategory, tier, status,
-            from_date, to_date, country, pos_location, _TTL)
+            from_date, to_date, country, pos_location, _TTL, trace)
+        _set_merch_request_cache_status(request, "styles", "shared", trace.get("styles"))
         return JSONResponse({"styles": result, "count": len(result)})
 
     @app.get("/api/merch/summary")
@@ -6718,12 +6869,15 @@ def register_merch_routes(app, api_pg_module):
         key = f"merch_summary|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
         entry = _cache_store.get(key)
         if entry and (_time.monotonic() - entry[0]) < _TTL:
+            _set_merch_request_cache_status(request, "summary", "hit")
             return JSONResponse(entry[1])
+        trace = {}
         rows = await _styles_async(
             brand, subcategory, tier, status,
-            from_date, to_date, country, pos_location, _TTL)
+            from_date, to_date, country, pos_location, _TTL, trace)
         result = _compute_summary(rows)  # pure Python over ~3.5k rows — fast
         _cache_store[key] = (_time.monotonic(), result)
+        _set_merch_request_cache_status(request, "summary", "miss", trace.get("styles"))
         return JSONResponse(result)
 
     @app.get("/api/merch/export/kpi.csv")
@@ -6939,7 +7093,9 @@ def register_merch_routes(app, api_pg_module):
         key = f"merch_by_brand|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}|{trend}"
         entry = _cache_store.get(key)
         if entry and (_time.monotonic() - entry[0]) < _TTL:
+            _set_merch_request_cache_status(request, "by_brand", "hit")
             return JSONResponse({"rows": entry[1]})
+        trace = {}
         if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
             pf, pt = _prev_window(from_date, to_date)
             # SEQUENTIAL on purpose: running current+prev concurrently makes
@@ -6950,17 +7106,18 @@ def register_merch_routes(app, api_pg_module):
             # resolve as early as possible; prev only delays trend charts.
             cur_styles = await _styles_async(
                 brand, subcategory, tier, status,
-                from_date, to_date, country, pos_location, _TTL)
+                from_date, to_date, country, pos_location, _TTL, trace)
             prev_styles = await _styles_async(
                 brand, subcategory, tier, status,
-                pf, pt, country, pos_location, _TTL)
+                pf, pt, country, pos_location, _TTL, trace)
             rows = _merge_trend(_agg_by_dim(cur_styles, "brand"),
                                 _agg_by_dim(prev_styles, "brand"), "brand")
         else:
             rows = _agg_by_dim(await _styles_async(
                 brand, subcategory, tier, status,
-                from_date, to_date, country, pos_location, _TTL), "brand")
+                from_date, to_date, country, pos_location, _TTL, trace), "brand")
         _cache_store[key] = (_time.monotonic(), rows)
+        _set_merch_request_cache_status(request, "by_brand", "miss", trace.get("styles"))
         return JSONResponse({"rows": rows})
 
     @app.get("/api/merch/by-subcategory")
@@ -6979,23 +7136,26 @@ def register_merch_routes(app, api_pg_module):
         key = f"merch_by_sub|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}|{trend}"
         entry = _cache_store.get(key)
         if entry and (_time.monotonic() - entry[0]) < _TTL:
+            _set_merch_request_cache_status(request, "by_subcategory", "hit")
             return JSONResponse({"rows": entry[1]})
+        trace = {}
         if trend:  # opt-in (Overview charts) — adds revenue_prev + trend_pct
             pf, pt = _prev_window(from_date, to_date)
             # Sequential — see the contention note in merch_by_brand.
             cur_styles = await _styles_async(
                 brand, subcategory, tier, status,
-                from_date, to_date, country, pos_location, _TTL)
+                from_date, to_date, country, pos_location, _TTL, trace)
             prev_styles = await _styles_async(
                 brand, subcategory, tier, status,
-                pf, pt, country, pos_location, _TTL)
+                pf, pt, country, pos_location, _TTL, trace)
             rows = _merge_trend(_agg_by_dim(cur_styles, "subcategory"),
                                 _agg_by_dim(prev_styles, "subcategory"), "subcategory")
         else:
             rows = _agg_by_dim(await _styles_async(
                 brand, subcategory, tier, status,
-                from_date, to_date, country, pos_location, _TTL), "subcategory")
+                from_date, to_date, country, pos_location, _TTL, trace), "subcategory")
         _cache_store[key] = (_time.monotonic(), rows)
+        _set_merch_request_cache_status(request, "by_subcategory", "miss", trace.get("styles"))
         return JSONResponse({"rows": rows})
 
     @app.get("/api/merch/by-tier")
@@ -7013,11 +7173,14 @@ def register_merch_routes(app, api_pg_module):
         key = f"merch_by_tier|{brand}|{subcategory}|{tier}|{status}|{from_date}|{to_date}|{country}|{pos_location}"
         entry = _cache_store.get(key)
         if entry and (_time.monotonic() - entry[0]) < _TTL:
+            _set_merch_request_cache_status(request, "by_tier", "hit")
             return JSONResponse({"rows": entry[1]})
+        trace = {}
         rows = _agg_by_dim(await _styles_async(
             brand, subcategory, tier, status,
-            from_date, to_date, country, pos_location, _TTL), "tier")
+            from_date, to_date, country, pos_location, _TTL, trace), "tier")
         _cache_store[key] = (_time.monotonic(), rows)
+        _set_merch_request_cache_status(request, "by_tier", "miss", trace.get("styles"))
         return JSONResponse({"rows": rows})
 
     @app.get("/api/merch/style-stores")

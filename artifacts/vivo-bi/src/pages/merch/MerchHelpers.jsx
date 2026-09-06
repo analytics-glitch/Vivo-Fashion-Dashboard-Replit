@@ -2,7 +2,7 @@
  * Shared helpers for all Merchandising Hub tab components.
  * Formatting helpers, the MerchKPICard wrapper, and the useMerchData hook.
  */
-import React, { useEffect, useState, useCallback, useMemo } from "react";
+import React, { useEffect, useState, useMemo, useRef } from "react";
 import { DownloadSimple, CircleNotch } from "@phosphor-icons/react";
 import { useMerchFilters } from "@/pages/MerchandisingHub";
 import { api } from "@/lib/api";
@@ -336,7 +336,19 @@ export const useMerchParams = (localSubcat = null) => {
 
 export const useMerchData = (endpoints = [], localSubcat = null, extraParams = null) => {
   const filters = useMerchFilters();
-  const [state, setState] = useState({ loading: true, error: null });
+  const [state, setState] = useState(() => {
+    const loadingByEndpoint = Object.fromEntries(endpoints.map((endpoint) => [
+      endpoint.replace(/-([a-z])/g, (_, c) => c.toUpperCase()), true,
+    ]));
+    return {
+      loading: endpoints.length > 0,
+      error: null,
+      loadingByEndpoint,
+      errorByEndpoint: {},
+    };
+  });
+  const requestId = useRef(0);
+  const hasLoaded = useRef(false);
 
   // extraParams: optional additional query params sent to every endpoint in
   // the list (FastAPI silently ignores params an endpoint doesn't declare) —
@@ -347,31 +359,78 @@ export const useMerchData = (endpoints = [], localSubcat = null, extraParams = n
 
   // Stable serialisation for the dep array
   const paramsKey = JSON.stringify(params) + filters.dataVersion;
+  const endpointKey = endpoints.join("|");
 
-  const load = useCallback(() => {
-    let cancelled = false;
-    setState((s) => ({ ...s, loading: true, error: null }));
-    Promise.all(
-      endpoints.map((ep) => api.get(`/merch/${ep}`, { params }))
-    )
-      .then((results) => {
-        if (cancelled) return;
-        const next = { loading: false, error: null };
-        results.forEach((r, i) => {
-          // key = endpoint with dashes removed, camelCased
-          const key = endpoints[i].replace(/-([a-z])/g, (_, c) => c.toUpperCase());
-          next[key] = r.data;
-        });
-        setState(next);
-      })
-      .catch((e) => {
-        if (!cancelled) setState({ loading: false, error: e?.response?.data?.detail || e.message });
+  useEffect(() => {
+    const id = ++requestId.current;
+    const endpointEntries = endpoints.map((endpoint) => ({
+      endpoint,
+      key: endpoint.replace(/-([a-z])/g, (_, c) => c.toUpperCase()),
+    }));
+    const loadingByEndpoint = Object.fromEntries(endpointEntries.map(({ key }) => [key, true]));
+
+    // Do not retain results from another scope: a response can otherwise paint
+    // the previous brand/date selection while its replacement is in flight.
+    setState({
+      loading: endpointEntries.length > 0,
+      error: null,
+      loadingByEndpoint,
+      errorByEndpoint: {},
+    });
+
+    const controllers = [];
+    const fetchEndpoints = () => {
+      endpointEntries.forEach(({ endpoint, key }) => {
+        const controller = new AbortController();
+        controllers.push(controller);
+        api.get(`/merch/${endpoint}`, { params, signal: controller.signal })
+          .then((response) => {
+            if (requestId.current !== id) return;
+            setState((current) => {
+              const nextLoading = { ...current.loadingByEndpoint, [key]: false };
+              const nextErrors = { ...current.errorByEndpoint };
+              delete nextErrors[key];
+              return {
+                ...current,
+                [key]: response.data,
+                loadingByEndpoint: nextLoading,
+                errorByEndpoint: nextErrors,
+                loading: Object.values(nextLoading).some(Boolean),
+                error: Object.values(nextErrors)[0] || null,
+              };
+            });
+          })
+          .catch((error) => {
+            // Axios cancellation is expected whenever a scope changes.
+            if (requestId.current !== id || controller.signal.aborted) return;
+            const message = error?.response?.data?.detail || error?.message || "Unable to load data";
+            setState((current) => {
+              const nextLoading = { ...current.loadingByEndpoint, [key]: false };
+              const nextErrors = { ...current.errorByEndpoint, [key]: message };
+              return {
+                ...current,
+                loadingByEndpoint: nextLoading,
+                errorByEndpoint: nextErrors,
+                loading: Object.values(nextLoading).some(Boolean),
+                error: Object.values(nextErrors)[0] || null,
+              };
+            });
+          });
       });
-    return () => { cancelled = true; };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paramsKey]);
+    };
 
-  useEffect(() => load(), [load]);
+    // The first paint starts immediately. Subsequent scope changes are
+    // coalesced, avoiding a request storm while a user changes several filters.
+    const delay = hasLoaded.current ? 180 : 0;
+    hasLoaded.current = true;
+    const timer = setTimeout(fetchEndpoints, delay);
+    return () => {
+      clearTimeout(timer);
+      controllers.forEach((controller) => controller.abort());
+    };
+  // endpointKey deliberately represents the caller's endpoint list.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paramsKey, endpointKey]);
 
   return state;
 };

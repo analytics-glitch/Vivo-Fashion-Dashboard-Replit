@@ -178,7 +178,8 @@ const PlaceholderTab = ({ name }) => (
 // All start as PlaceholderTab; swap in real implementations as tasks land.
 
 // ── Merch-native tab components ───────────────────────────────────────────────
-const MerchandisingOverview    = React.lazy(() => import("./merch/MerchOverview"));
+const loadMerchandisingOverview = () => import("./merch/MerchOverview");
+const MerchandisingOverview    = React.lazy(loadMerchandisingOverview);
 const MerchandisingSales       = React.lazy(() => import("./merch/MerchSales"));
 const MerchandisingInventory   = React.lazy(() => import("./merch/MerchInventory"));
 const MerchandisingLifecycle   = React.lazy(() => import("./MerchLifecycle"));
@@ -254,6 +255,12 @@ const MerchandisingHub = () => {
   const { applied } = useFilters();
   const { dateFrom, dateTo, countries, channels, dataVersion,
           compareMode, compareDateFrom, compareDateTo } = applied;
+
+  // Key Metrics is the hub's default page; begin fetching its lazy chunk as
+  // soon as the shell mounts so the default selection need not wait on it.
+  useEffect(() => {
+    loadMerchandisingOverview();
+  }, []);
 
   // ── Hub-level scope filters (Brand + Category + Tier) ─────────────────────
   // These sit in a secondary strip below the tab bar, persist across tab

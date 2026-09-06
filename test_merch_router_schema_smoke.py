@@ -118,6 +118,48 @@ class FullPriceSellThroughTests(unittest.TestCase):
         self.assertIn("s.sale_kind IN ('sale','order')", sql)
         self.assertIn("COALESCE(s.discounts_kes, 0)::numeric = 0", sql)
 
+    def test_healthy_v4_rollup_uses_materialised_facts_with_bounded_bridge(self):
+        """A healthy v4 rollup must not fall back to a historical raw scan."""
+        healthy = mock.MagicMock()
+        healthy._rollup_fresh.return_value = True
+        old_a = merch_router.A
+        merch_router.A = healthy
+        merch_router._cache_store.clear()
+        try:
+            with mock.patch.object(merch_router, "_db_exec", side_effect=[
+                [{"source_watermark": "2026-08-01 00:00:00"}],
+                [{"style_name": "A", "units_full_price_period": 3,
+                  "sales_value_period": 1000}],
+            ]) as db:
+                result = merch_router._fetch_full_price_period_by_style(
+                    "2026-08-01", "2026-08-31", country="Uganda, Kenya")
+            sql = db.call_args_list[-1].args[0]
+            self.assertEqual(result["A"]["units_full_price_period"], 3)
+            self.assertIn("FROM rollup_merch_style_day msd", sql)
+            self.assertIn("msd.units_zero_discount", sql)
+            self.assertIn("msd.gross_sales_value", sql)
+            # all_sales is permitted only for the post-watermark bridge.
+            self.assertIn("s.loaded_at > %(wm)s", sql)
+            self.assertIn("FROM all_sales s", sql)
+            self.assertEqual(sql.count("FROM all_sales s"), 1)
+            self.assertLess(sql.index("s.loaded_at > %(wm)s"),
+                            sql.index("GROUP BY p.style_name", sql.index("FROM all_sales s")))
+        finally:
+            merch_router.A = old_a
+            merch_router._cache_store.clear()
+
+    def test_full_price_cache_scope_is_order_insensitive(self):
+        """Equivalent selected-country sets share one full-price cache entry."""
+        merch_router._cache_store.clear()
+        calls = []
+        with _patch_db([]) as db:
+            merch_router._fetch_full_price_period_by_style(
+                "2026-08-01", "2026-08-31", country="Uganda, Kenya")
+            merch_router._fetch_full_price_period_by_style(
+                "2026-08-01", "2026-08-31", country="Kenya,Uganda")
+            calls = db.call_count
+        self.assertEqual(calls, 1)
+
 
 def _patch_db(rows):
     """Return a context manager that makes merch_router._db_exec always return rows."""

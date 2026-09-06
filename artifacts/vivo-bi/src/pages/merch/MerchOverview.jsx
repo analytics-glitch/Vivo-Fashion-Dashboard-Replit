@@ -197,7 +197,10 @@ const MENS_SUBCAT_RE = /^men['’]?s\b/i;
 export default function MerchOverview() {
   const filters = useMerchFilters();
   const [localSubcat, setLocalSubcat] = useState(null);
-  const { summary, styles, byBrand, bySubcategory, byTier, loading, error } =
+  const {
+    summary, styles, byBrand, bySubcategory, byTier,
+    loadingByEndpoint, errorByEndpoint,
+  } =
     useMerchData(["summary", "styles", "by-brand", "by-subcategory", "by-tier"], localSubcat,
                  { trend: 1 }); // by-brand/by-subcategory add prev-window trend fields
   // Exact params useMerchData sends (incl. tab-local subcategory override) —
@@ -222,50 +225,100 @@ export default function MerchOverview() {
     URL.revokeObjectURL(url);
   };
 
-  // ── styles is { styles: [...], count } ────────────────────────────────────
-  const styleRows = useMemo(() => styles?.styles || [], [styles]);
+  // The styles endpoint powers every action and distribution view. Classify its
+  // rows once so a large style universe does not get repeatedly traversed for
+  // each card/chart.
+  const styleInsights = useMemo(() => {
+    const activeStyleRows = [];
+    const wocBuckets = { "0-4 wks": 0, "4-8 wks": 0, "8-12 wks": 0, "12-20 wks": 0, "20+ wks": 0 };
+    const fpBuckets = { "<70%": 0, "70-85%": 0, "85-95%": 0, ">95%": 0 };
+    const atRiskRows = [], overdueRows = [], healthyRows = [], onReviewRows = [], riskyRows = [];
+    const atRiskBySubMap = {};
+    const ageCounts = AGE_GROUPS.map(() => ({ Healthy: 0, "At Risk": 0, Overdue: 0 }));
+    let stockAtRisk = 0;
+    let marketingPush = 0;
 
-  // ── ACTIVE style rows (Tier 1–4) ──────────────────────────────────────────
-  // Shared universe for the At-Risk & Actions section AND both distribution
-  // charts (user requests Aug 2026): Retired/Archived styles aren't
-  // actionable — thousands of dead retired styles all read "overdue" and were
-  // drowning the risk cards. The server summary applies the SAME gate to
-  // on_track/at_risk/overdue counts, so the Style Health card and the at-risk
-  // cards always agree.
-  const activeStyleRows = useMemo(
-    () => styleRows.filter(s => s.tier !== "Retired" && s.tier !== "Archived"),
-    [styleRows]);
+    for (const row of styles?.styles || []) {
+      if (row.tier === "Retired" || row.tier === "Archived") continue;
+      activeStyleRows.push(row);
+      const woc = row.woc;
+      if (woc != null) {
+        if (woc < 4) wocBuckets["0-4 wks"]++;
+        else if (woc < 8) wocBuckets["4-8 wks"]++;
+        else if (woc < 12) wocBuckets["8-12 wks"]++;
+        else if (woc < 20) wocBuckets["12-20 wks"]++;
+        else wocBuckets["20+ wks"]++;
+      }
+      const fullPrice = row.full_price_pct;
+      if (fullPrice != null) {
+        if (fullPrice < 70) fpBuckets["<70%"]++;
+        else if (fullPrice < 85) fpBuckets["70-85%"]++;
+        else if (fullPrice < 95) fpBuckets["85-95%"]++;
+        else fpBuckets[">95%"]++;
+      }
 
-  // ── Compute distributions from styles ─────────────────────────────────────
-  // Active styles only (user request Aug 2026, matching the FP% chart).
-  const wocDist = useMemo(() => {
-    const buckets = { "0-4 wks": 0, "4-8 wks": 0, "8-12 wks": 0, "12-20 wks": 0, "20+ wks": 0 };
-    for (const r of activeStyleRows) {
-      const w = r.woc;
-      if (w === null || w === undefined) continue;
-      if (w < 4)       buckets["0-4 wks"]++;
-      else if (w < 8)  buckets["4-8 wks"]++;
-      else if (w < 12) buckets["8-12 wks"]++;
-      else if (w < 20) buckets["12-20 wks"]++;
-      else             buckets["20+ wks"]++;
+      const isAtRisk = row.action_status === "at_risk";
+      const isOverdue = row.action_status === "overdue";
+      const isHealthy = row.action_status === "on_track";
+      const isReview = isAtRisk && ["At-Risk — Investigate", "Overstock — Review"].includes(row.recommended_action);
+      if (isAtRisk) {
+        atRiskRows.push(row);
+        if (isReview) onReviewRows.push(row);
+        else marketingPush++;
+      } else if (isOverdue) overdueRows.push(row);
+      else if (isHealthy) healthyRows.push(row);
+      if (isAtRisk || isOverdue) {
+        riskyRows.push(row);
+        stockAtRisk += row.current_stock || 0;
+        const subcategory = row.subcategory || "—";
+        atRiskBySubMap[subcategory] = (atRiskBySubMap[subcategory] || 0) + 1;
+      }
+      const weeks = ageWeeks(row.launch_date);
+      const ageIndex = weeks == null ? -1 : AGE_GROUPS.findIndex((group) => weeks >= group.min && weeks <= group.max);
+      if (ageIndex >= 0) {
+        if (isHealthy) ageCounts[ageIndex].Healthy++;
+        else if (isAtRisk) ageCounts[ageIndex]["At Risk"]++;
+        else if (isOverdue) ageCounts[ageIndex].Overdue++;
+      }
     }
-    return Object.entries(buckets).map(([name, value], i) => ({ name, value, color: WOC_BUCKET_COLORS[i] }));
-  }, [activeStyleRows]);
-
-  // Active styles only (user request Aug 2026) — retired/archived styles'
-  // historical full-price % isn't actionable and was inflating the buckets.
-  const fpDist = useMemo(() => {
-    const buckets = { "<70%": 0, "70-85%": 0, "85-95%": 0, ">95%": 0 };
-    for (const r of activeStyleRows) {
-      const fp = r.full_price_pct;
-      if (fp === null || fp === undefined) continue;
-      if (fp < 70)       buckets["<70%"]++;
-      else if (fp < 85)  buckets["70-85%"]++;
-      else if (fp < 95)  buckets["85-95%"]++;
-      else               buckets[">95%"]++;
-    }
-    return Object.entries(buckets).map(([name, value], i) => ({ name, value, color: FP_BUCKET_COLORS[i] }));
-  }, [activeStyleRows]);
+    return {
+      activeStyleRows,
+      wocDist: Object.entries(wocBuckets).map(([name, value], i) => ({ name, value, color: WOC_BUCKET_COLORS[i] })),
+      fpDist: Object.entries(fpBuckets).map(([name, value], i) => ({ name, value, color: FP_BUCKET_COLORS[i] })),
+      riskKpis: {
+        atRiskCount: atRiskRows.length, overdueCount: overdueRows.length, onReviewCount: onReviewRows.length,
+        stockAtRisk, healthyCount: healthyRows.length, total: activeStyleRows.length,
+        atRiskRows, overdueRows, onReviewRows, healthyRows,
+      },
+      top10AtRisk: [...riskyRows].sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0)).slice(0, 10).map((row) => ({
+        name: truncate(row.style_name, 28), stock: row.current_stock || 0, days: row.last_sale_days,
+        daysLabel: row.last_sale_days === null ? "No sale data" : `Last sale: ${row.last_sale_days}d`,
+        fill: DAYS_COLOR(row.last_sale_days),
+      })),
+      statusDonut: [
+        { name: `Healthy (${healthyRows.length})`, value: healthyRows.length, fill: STATUS_COLORS.Healthy },
+        { name: `On Review (${onReviewRows.length})`, value: onReviewRows.length, fill: STATUS_COLORS["On Review"] },
+        { name: `Marketing Push (${marketingPush})`, value: marketingPush, fill: STATUS_COLORS["Marketing Push"] },
+        { name: `Overdue (${overdueRows.length})`, value: overdueRows.length, fill: STATUS_COLORS.Overdue },
+      ].filter((item) => item.value > 0),
+      atRiskBySub: Object.entries(atRiskBySubMap).sort(([, a], [, b]) => b - a).slice(0, 10)
+        .map(([name, value]) => ({ name: truncate(name, 22), value })),
+      statusByAge: AGE_GROUPS.map((group, index) => ({ label: group.label.replace("\n", " "), ...ageCounts[index] })),
+    };
+  }, [styles]);
+  const {
+    activeStyleRows, wocDist, fpDist, riskKpis, top10AtRisk, statusDonut, atRiskBySub, statusByAge,
+  } = styleInsights;
+  const styleRows = styles?.styles || [];
+  const summaryPending = loadingByEndpoint?.summary;
+  const stylesPending = loadingByEndpoint?.styles;
+  const summaryError = errorByEndpoint?.summary;
+  const stylesError = errorByEndpoint?.styles;
+  const renderEndpointIssue = (error, loading, label) => {
+    if (error) return <ErrorBox message={`Could not load ${label}: ${error}`} />;
+    if (loading) return <Loading label={`Loading ${label}…`} />;
+    return null;
+  };
 
   // ── Chart period label ────────────────────────────────────────────────────
   // Shared compact label for chart titles and KPI headings.
@@ -319,99 +372,6 @@ export default function MerchOverview() {
       color: TIER_COLOR_ARR[i] || C.muted,
     }));
   }, [byTier]);
-
-  // ── At-Risk KPI derivations (activeStyleRows — declared up with the
-  //    distributions, since the FP% chart shares the active-only universe) ──
-  const riskKpis = useMemo(() => {
-    const atRisk  = activeStyleRows.filter(s => s.action_status === "at_risk");
-    const overdue = activeStyleRows.filter(s => s.action_status === "overdue");
-    const healthy = activeStyleRows.filter(s => s.action_status === "on_track");
-    // "On Review" mapped from at_risk (those with last_sale_days 60-89 or overstock)
-    const onReview = activeStyleRows.filter(s =>
-      s.action_status === "at_risk" &&
-      ["At-Risk — Investigate", "Overstock — Review"].includes(s.recommended_action)
-    );
-    const stockAtRisk = [...atRisk, ...overdue].reduce((acc, s) => acc + (s.current_stock || 0), 0);
-    const total = activeStyleRows.length;
-    return {
-      atRiskCount:  atRisk.length,
-      overdueCount: overdue.length,
-      onReviewCount: onReview.length,
-      stockAtRisk,
-      healthyCount: healthy.length,
-      total,
-      // arrays kept for the per-card CSV downloads — serialising these exact
-      // rows guarantees each file matches its card count
-      atRiskRows: atRisk, overdueRows: overdue, onReviewRows: onReview, healthyRows: healthy,
-    };
-  }, [activeStyleRows]);
-
-  // Top 10 at-risk by stock exposure (active styles only)
-  const top10AtRisk = useMemo(() => {
-    const risky = activeStyleRows.filter(s => s.action_status === "at_risk" || s.action_status === "overdue");
-    return [...risky].sort((a, b) => (b.current_stock || 0) - (a.current_stock || 0))
-      .slice(0, 10)
-      .map(s => ({
-        name:          truncate(s.style_name, 28),
-        stock:         s.current_stock || 0,
-        days:          s.last_sale_days,
-        daysLabel:     s.last_sale_days === null ? "No sale data" : `Last sale: ${s.last_sale_days}d`,
-        fill:          DAYS_COLOR(s.last_sale_days),
-      }));
-  }, [activeStyleRows]);
-
-  // Portfolio status donut (active styles only) — colors assigned by name
-  // before filtering so zero-count buckets don't shift later slices onto the
-  // wrong color.
-  const statusDonut = useMemo(() => {
-    const healthy  = activeStyleRows.filter(s => s.action_status === "on_track").length;
-    const onReview = activeStyleRows.filter(s =>
-      s.action_status === "at_risk" &&
-      ["At-Risk — Investigate", "Overstock — Review"].includes(s.recommended_action)
-    ).length;
-    const mktPush = activeStyleRows.filter(s =>
-      s.action_status === "at_risk" &&
-      !["At-Risk — Investigate", "Overstock — Review"].includes(s.recommended_action)
-    ).length;
-    const overdue = activeStyleRows.filter(s => s.action_status === "overdue").length;
-    // Assign color per named status (not by array index after filtering)
-    return [
-      { name: `Healthy (${healthy})`,           value: healthy,  fill: STATUS_COLORS["Healthy"] },
-      { name: `On Review (${onReview})`,         value: onReview, fill: STATUS_COLORS["On Review"] },
-      { name: `Marketing Push (${mktPush})`,     value: mktPush,  fill: STATUS_COLORS["Marketing Push"] },
-      { name: `Overdue (${overdue})`,            value: overdue,  fill: STATUS_COLORS["Overdue"] },
-    ].filter(d => d.value > 0);
-  }, [activeStyleRows]);
-
-  // At-risk by subcategory (active styles only)
-  const atRiskBySub = useMemo(() => {
-    const map = {};
-    activeStyleRows.filter(s => s.action_status === "at_risk" || s.action_status === "overdue")
-      .forEach(s => { const k = s.subcategory || "—"; map[k] = (map[k] || 0) + 1; });
-    return Object.entries(map).sort(([, a], [, b]) => b - a).slice(0, 10)
-      .map(([name, value]) => ({ name: truncate(name, 22), value }));
-  }, [activeStyleRows]);
-
-  // Status by age group (active styles only) — three bars per group matching
-  // the three distinct action_status values (on_track/at_risk/overdue),
-  // labelled consistently with the donut and KPI cards.
-  const statusByAge = useMemo(() => {
-    return AGE_GROUPS.map(g => {
-      const inGroup = activeStyleRows.filter(s => {
-        const w = ageWeeks(s.launch_date);
-        return w !== null && w >= g.min && w <= g.max;
-      });
-      return {
-        label:    g.label.replace("\n", " "),
-        Healthy:  inGroup.filter(s => s.action_status === "on_track").length,
-        "At Risk": inGroup.filter(s => s.action_status === "at_risk").length,
-        Overdue:   inGroup.filter(s => s.action_status === "overdue").length,
-      };
-    });
-  }, [activeStyleRows]);
-
-  if (loading) return <Loading label="Loading Overview…" />;
-  if (error)   return <ErrorBox message={error} />;
 
   const s = summary || {};
   // Denominator = active-tier style rows (server-gated), matching the counts.
@@ -521,7 +481,8 @@ export default function MerchOverview() {
       {/* Card order + bottom-line stats fixed by the user (Aug 2026): actives
           first (styles → SOR → colours → revenue → units → full price), then
           stock, then retired/archived, ending on Style Health. */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+      {renderEndpointIssue(summaryError, summaryPending, "portfolio summary")}
+      {!summaryError && !summaryPending && <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
         <MerchKPICard
           label="Active Styles"
           value={fmtNum(s.active_styles_count)}
@@ -636,14 +597,15 @@ export default function MerchOverview() {
           testId="merch-kpi-styles"
           onDownload={downloadKpiCsv("on_track", "On_Track_Styles")}
         />
-      </div>
+      </div>}
 
       {/* ── At-Risk & Action Required (moved above the charts so the
              actionable cards lead the page — user request Aug 2026). Each card
              carries a `note` summarising the merch_router _recommend rules
              that feed its bucket. Detail charts stay below ("At-Risk
              Breakdown"). ── */}
-      <div className="flex items-start justify-between gap-3 flex-wrap border-t border-slate-200 pt-5">
+      {renderEndpointIssue(stylesError, stylesPending, "style health")}
+      {!stylesError && !stylesPending && <><div className="flex items-start justify-between gap-3 flex-wrap border-t border-slate-200 pt-5">
         <div>
           <h2 className="text-[18px] font-bold text-foreground">At-Risk Styles &amp; Action Required</h2>
           <p className="text-[13px] text-muted mt-0.5">Active styles only · Underperformers, Slow Movers &amp; Recommended Actions · As at {today}</p>
@@ -703,6 +665,7 @@ export default function MerchOverview() {
           note="No risk rule tripped — selling steadily with balanced cover; maintain replenishment"
         />
       </div>
+      </>}
 
       {/* ── Row 1 charts ── */}
       {/* Task 1335: the subcategory chart lists every womenswear subcat, so it
@@ -711,7 +674,7 @@ export default function MerchOverview() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Subcategories by Revenue (all, ex-Accessories/Mens) */}
         <ChartCard title={`Subcategories by Revenue (${periodLabel})`}>
-          <ResponsiveContainer width="100%" height={subcatChartHeight}>
+          {renderEndpointIssue(errorByEndpoint?.bySubcategory, loadingByEndpoint?.bySubcategory, "subcategory revenue") || <ResponsiveContainer width="100%" height={subcatChartHeight}>
             <BarChart
               data={subcatData}
               layout="vertical"
@@ -725,14 +688,14 @@ export default function MerchOverview() {
                 <LabelList dataKey="revenue_sel" content={barEndLabel(subcatData)} />
               </Bar>
             </BarChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer>}
         </ChartCard>
 
         {/* Brand + Tier share the other half, stacked */}
         <div className="flex flex-col gap-4">
           {/* Revenue by Brand */}
           <ChartCard title={`Revenue by Brand (${periodLabel})`}>
-            <ResponsiveContainer width="100%" height={220}>
+            {renderEndpointIssue(errorByEndpoint?.byBrand, loadingByEndpoint?.byBrand, "brand revenue") || <ResponsiveContainer width="100%" height={220}>
               <BarChart
                 data={brandData}
                 layout="vertical"
@@ -746,12 +709,12 @@ export default function MerchOverview() {
                   <LabelList dataKey="revenue_sel" content={barEndLabel(brandData)} />
                 </Bar>
               </BarChart>
-            </ResponsiveContainer>
+            </ResponsiveContainer>}
           </ChartCard>
 
           {/* Revenue by Tier donut */}
           <ChartCard title={`Revenue by Tier (${filters.from_date ? "Selected Period" : "6m"})`}>
-            <ResponsiveContainer width="100%" height={250}>
+            {renderEndpointIssue(errorByEndpoint?.byTier, loadingByEndpoint?.byTier, "tier revenue") || <ResponsiveContainer width="100%" height={250}>
               <PieChart>
                 <Pie
                   data={tierPieData} dataKey="value" nameKey="name"
@@ -763,7 +726,7 @@ export default function MerchOverview() {
                 <Tooltip formatter={(val, name) => [fmtKESM(val), name]} contentStyle={{ fontSize: 11, borderRadius: 8, border: "1px solid #e2e8f0" }} />
                 <Legend formatter={(v) => <span style={{ fontSize: 10 }}>{v}</span>} iconSize={8} />
               </PieChart>
-            </ResponsiveContainer>
+            </ResponsiveContainer>}
           </ChartCard>
         </div>
       </div>
@@ -772,7 +735,7 @@ export default function MerchOverview() {
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         {/* WOC Distribution */}
         <ChartCard title="Weeks of Cover Distribution (Active Styles)">
-          <ResponsiveContainer width="100%" height={200}>
+          {renderEndpointIssue(stylesError, stylesPending, "style distribution") || <ResponsiveContainer width="100%" height={200}>
             <BarChart data={wocDist} margin={{ top: 16, right: 8, left: -10, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis dataKey="name" tick={{ fontSize: 9 }} />
@@ -783,12 +746,12 @@ export default function MerchOverview() {
                 <LabelList dataKey="value" position="top" style={{ fontSize: 11, fontWeight: 700 }} />
               </Bar>
             </BarChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer>}
         </ChartCard>
 
         {/* FP% Distribution */}
         <ChartCard title="Full Price % Distribution (Active Styles)">
-          <ResponsiveContainer width="100%" height={200}>
+          {renderEndpointIssue(stylesError, stylesPending, "style distribution") || <ResponsiveContainer width="100%" height={200}>
             <BarChart data={fpDist} margin={{ top: 16, right: 8, left: -10, bottom: 0 }}>
               <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9" />
               <XAxis dataKey="name" tick={{ fontSize: 10 }} />
@@ -799,7 +762,7 @@ export default function MerchOverview() {
                 <LabelList dataKey="value" position="top" style={{ fontSize: 11, fontWeight: 700 }} />
               </Bar>
             </BarChart>
-          </ResponsiveContainer>
+          </ResponsiveContainer>}
         </ChartCard>
       </div>
 

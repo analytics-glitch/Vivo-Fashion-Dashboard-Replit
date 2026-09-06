@@ -119,6 +119,58 @@ class StylesAsyncSingleFlightTests(unittest.TestCase):
             again = asyncio.run(merch_router._styles_async(brand="W", ttl=600))
         self.assertIs(again, seed)
 
+    def test_request_local_trace_reports_styles_cache_hit(self):
+        """The timing middleware can distinguish a warm shared universe."""
+        seed = [{"style_name": "warm"}]
+        trace = {}
+        with mock.patch.object(merch_router, "_fetch_styles", return_value=seed):
+            asyncio.run(merch_router._styles_async(brand="trace", ttl=600))
+        with mock.patch.object(merch_router, "_fetch_styles",
+                               side_effect=AssertionError("warm cache missed")):
+            asyncio.run(merch_router._styles_async(
+                brand="trace", ttl=600, trace=trace))
+        self.assertEqual(trace, {"styles": "hit"})
+
+    def test_request_local_trace_reports_shared_inflight(self):
+        """A follower exposes inflight rather than being misreported as miss."""
+        started = threading.Event()
+        release = threading.Event()
+        owner_trace, follower_trace = {}, {}
+
+        def slow_fetch(**_kw):
+            started.set()
+            release.wait(2)
+            return [{"style_name": "shared"}]
+
+        async def main():
+            with mock.patch.object(merch_router, "_fetch_styles", side_effect=slow_fetch):
+                owner = asyncio.create_task(merch_router._styles_async(
+                    brand="inflight-trace", ttl=600, trace=owner_trace))
+                while not started.is_set():
+                    await asyncio.sleep(0.001)
+                follower = asyncio.create_task(merch_router._styles_async(
+                    brand="inflight-trace", ttl=600, trace=follower_trace))
+                await asyncio.sleep(0.01)
+                release.set()
+                await asyncio.gather(owner, follower)
+
+        asyncio.run(main())
+        self.assertEqual(owner_trace, {"styles": "miss"})
+        self.assertEqual(follower_trace, {"styles": "inflight"})
+
+    def test_request_cache_status_is_request_local(self):
+        class Request:
+            class State:
+                pass
+            def __init__(self):
+                self.state = self.State()
+        one, two = Request(), Request()
+        merch_router._set_merch_request_cache_status(one, "summary", "hit")
+        merch_router._set_merch_request_cache_status(two, "summary", "miss", "inflight")
+        self.assertEqual(one.state.merch_cache_status, "endpoint=summary:hit")
+        self.assertEqual(two.state.merch_cache_status,
+                         "endpoint=summary:miss,styles=inflight")
+
 
 class StylesCachedSyncSingleFlightTests(unittest.TestCase):
     def setUp(self):
