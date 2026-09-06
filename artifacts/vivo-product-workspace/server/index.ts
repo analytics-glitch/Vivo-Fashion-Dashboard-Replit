@@ -5633,8 +5633,11 @@ router.patch("/lifecycle-rules/:group/:key", async (req: AuthRequest, res) => {
       if (!Number.isFinite(fullPrice) || !Number.isInteger(days) || !Number.isFinite(cover)) throw new Error("Invalid reorder gate");
       result = await pool.query(`UPDATE ${schema}.reorder_gate_rules SET min_full_price_pct=$2,max_days_since_last_sale=$3,max_cover_weeks=$4,updated_at=NOW(),updated_by=$5 WHERE rule_key=$1 RETURNING rule_key`, [key, fullPrice, days, cover, actor]);
     } else throw new Error("Unknown lifecycle rule group");
-    if (!result.rows[0]) return res.status(404).json({ error: "Lifecycle rule not found" });
-    res.json({ ok: true });
+    if (!result.rows[0]) {
+      res.status(404).json({ error: "Lifecycle rule not found" });
+    } else {
+      res.json({ ok: true });
+    }
   } catch (error) {
     res.status(400).json({ error: error instanceof Error ? error.message : "Lifecycle rule could not be updated" });
   }
