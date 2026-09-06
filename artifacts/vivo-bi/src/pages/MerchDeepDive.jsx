@@ -200,14 +200,14 @@ const AI_CARD_STYLES = {
 
 function buildRecommendationCards(style, weeklyAvg) {
   if (!style) return [];
-  const woc  = style.woc  || 0;
+  const woc  = style.woc == null ? null : Number(style.woc);
   const sor  = style.sor_6m || 0;
   const ros  = weeklyAvg || style.weekly_avg || 0;
   const tier = style.tier || "Tier 4";
   const gm   = style.gross_margin_pct || 0;
 
-  const restockUrgent = woc < 1;
-  const restockSoon   = woc >= 1 && woc < 2;
+  const restockUrgent = woc !== null && woc < 1;
+  const restockSoon   = woc !== null && woc >= 1 && woc < 2;
   const cards = [];
 
   // 1. Restock
@@ -239,7 +239,7 @@ function buildRecommendationCards(style, weeklyAvg) {
   }
 
   // 3. Inter-store transfers
-  if (woc > 0) {
+  if (woc !== null && woc > 0) {
     cards.push({
       key: "transfer",
       label: "[↕] INTER-STORE TRANSFERS",
@@ -792,7 +792,7 @@ const MerchDeepDive = () => {
   const { urlFor } = useThumbnails(style?.style_name ? [style.style_name] : []);
 
   // WOC colour
-  const wocColor = !style ? "" :
+  const wocColor = !style || style.woc == null ? "text-muted" :
     style.woc < 1 ? "text-rose-600" :
     style.woc < 2 ? "text-amber-600" : "text-foreground";
 
@@ -969,7 +969,7 @@ const MerchDeepDive = () => {
             Revenue (selected period) → Units (selected period) → SOR (selected period) →
             Revenue (Lifetime) → Units (Lifetime) → SOR (Lifetime) →
             Gross Margin → Total SOH → Active Colour Ways →
-            Weeks of Cover → Product Age → Reorder Count → Last Ordered. */}
+            Weeks of Cover → Product Age → Order Count → Last Ordered. */}
         <KPICard
           small
           label={`Revenue (${periodLabel})`}
@@ -1105,8 +1105,9 @@ const MerchDeepDive = () => {
         <KPICard
           small
           label="Weeks of Cover"
-          value={<span className={wocColor}>{style.woc ? style.woc.toFixed(1) + " wks" : "—"}</span>}
+          value={<span className={wocColor}>{style.woc == null ? "Not available" : style.woc.toFixed(1) + " wks"}</span>}
           sub={
+            style.woc == null ? (style.cover_unavailable_reason || "Insufficient sales history") :
             style.woc < 1 ? "🔴 CRITICAL — reorder now" :
             style.woc < 2 ? "⚠️ Urgent — reorder soon" : "In stock"
           }
@@ -1125,7 +1126,7 @@ const MerchDeepDive = () => {
         />
         <KPICard
           small
-          label="Reorder Count"
+          label="Order Count"
           value={(style.reorder_count || 0) + "×"}
           sub={style.launch_date
             ? `Since ${new Date(style.launch_date).getFullYear()}`

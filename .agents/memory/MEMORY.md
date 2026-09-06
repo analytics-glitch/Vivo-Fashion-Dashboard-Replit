@@ -140,6 +140,7 @@
 - [Embedded operations access and freshness](embedded-operations-access-freshness.md) — combine page grants with explicit staff rosters; never let shared live work inherit BI caches.
 - [Atelier visual identity](atelier-visual-identity.md) — Atelier uses clay and warm neutrals with Playfair/DM Sans; keep status colors semantic and single-record screens free of BI chrome.
 - [Products Plan stock basis](products-plan-stock-basis.md) — opening stock is Stores + Warehouse Finished Goods; WOC uses 4.28 weeks and stock-to-sales variance is stock share minus unit share.
+- [Assortment cover eligibility](assortment-cover-eligibility.md) — show and act on WOC only after 6 completed selling weeks and 6 trailing-window units; missing cover cannot drive lifecycle actions.
 - [Range Plan mix and tier separation](range-plan-mix-tier-separation.md) — quarterly and monthly plans share one category matrix; tier health counts styles only and never changes unit or revenue totals.
 - [Style Development tracker imports](style-development-tracker-imports.md) — Q3 batch imports use a dedicated tracker model; preserve exact status/source text and explicit style-number quality flags.
 - [Style Development stage history](style-development-stage-history.md) — stages derive from append-only events; blockers overlay rather than replace stage, and target-week edits retain old/new values.

@@ -399,7 +399,7 @@ export default function MerchInventory() {
   const downloadReplenCsv = (rows, fileLabel) => () => {
     const headers = [
       "Style Name", "Style Number", "Brand", "Subcategory", "Tier",
-      "Current Stock", "WOC (weeks)", "Weekly Velocity", "Reorder Count",
+      "Current Stock", "WOC (weeks)", "Weekly Velocity", "Order Count",
     ];
     const q = (v) => `"${String(v ?? "").replace(/"/g, '""')}"`;
     const body = rows.map((r) => [
@@ -548,7 +548,7 @@ export default function MerchInventory() {
           downloadCount={replenKpis.b48Rows ? replenKpis.b48Rows.length : null}
         />
         <MerchKPICard
-          label="Avg Reorder Count"
+          label="Avg Order Count"
           value={`${fmtDec(replenKpis.avgReorder || 0, 1)}×`}
           sub="Per active style"
           accentColor={C.purple}
@@ -1057,21 +1057,21 @@ export default function MerchInventory() {
           </ResponsiveContainer>
         </ChartCard>
 
-        <ChartCard title="Reorder Count & Style Count by Tier">
+        <ChartCard title="Order Count & Style Count by Tier">
           <ResponsiveContainer width="100%" height={280}>
             <ComposedChart data={byTierChart} margin={{ top: 20, right: 40, bottom: 10, left: -10 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
               <XAxis dataKey="tier" tick={{ fontSize: 11 }} />
-              <YAxis yAxisId="left" tick={{ fontSize: 10 }} label={{ value: "Avg Reorder Count", angle: -90, position: "insideLeft", offset: 14, fontSize: 9 }} />
+              <YAxis yAxisId="left" tick={{ fontSize: 10 }} label={{ value: "Avg Order Count", angle: -90, position: "insideLeft", offset: 14, fontSize: 9 }} />
               <YAxis yAxisId="right" orientation="right" tick={{ fontSize: 10 }} label={{ value: "No. of Styles", angle: 90, position: "insideRight", offset: 14, fontSize: 9 }} />
               <Tooltip
                 formatter={(v, name) =>
                   name === "avg_reo"
-                    ? [`${fmtDec(v, 1)}×`, "Avg Reorders"]
+                    ? [`${fmtDec(v, 1)}×`, "Avg Orders"]
                     : [fmtNum(v), "Style Count"]
                 }
               />
-              <Legend iconSize={10} formatter={(v) => <span style={{ fontSize: 10 }}>{v === "avg_reo" ? "Avg Reorder Count" : "Style Count"}</span>} />
+              <Legend iconSize={10} formatter={(v) => <span style={{ fontSize: 10 }}>{v === "avg_reo" ? "Avg Order Count" : "Style Count"}</span>} />
               <Bar yAxisId="left" dataKey="avg_reo" radius={[4, 4, 0, 0]}>
                 {byTierChart.map((d, i) => <Cell key={i} fill={d.fill} />)}
                 <LabelList dataKey="avg_reo" position="top" formatter={(v) => `${fmtDec(v, 1)}×`} style={{ fontSize: 10, fontWeight: "bold" }} />

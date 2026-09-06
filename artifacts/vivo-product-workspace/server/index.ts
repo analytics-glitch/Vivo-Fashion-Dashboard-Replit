@@ -209,6 +209,12 @@ function biStyle(style: Record<string, any>) {
     orderCount: numberOrNull("orderCount", "order_count", "reorder_count"),
     lastOrderDate: calendarDate(biValue(style, "lastOrderDate", "last_order_date")),
     lifetimeSellThroughPct: numberOrNull("lifetimeSellThroughPct", "lifetime_sell_through_pct", "sor_life"),
+    lifetimeUnitsSold: numberOrNull("lifetimeUnitsSold", "lifetime_units_sold", "units_life"),
+    activeColourwayCount: numberOrNull("activeColourwayCount", "active_colourway_count", "colours_in_stock"),
+    coverAvailable: Boolean(biValue(style, "coverAvailable", "cover_available")),
+    coverUnavailableReason: biValue(style, "coverUnavailableReason", "cover_unavailable_reason") == null
+      ? null
+      : String(biValue(style, "coverUnavailableReason", "cover_unavailable_reason")),
     image: biValue(style, "image", "imageUrl", "image_url") ?? null,
   };
 }
@@ -8201,11 +8207,14 @@ router.get("/assortment-plan", async (_req, res, next) => {
       const sohOnline = Number(style.sohOnline ?? 0);
       const sohWarehouse = Number(style.sohWarehouse ?? 0);
       const pipelineUnits = Number(style.wipUnits ?? 0);
-      const sellableStockUnits = sohStores + sohOnline + sohWarehouse;
+      // BI's sohOnline is a subset of sohStores. The Deep Dive total is
+      // current_stock = sohStores + sohWarehouse; never add online twice.
+      const sellableStockUnits = sourceStockUnits ?? (sohStores + sohWarehouse);
       const stockPlusPipelineUnits = sellableStockUnits + pipelineUnits;
       const weeklyAvg = Number(style.weeklyAvg ?? 0);
-      const sellableCoverWeeks = weeklyAvg > 0 ? sellableStockUnits / weeklyAvg : null;
-      const planningCoverWeeks = weeklyAvg > 0 ? stockPlusPipelineUnits / weeklyAvg : null;
+      const coverAvailable = Boolean(style.coverAvailable);
+      const sellableCoverWeeks = coverAvailable && weeklyAvg > 0 ? sellableStockUnits / weeklyAvg : null;
+      const planningCoverWeeks = coverAvailable && weeklyAvg > 0 ? stockPlusPipelineUnits / weeklyAvg : null;
       const fabricConsumptionMetresPerUnit = fabricRates.get(String(style.subCategory ?? "").trim().toLowerCase()) ?? null;
       const reorderSignal = computeReorderSignal({
         tier: style.tier,

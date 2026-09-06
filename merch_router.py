@@ -203,6 +203,8 @@ _PIPELINE_BO_STATES = (
     "draft", "bom_pending", "ready", "partially_planned", "fully_planned",
 )
 _WIP_MAX_AGE_DAYS = 60
+_MIN_COVER_HISTORY_WEEKS = 6
+_MIN_COVER_SALES_UNITS = 6
 
 
 def _sellable_store_pred(alias):
@@ -305,6 +307,32 @@ def _recommend(woc, last_sale_days, sor_6m, full_price_pct, current_stock):
     if no_stock and (last_sale_days is None or last_sale_days >= 90):
         return "Discontinue", "overdue"
     return "On Track", "on_track"
+
+
+def _cover_availability(first_sale_date, units_6m, today):
+    """Require enough elapsed history and volume before annualising cover."""
+    if not first_sale_date:
+        return False, "First sale date unavailable"
+    try:
+        launched = (
+            first_sale_date
+            if isinstance(first_sale_date, date)
+            else date.fromisoformat(str(first_sale_date)[:10])
+        )
+    except (TypeError, ValueError):
+        return False, "First sale date unavailable"
+    completed_weeks = max((today - launched).days // 7, 0)
+    if completed_weeks < _MIN_COVER_HISTORY_WEEKS:
+        return False, (
+            f"Needs {_MIN_COVER_HISTORY_WEEKS} completed selling weeks "
+            f"({completed_weeks} so far)"
+        )
+    if units_6m < _MIN_COVER_SALES_UNITS:
+        return False, (
+            f"Needs {_MIN_COVER_SALES_UNITS} sold units "
+            f"({units_6m} so far)"
+        )
+    return True, None
 
 
 # ── Style universe query ───────────────────────────────────────────────────────
@@ -709,7 +737,12 @@ ORDER BY revenue_6m DESC NULLS LAST
 
         # Derived metrics
         weekly_avg = round(units_6m / 26.0, 2)
-        woc = round(current_stock / weekly_avg, 1) if weekly_avg > 0 else None
+        cover_available, cover_unavailable_reason = _cover_availability(
+            r.get("first_sale_date"), units_6m, today_dt)
+        woc = (
+            round(current_stock / weekly_avg, 1)
+            if cover_available and weekly_avg > 0 else None
+        )
         sor_denom = units_6m + current_stock
         sor_6m    = round(units_6m * 100.0 / sor_denom, 1) if sor_denom > 0 else None
         # Period-scoped sell-through (same formula, selected date range)
@@ -793,6 +826,10 @@ ORDER BY revenue_6m DESC NULLS LAST
             "revenue_life":        round(revenue_life, 0),
             "weekly_avg":          weekly_avg,
             "woc":                 woc,
+            "cover_available":     cover_available,
+            "cover_unavailable_reason": cover_unavailable_reason,
+            "cover_min_history_weeks": _MIN_COVER_HISTORY_WEEKS,
+            "cover_min_sales_units": _MIN_COVER_SALES_UNITS,
             "sor_6m":              sor_6m,
             "sor_period":          sor_period,
              "full_price_sor_period": full_price_sor_period,
@@ -1929,7 +1966,12 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
 
         # Derived metrics (byte-identical to _fetch_styles_sql)
         weekly_avg = round(units_6m / 26.0, 2)
-        woc = round(current_stock / weekly_avg, 1) if weekly_avg > 0 else None
+        cover_available, cover_unavailable_reason = _cover_availability(
+            r.get("first_sale_date"), units_6m, today_dt)
+        woc = (
+            round(current_stock / weekly_avg, 1)
+            if cover_available and weekly_avg > 0 else None
+        )
         sor_denom = units_6m + current_stock
         sor_6m    = (round(units_6m * 100.0 / sor_denom, 1)
                      if sor_denom > 0 else None)
@@ -2014,6 +2056,10 @@ def _fetch_styles_fast_path(brand=None, subcategory=None, tier=None, status=None
             "revenue_life":        round(revenue_life, 0),
             "weekly_avg":          weekly_avg,
             "woc":                 woc,
+            "cover_available":     cover_available,
+            "cover_unavailable_reason": cover_unavailable_reason,
+            "cover_min_history_weeks": _MIN_COVER_HISTORY_WEEKS,
+            "cover_min_sales_units": _MIN_COVER_SALES_UNITS,
             "sor_6m":              sor_6m,
             "sor_period":          sor_period,
              "full_price_sor_period": full_price_sor_period,

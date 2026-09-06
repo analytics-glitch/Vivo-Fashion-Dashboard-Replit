@@ -85,3 +85,29 @@ test("Tier 4 graduates on two total orders and Tier 3 on nine months plus four",
 test("Tier 1-3 reorder gate does not depend on sell-through", () => {
   assert.equal(computeReorderSignal({ ...base, sellThroughPct: 0 }).action, "REORDER");
 });
+
+test("unavailable cover blocks cover-based reorders without blocking other Tier 4 rules", () => {
+  assert.equal(computeReorderSignal({
+    ...base,
+    planningCoverWeeks: null,
+    sellableCoverWeeks: null,
+  }).action, null);
+  const tier4WeekSix = computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-07-20",
+    planningCoverWeeks: null,
+    sellableCoverWeeks: null,
+    sellThroughPct: 60,
+  });
+  assert.equal(tier4WeekSix.label, "Strong early candidate");
+  assert.notEqual(tier4WeekSix.label, "Passed week 6 read — full rollout");
+  assert.equal(computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-08-01",
+    planningCoverWeeks: null,
+    sellableCoverWeeks: null,
+    sellThroughPct: 40,
+  }).action, "REORDER");
+});

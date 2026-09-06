@@ -6,6 +6,7 @@ import {
   matchesAssortmentFilters,
   matchesStyleCatalogueSearch,
   sortAssortmentStyles,
+  sortAssortmentStylesByAction,
   type AssortmentFilterState,
   type AssortmentFilterableStyle,
 } from './assortmentPlanFilters';
@@ -111,5 +112,18 @@ test('catalogue-style sorting is deterministic and places null metrics last', ()
   assert.deepEqual(
     sortAssortmentStyles(styles, 'name_desc').map((style) => style.styleNumber),
     ['U-9', 'B-2', 'A-1'],
+  );
+});
+
+test('proposal action is primary and selected sorting is secondary within each group', () => {
+  const styles = [
+    { ...activeStyle, name: 'Low Reorder', styleNumber: 'R-1', unitsSold: 2, reorderSignal: { actionPriority: 1 } },
+    { ...activeStyle, name: 'High Retire', styleNumber: 'T-1', unitsSold: 100, reorderSignal: { actionPriority: 2 } },
+    { ...activeStyle, name: 'High Reorder', styleNumber: 'R-2', unitsSold: 50, reorderSignal: { actionPriority: 1 } },
+    { ...activeStyle, name: 'No Action', styleNumber: 'N-1', unitsSold: 999, reorderSignal: null },
+  ];
+  assert.deepEqual(
+    sortAssortmentStylesByAction(styles, 'units_desc').map((style) => style.styleNumber),
+    ['R-2', 'R-1', 'T-1', 'N-1'],
   );
 });

@@ -24,6 +24,7 @@ export type AssortmentSortableStyle = AssortmentFilterableStyle & {
   weeksOfCover?: number | null;
   sellThroughPct?: number | null;
   daysSinceLastSale?: number | null;
+  reorderSignal?: { actionPriority?: number | null } | null;
 };
 
 export type AssortmentSearchableStyle = {
@@ -138,4 +139,15 @@ export function sortAssortmentStyles<Style extends AssortmentSortableStyle>(
       || collator.compare(left.name ?? '', right.name ?? '')
       || collator.compare(left.styleNumber ?? '', right.styleNumber ?? '');
   });
+}
+
+export function sortAssortmentStylesByAction<Style extends AssortmentSortableStyle>(
+  styles: Style[],
+  sort: AssortmentSortKey,
+) {
+  const secondary = sortAssortmentStyles(styles, sort);
+  return secondary.sort((left, right) => (
+    (finite(left.reorderSignal?.actionPriority) ?? 5)
+    - (finite(right.reorderSignal?.actionPriority) ?? 5)
+  ));
 }

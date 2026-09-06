@@ -114,7 +114,7 @@ const CsvDownloadLink = ({ filename, headers, rows = [] }) => (
   </button>
 );
 
-const TIER_CSV_HEADERS = ["Style Name", "Style Code", "Age (weeks)", "Reorders", "Lifetime SOR%"];
+const TIER_CSV_HEADERS = ["Style Name", "Style Code", "Age (weeks)", "Orders", "Lifetime SOR%"];
 
 const TierTopPerformersCard = ({ tier, rows }) => {
   const [sortKey, setSortKey] = useState("reorder_count");
@@ -146,7 +146,7 @@ const TierTopPerformersCard = ({ tier, rows }) => {
             onChange={e => setSortKey(e.target.value)}
             aria-label={`${tier} top performers sort`}
           >
-            <option value="reorder_count">By Reorders</option>
+            <option value="reorder_count">By Orders</option>
             <option value="age_wks">By Age</option>
             <option value="sor">By Life SOR%</option>
           </select>
@@ -163,7 +163,7 @@ const TierTopPerformersCard = ({ tier, rows }) => {
             <tr className="border-b-2 border-line">
               <th className="text-left font-semibold text-muted pb-2 pr-2">Style</th>
               <th className="text-right font-semibold text-muted pb-2 px-2">Age</th>
-              <th className="text-right font-semibold text-muted pb-2 px-2">Reorders</th>
+              <th className="text-right font-semibold text-muted pb-2 px-2">Orders</th>
               <th className="text-right font-semibold text-muted pb-2 pl-2">Life SOR%</th>
             </tr>
           </thead>
@@ -493,7 +493,7 @@ const MerchLifecycle = () => {
         <KPICard label="Avg Style Age"    value={kpis.avgAge !== null ? `${fmtNum(kpis.avgAge)} weeks` : "—"} sub="≈ 2 years avg" showDelta={false} accent />
         <KPICard label="Newest Styles"    value={`${fmtNum(kpis.newest)} styles`} sub={`Launched ${new Date().getFullYear()}`} showDelta={false} />
         <KPICard label="Oldest Styles"    value={`${fmtNum(kpis.oldest)} styles`} sub="Launched ≤ 2019" showDelta={false} />
-        <KPICard label="Avg Reorder Count" value={`${fmtDec(kpis.avgReo, 1)}×`} sub="Per active style" showDelta={false} />
+        <KPICard label="Avg Order Count" value={`${fmtDec(kpis.avgReo, 1)}×`} sub="Per active style" showDelta={false} />
         <KPICard label="Most Reordered"   value={`${fmtNum(kpis.maxReo)}×`} sub="Tier 1 core styles" showDelta={false} />
       </div>
 
@@ -551,10 +551,10 @@ const MerchLifecycle = () => {
           </div>
         </div>
 
-        {/* Reorder Count Distribution */}
+        {/* Order Count Distribution */}
         <div className="card-white p-5 flex flex-col">
           <div className="flex items-start justify-between gap-3">
-            <SectionTitle title="Reorder Count Distribution" />
+            <SectionTitle title="Order Count Distribution" />
             <CsvDownloadLink
               filename="reorder-count-distribution.csv"
               headers={["Reorder Bucket", "Styles"]}
@@ -584,10 +584,10 @@ const MerchLifecycle = () => {
         {/* Avg Reorder by Tier */}
         <div className="card-white p-5">
           <div className="flex items-start justify-between gap-3">
-            <SectionTitle title="Avg Reorder Count by Tier" />
+            <SectionTitle title="Avg Order Count by Tier" />
             <CsvDownloadLink
               filename="average-reorders-by-tier.csv"
-              headers={["Tier", "Average Reorders"]}
+              headers={["Tier", "Average Orders"]}
               rows={avgReorderByTier.map(row => [row.tier, row.avg])}
             />
           </div>
@@ -596,8 +596,8 @@ const MerchLifecycle = () => {
               <BarChart data={avgReorderByTier} margin={{ top: 20, right: 20, bottom: 10, left: -10 }}>
                 <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
                 <XAxis dataKey="tier" tick={{ fontSize: 11 }} />
-                <YAxis tick={{ fontSize: 10 }} label={{ value: "Avg Reorder Count", angle: -90, position: "insideLeft", offset: 15, fontSize: 10 }} />
-                <Tooltip formatter={(v) => [fmtDec(v, 1) + "×", "Avg Reorders"]} />
+                <YAxis tick={{ fontSize: 10 }} label={{ value: "Avg Order Count", angle: -90, position: "insideLeft", offset: 15, fontSize: 10 }} />
+                <Tooltip formatter={(v) => [fmtDec(v, 1) + "×", "Avg Orders"]} />
                 <Bar dataKey="avg" radius={[4, 4, 0, 0]}>
                   {avgReorderByTier.map((d, i) => <Cell key={i} fill={d.fill} />)}
                   <LabelList dataKey="avg" position="top" formatter={(v) => `${fmtDec(v, 1)}×`} style={{ fontSize: 11, fontWeight: "bold" }} />

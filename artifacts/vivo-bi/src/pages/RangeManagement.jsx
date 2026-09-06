@@ -371,7 +371,7 @@ const RangeManagement = () => {
       ["original_price",              "Full Price (KES)"],
       ["avg_price_since_launch",      "Avg Price (KES)"],
       ["full_price_pct",              "Full Price %"],
-      ["reorder_count",               "Reorder Count"],
+      ["reorder_count",               "Order Count"],
       ["recommended_retirement_date", "Recommended Retire Date"],
       ["outlet_discount_date",        "Outlet Discount Date"],
       ["reason",                      "Reason"],
@@ -474,7 +474,7 @@ const RangeManagement = () => {
       ["lifetime_sor_pct", "Lifetime SOR %"],
       ["woc", "WOC"],
       ["last_sale_days", "Last Sale (days)"],
-      ["reorder_count", "Reorder Count"],
+      ["reorder_count", "Order Count"],
       ["full_price_pct", "Full Price %"],
       ["current_stock", "Current Stock"],
       ["style_number", "Style Number"],
@@ -717,7 +717,7 @@ const RangeManagement = () => {
               <strong>Note on age &amp; tier model:</strong> Style age is computed from the persisted
               first-sale date (refreshed nightly, 5-year Kenya history). Tier assignments follow the
               July 2026 Range Strategy — <strong>Tier 1 · NOOS</strong> (≥24 months, sold in all 12 of
-              last 12 months; target &lt;50 styles), <strong>Tier 2 · Core</strong> (≥4 reorders),{" "}
+              last 12 months; target &lt;50 styles), <strong>Tier 2 · Core</strong> (≥4 orders),{" "}
               <strong>Tier 3 · Recent Performer</strong> (≥1 reorder),{" "}
               <strong>Tier 4 · New Styles</strong> (not yet reordered). Reorder count is a
               ≈12-week-cycle proxy from style age (first PO to real-PO migration planned).
@@ -808,7 +808,7 @@ const RangeManagement = () => {
                   </h3>
                   <p className="text-muted text-[12px] mt-0.5">
                     Within 6 weeks of the 9-month gate AND already meeting all Tier 2 criteria
-                    (reorders ≥ 3 · lifetime SOR &gt; 60 % · full price &gt; 90 %).
+                    (orders ≥ 3 · lifetime SOR &gt; 60 % · full price &gt; 90 %).
                     Promote these to clear the Tier 3 backlog (currently {fmtNum(summary?.tier_counts?.["Tier 3"] || 0)} vs target {summary?.targets?.["Tier 2"]?.[0]}–{summary?.targets?.["Tier 2"]?.[1]}).
                   </p>
                 </div>
@@ -837,7 +837,7 @@ const RangeManagement = () => {
                       <th className="p-2 font-semibold text-muted text-right">Weeks to gate</th>
                       <th className="p-2 font-semibold text-muted text-right">Lifetime SOR</th>
                       <th className="p-2 font-semibold text-muted text-right">FP %</th>
-                      <th className="p-2 font-semibold text-muted text-right">Reorders</th>
+                      <th className="p-2 font-semibold text-muted text-right">Orders</th>
                       <th className="p-2 font-semibold text-muted text-right">Stock</th>
                       <th className="p-2 font-semibold text-muted text-right">Last sale</th>
                       <th className="p-2 font-semibold text-muted text-right">Action</th>
@@ -957,7 +957,7 @@ const RangeManagement = () => {
                           <th className="p-2 font-semibold text-muted">Style</th>
                           <th className="p-2 font-semibold text-muted">Current Tier</th>
                           <th className="p-2 font-semibold text-muted">Suggested Move</th>
-                          <th className="p-2 font-semibold text-muted text-right">Reorders</th>
+                          <th className="p-2 font-semibold text-muted text-right">Orders</th>
                           <th className="p-2 font-semibold text-muted text-right">Weekly Rate</th>
                           <th className="p-2 font-semibold text-muted text-right">WOC</th>
                           <th className="p-2 font-semibold text-muted">Reason</th>
@@ -1258,7 +1258,7 @@ const RangeManagement = () => {
                   { key: "subcategory", label: "Subcategory", align: "left",
                     render: (r) => <span className="text-muted">{r.subcategory || "—"}</span> },
                   {
-                    key: "reorder_count", label: "Reorders", numeric: true,
+                    key: "reorder_count", label: "Orders", numeric: true,
                     render: (r) => <FormulaCell title={fmt.reorders(r)}>{fmtNum(r.reorder_count)}</FormulaCell>,
                   },
                   { key: "sales_since_launch", label: "Revenue Since Launch", numeric: true,
