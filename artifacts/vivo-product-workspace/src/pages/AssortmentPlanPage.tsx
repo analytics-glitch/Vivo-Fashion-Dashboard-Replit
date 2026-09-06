@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { CheckSquare, ChevronDown, RefreshCw, Search, Target, X } from 'lucide-react';
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
@@ -9,7 +9,7 @@ import { countAssortmentStyles, matchesAssortmentFilters, matchesStyleCatalogueS
 type FilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
 type Destination = { type: 'range'; seasonId: number } | { type: 'week'; isoYear: number; isoWeek: number };
 type Season = { id: number; seasonName: string; status: string };
-type Week = { isoYear: number; isoWeek: number; label: string; status: string };
+type Week = { isoYear: number; isoWeek: number; label: string; status: string; isCurrent?: boolean };
 type Style = Record<FilterKey, string | null> & {
   id: string; pdId: number | null; source: 'bi' | 'all_products_clean' | 'pd_styles'; styleNumber: string; name: string;
   designer: string | null;
@@ -21,7 +21,7 @@ type Style = Record<FilterKey, string | null> & {
   firstSaleDate?: string | null; weeksSinceFirstSale?: number | null; weeklyAvg?: number | null;
   sourceStockUnits?: number | null; sellableStockUnits?: number | null; pipelineUnits?: number | null; stockPlusPipelineUnits?: number | null;
   sellableCoverWeeks?: number | null; planningCoverWeeks?: number | null; fabricConsumptionMetresPerUnit?: number | null;
-  fabricByColour?: Array<{ colour: string | null; exactMetres: number | null; otherColourMetres: number | null }>;
+  fabricByColour?: Array<{ colour: string | null; fabricName?: string | null; fabricBarcode?: string | null; exactMetres: number | null; otherColourMetres: number | null }>;
   reorderSignal?: { tone: 'green' | 'amber' | 'grey'; label: string; fabricChecked: boolean; fabricNote: string };
 };
 type Summary = { total: number; counts: { total: number; tier1: number; tier2: number; tier3: number; tier4: number; retired: number }; filterOptions?: Record<FilterKey, string[]> };
@@ -38,18 +38,43 @@ const reconciliationFailed = (item: Reconciliation) => item.passed === false || 
 
 function DestinationPicker({ seasons, weeks, disabled, onPick }: { seasons: Season[]; weeks: Week[]; disabled: boolean; onPick: (d: Destination) => void }) {
   const [open, setOpen] = useState(false);
-  return <div className="assortment-destination-picker">
-    <button type="button" className="assortment-card-button" disabled={disabled || (!seasons.length && !weeks.length)} onClick={() => setOpen(!open)} data-testid="button-choose-plan-destination">Add to plan <ChevronDown size={13} /></button>
+  const rootRef = useRef<HTMLDivElement>(null);
+  const currentWeekRef = useRef<HTMLButtonElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const onKeyDown = (event: KeyboardEvent) => { if (event.key === 'Escape') setOpen(false); };
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    document.addEventListener('keydown', onKeyDown);
+    document.addEventListener('pointerdown', onPointerDown);
+    window.requestAnimationFrame(() => currentWeekRef.current?.scrollIntoView({ block: 'center' }));
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+      document.removeEventListener('pointerdown', onPointerDown);
+    };
+  }, [open]);
+  return <div className="assortment-destination-picker" ref={rootRef}>
+    <button type="button" className="assortment-card-button" disabled={disabled || (!seasons.length && !weeks.length)} onClick={() => setOpen((value) => !value)} aria-haspopup="menu" aria-expanded={open} data-testid="button-choose-plan-destination">Add to plan <ChevronDown size={13} /></button>
     {open && <div className="assortment-season-menu" role="menu">
-      {seasons.length > 0 && <><span>Range plans</span>{seasons.map((season) => <button type="button" key={season.id} onClick={() => { setOpen(false); onPick({ type: 'range', seasonId: season.id }); }} data-testid={`button-destination-season-${season.id}`}>{season.seasonName}</button>)}</>}
-      {weeks.length > 0 && <><span>Weekly order plans</span>{weeks.map((week) => <button type="button" key={`${week.isoYear}-${week.isoWeek}`} onClick={() => { setOpen(false); onPick({ type: 'week', isoYear: week.isoYear, isoWeek: week.isoWeek }); }} data-testid={`button-destination-week-${week.isoYear}-${week.isoWeek}`}>{week.label}</button>)}</>}
+      <div className="assortment-season-menu-head"><span>Choose a plan</span><button type="button" className="assortment-season-close" onClick={() => setOpen(false)} aria-label="Close plan options"><X size={15} /> Close</button></div>
+      <div className="assortment-season-menu-scroll">
+        {weeks.length > 0 && <><span>Weekly order plans</span>{weeks.map((week) => <button type="button" ref={week.isCurrent ? currentWeekRef : undefined} className={week.isCurrent ? 'current' : undefined} key={`${week.isoYear}-${week.isoWeek}`} onClick={() => { setOpen(false); onPick({ type: 'week', isoYear: week.isoYear, isoWeek: week.isoWeek }); }} data-testid={`button-destination-week-${week.isoYear}-${week.isoWeek}`}>{week.label}{week.isCurrent && <small>Current</small>}</button>)}</>}
+        {seasons.length > 0 && <><span>Monthly plans</span>{seasons.map((season) => <button type="button" key={season.id} onClick={() => { setOpen(false); onPick({ type: 'range', seasonId: season.id }); }} data-testid={`button-destination-season-${season.id}`}>{season.seasonName}</button>)}</>}
+      </div>
     </div>}
   </div>;
 }
 
 function StyleCard({ style, selected, onSelect, action, expanded, onToggle }: { style: Style; selected: boolean; onSelect: () => void; action: React.ReactNode; expanded: boolean; onToggle: () => void }) {
   const signal = style.reorderSignal ?? { tone: 'grey' as const, label: 'Not a candidate', fabricChecked: false, fabricNote: 'Fabric could not be checked' };
-  const fabricRows = (style.fabricByColour ?? []).filter((row) => Number(row.exactMetres ?? 0) > 0 || Number(row.otherColourMetres ?? 0) > 0);
+  const fabricRows = (style.fabricByColour ?? []).filter((row) => Number(row.exactMetres ?? 0) > 0 || Number(row.otherColourMetres ?? 0) > 0 || row.fabricBarcode);
+  const fabricNames = [...new Set(fabricRows.map((row) => row.fabricName?.trim()).filter(Boolean) as string[])];
+  const fabricName = fabricNames.length === 1 ? fabricNames[0] : fabricNames.length > 1 ? `${fabricNames[0]} + ${fabricNames.length - 1} more` : style.fabric && style.fabric !== 'Fabric pending' ? style.fabric : 'Fabric name not assigned';
+  const fabricTotalMetres = fabricRows.reduce((highest, row) => Math.max(highest, Number(row.exactMetres ?? 0) + Number(row.otherColourMetres ?? 0)), 0);
+  const producibleUnits = fabricTotalMetres > 0 && Number(style.fabricConsumptionMetresPerUnit ?? 0) > 0
+    ? Math.round(fabricTotalMetres / Number(style.fabricConsumptionMetresPerUnit))
+    : null;
   return <article className={`assortment-style-card consolidated ${selected ? 'selected' : ''}`}>
     <label className="assortment-select-card"><input type="checkbox" checked={selected} onChange={onSelect} disabled={!isBiStyle(style)} aria-label={`Select ${style.name}`} data-testid={`checkbox-select-style-${style.id}`} /></label>
     <GarmentImage className="assortment-style-image" source="catalogue" styleKey={style.styleNumber} image={style.image} alt={style.name} />
@@ -68,7 +93,7 @@ function StyleCard({ style, selected, onSelect, action, expanded, onToggle }: { 
         </div>
         <div><b>Stock split</b><span>Stores {n(style.sohStores)} · Online {n(style.sohOnline)} · Warehouse {n(style.sohWarehouse)} · Pipeline {n(style.pipelineUnits)} {style.awaitingDelivery ? '· Awaiting delivery' : ''}</span></div>
         <div><b>Product</b><span>KES {n(style.price)} · {n(style.colourwayCount)} colourways · {style.category || 'Uncategorised'} / {style.subCategory || 'Uncategorised'}</span></div>
-        <div><b>Fabric availability by colourway</b>{fabricRows.length ? <ul className="assortment-fabric-list">{fabricRows.map((row, index) => <li key={`${row.colour}-${index}`}><span>{row.colour || 'Colour pending'}</span><strong>{n(row.exactMetres, 1)}m exact · {n(row.otherColourMetres, 1)}m other colours</strong></li>)}</ul> : <span>{signal.fabricNote}</span>}</div>
+        <div><b>Fabric availability by colourway</b>{fabricRows.length ? <><div className="assortment-fabric-summary"><strong>{fabricName}</strong><span>{n(fabricTotalMetres)}m total available{producibleUnits != null ? ` · approx ${n(producibleUnits)} units at ${n(style.fabricConsumptionMetresPerUnit, 2)}m` : ''}</span></div><ul className="assortment-fabric-list">{fabricRows.map((row, index) => <li key={`${row.colour}-${index}`}><span>{row.colour || 'Colour pending'}</span><small>{row.fabricBarcode || 'No fabric barcode assigned'}</small><strong>{n(row.exactMetres)}m</strong></li>)}</ul></> : <span>{signal.fabricNote}</span>}</div>
       </div>}
       <div className="assortment-card-action">{action}</div>
     </div>

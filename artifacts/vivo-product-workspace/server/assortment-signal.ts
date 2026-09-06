@@ -1,5 +1,7 @@
 export type FabricAvailability = {
   colour: string | null;
+  fabricName?: string | null;
+  fabricBarcode?: string | null;
   exactMetres: number | null;
   otherColourMetres: number | null;
 };

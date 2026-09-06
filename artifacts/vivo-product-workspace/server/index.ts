@@ -176,6 +176,8 @@ function biStyle(style: Record<string, any>) {
     ? biValue(style, "fabricByColour", "fabric_by_colour")
     : []).map((row: Record<string, any>) => ({
       colour: row.colour == null ? null : String(row.colour),
+      fabricName: row.fabricName == null && row.fabric_name == null ? null : String(row.fabricName ?? row.fabric_name),
+      fabricBarcode: row.fabricBarcode == null && row.fabric_barcode == null ? null : String(row.fabricBarcode ?? row.fabric_barcode),
       exactMetres: row.exactMetres == null && row.exact_metres == null ? null : Number(row.exactMetres ?? row.exact_metres),
       otherColourMetres: row.otherColourMetres == null && row.other_colour_metres == null ? null : Number(row.otherColourMetres ?? row.other_colour_metres),
     }));
@@ -8043,14 +8045,18 @@ router.get("/assortment-plan", async (_req, res, next) => {
     );
     const weeklyDestinationsPromise = pool.query(
       `WITH upcoming AS (
-         SELECT (date_trunc('week',CURRENT_DATE)::date+(n*7))::date AS start_date
-         FROM generate_series(0,11) AS n
+         SELECT anchor.start_date+(n*7) AS start_date, n=0 AS is_current
+         FROM (
+           SELECT date_trunc('week',CURRENT_DATE+INTERVAL '1 day')::date AS start_date
+         ) anchor
+         CROSS JOIN generate_series(-4,8) AS n
        )
        SELECT EXTRACT(ISOYEAR FROM start_date)::int AS "isoYear",
          EXTRACT(WEEK FROM start_date)::int AS "isoWeek",
          'W'||lpad(EXTRACT(WEEK FROM start_date)::int::text,2,'0')||' · '||
          to_char(start_date,'DD Mon')||'–'||to_char(start_date+6,'DD Mon') AS label,
-         COALESCE(p.status,'draft') AS status
+         COALESCE(p.status,'draft') AS status,
+         is_current AS "isCurrent"
        FROM upcoming
        LEFT JOIN ${schema}.weekly_order_plans p
          ON p.iso_year=EXTRACT(ISOYEAR FROM start_date)::int

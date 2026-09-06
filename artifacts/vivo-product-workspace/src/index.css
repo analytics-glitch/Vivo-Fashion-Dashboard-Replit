@@ -1222,7 +1222,11 @@ a { color: inherit; text-decoration: none; }
 .assortment-detail-metrics small { display:block; min-height:24px; color:#7a746a; font:8px/1.3 var(--app-font-mono); text-transform:uppercase; }
 .assortment-detail-metrics strong { display:block; margin-top:3px; color:var(--navy); font:600 15px var(--app-font-serif); }
 .assortment-fabric-list { display:grid; gap:5px; margin:6px 0 0; padding:0; list-style:none; }
-.assortment-fabric-list li { display:flex; justify-content:space-between; gap:8px; padding-top:5px; border-top:1px solid #eee8dd; }
+.assortment-fabric-summary { display:flex; justify-content:space-between; gap:10px; margin-top:6px; padding:8px 9px; background:#f8f5ef; }
+.assortment-fabric-summary strong { color:var(--navy); }
+.assortment-fabric-summary span { color:#716b62; text-align:right; }
+.assortment-fabric-list li { display:grid; grid-template-columns:minmax(90px,1fr) minmax(130px,auto) auto; align-items:center; gap:8px; padding-top:5px; border-top:1px solid #eee8dd; }
+.assortment-fabric-list small { color:#8b8379; font:9px var(--app-font-mono); }
 .assortment-fabric-list strong { text-align:right; text-transform:none; letter-spacing:0; }
 .assortment-selection-tools { display:flex; justify-content:flex-end; gap:12px; margin:0 0 12px; }
 .assortment-selection-tools button,.assortment-bulk-bar>button { border:0; background:transparent; color:#755b2c; font:11px var(--app-font-mono); cursor:pointer; text-decoration:underline; }
@@ -1256,13 +1260,16 @@ a { color: inherit; text-decoration: none; }
 .assortment-card-button:hover { color: var(--navy); }.assortment-card-button:disabled { cursor: wait; opacity: .5; }
 .assortment-always-on, .assortment-assigned { color: #a39d92; font: 10px var(--app-font-mono); }
 .assortment-range-action { position: relative; }
-.assortment-season-menu { position: absolute; z-index: 10; bottom: calc(100% + 7px); left: 0; min-width: 180px; padding: 6px; border: 1px solid #d9d2c5; background: #fff; box-shadow: 0 10px 24px rgba(26,26,46,.14); }
+.assortment-season-menu { position: absolute; z-index: 10; bottom: calc(100% + 7px); left: 0; width:260px; max-width:calc(100vw - 32px); padding: 6px; border: 1px solid #d9d2c5; background: #fff; box-shadow: 0 10px 24px rgba(26,26,46,.14); }
 .assortment-season-menu-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 2px 4px 7px; }
 .assortment-season-menu-head span { display: block; padding: 4px 0 3px; color: #9a978f; font: 9px var(--app-font-mono); text-transform: uppercase; }
-.assortment-season-close { display: grid; place-items: center; width: 26px; height: 26px; padding: 0; border: 0; color: #807a70; background: transparent; cursor: pointer; }
+.assortment-season-close { display: inline-flex !important; align-items:center; justify-content:center; gap:4px; width:auto !important; padding:5px 7px !important; border: 0; color: #807a70; background: transparent; cursor: pointer; }
 .assortment-season-close:hover { color: #1A1A2E; background: #f5f2ec; }
+.assortment-season-menu-scroll { max-height:320px; overflow-y:auto; overscroll-behavior:contain; }
 .assortment-season-menu button { display: block; width: 100%; padding: 7px; border: 0; background: transparent; color: var(--navy); cursor: pointer; text-align: left; font: 10px var(--app-font-mono); }
 .assortment-season-menu button:hover { background: #f5f2ec; }
+.assortment-season-menu button.current { background:#f5f2ec; font-weight:700; }
+.assortment-season-menu button small { float:right; color:#9b793a; font:8px var(--app-font-mono); text-transform:uppercase; }
 .assortment-toast { position: fixed; z-index: 40; right: 22px; bottom: 22px; max-width: min(380px, calc(100vw - 44px)); padding: 12px 15px; border: 1px solid #bcd6c5; background: #eff8f1; color: #3f7256; box-shadow: 0 10px 25px rgba(26,26,46,.12); font: 11px var(--app-font-mono); }
 .assortment-empty { padding: 31px 20px; border: 1px dashed #d8d1c8; color: #8b8a84; font-size: 12px; }
 .range-otb-category-card { margin-top: 24px; padding: 20px 21px 16px; border: 1px solid #E8E4DE; border-radius: 4px; background: #fff; }

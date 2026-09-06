@@ -4535,6 +4535,8 @@ colour_fabric AS (
 fabric_products AS (
     SELECT
         id,
+        mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(name), ''))
+            FILTER (WHERE NULLIF(BTRIM(name), '') IS NOT NULL) AS name,
         mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(barcode), ''))
             FILTER (WHERE NULLIF(BTRIM(barcode), '') IS NOT NULL) AS barcode,
         mode() WITHIN GROUP (ORDER BY NULLIF(BTRIM(supplier_fabric_code), ''))
@@ -4553,6 +4555,7 @@ fabric_products AS (
 fabric_stock_base AS (
     SELECT
         p.id AS fabric_product_id,
+        p.name AS fabric_name,
         NULLIF(BTRIM(p.barcode), '') AS fabric_barcode,
         NULLIF(BTRIM(p.supplier_fabric_code), '') AS fabric_quality_key,
         ROUND(COALESCE(SUM(
@@ -4564,11 +4567,12 @@ fabric_stock_base AS (
         ), 0)::numeric, 1) AS available_metres
     FROM fabric_products p
     LEFT JOIN raw_fabric_inventory i ON i.product_id = p.id
-    GROUP BY p.id, p.barcode, p.supplier_fabric_code
+    GROUP BY p.id, p.name, p.barcode, p.supplier_fabric_code
 ),
 fabric_stock AS (
     SELECT
         fabric_product_id,
+        fabric_name,
         fabric_barcode,
         available_metres,
         CASE WHEN fabric_quality_key IS NOT NULL THEN
@@ -4745,6 +4749,7 @@ SELECT
     p.reorder_count,
     g.colour,
     cl.colour_status,
+    fs.fabric_name,
     COALESCE(fs.fabric_barcode, cf.fabric_barcode) AS fabric_barcode,
     CASE WHEN fs.fabric_product_id IS NOT NULL
          THEN fs.available_metres
@@ -5159,6 +5164,7 @@ WHERE %(include_retired)s
                     # Colourway-only fabric context. Never add either value to
                     # style/subcategory/category/total buckets: the same fabric
                     # may be referenced by many colourways.
+                    "fabric_name": r.get("fabric_name") or None,
                     "fabric_barcode": r.get("fabric_barcode") or None,
                     "fabric_stock_metres": (
                         round(float(r["fabric_stock_metres"]), 1)
@@ -5380,12 +5386,12 @@ def _product_workspace_styles(styles, stock_mix):
         style["fabric_by_colour"] = [
             {
                 "colour": colour.get("name"),
+                "fabric_name": colour.get("fabric_name"),
+                "fabric_barcode": colour.get("fabric_barcode"),
                 "exact_metres": colour.get("fabric_stock_metres"),
                 "other_colour_metres": colour.get("fabric_other_colour_stock_metres"),
             }
             for colour in (leaf or {}).get("colours", [])
-            if (colour.get("fabric_stock_metres") is not None
-                or colour.get("fabric_other_colour_stock_metres") is not None)
         ]
         # A style-level fabric number is only meaningful when there is exactly
         # one attributable colourway; otherwise consumers must use the explicit
@@ -6435,14 +6441,36 @@ def register_merch_routes(app, api_pg_module):
     def _product_workspace_orders(date_from=None, date_to=None):
         """Read the BI-owned order ledger, avoiding optional-column assumptions."""
         sql = """
+            WITH product_by_number AS (
+                SELECT
+                    p.style_number,
+                    mode() WITHIN GROUP (ORDER BY p.category) AS category,
+                    mode() WITHIN GROUP (ORDER BY p.product_type) AS subcategory,
+                    mode() WITHIN GROUP (ORDER BY p.price)
+                        FILTER (WHERE p.price > 0) AS selling_price
+                FROM all_products_clean p
+                WHERE p.style_number IS NOT NULL
+                GROUP BY p.style_number
+            ),
+            product_by_name AS (
+                SELECT
+                    p.style_name,
+                    mode() WITHIN GROUP (ORDER BY p.category) AS category,
+                    mode() WITHIN GROUP (ORDER BY p.product_type) AS subcategory,
+                    mode() WITHIN GROUP (ORDER BY p.price)
+                        FILTER (WHERE p.price > 0) AS selling_price
+                FROM all_products_clean p
+                WHERE p.style_name IS NOT NULL
+                GROUP BY p.style_name
+            )
             SELECT
                 COALESCE(po.source, j->>'source', 'odoo') AS source,
                 po.order_ref AS reference,
                 po.style_number,
                 COALESCE(po.style_name, j->>'style_name', po.product_name,
                          j->>'product_name') AS style_name,
-                pm.category,
-                pm.subcategory,
+                COALESCE(pn.category, pm.category) AS category,
+                COALESCE(pn.subcategory, pm.subcategory) AS subcategory,
                 po.order_qty,
                 po.date_ordered,
                 COALESCE(
@@ -6452,22 +6480,15 @@ def register_merch_routes(app, api_pg_module):
                     CASE WHEN btrim(j->>'unit_cost') ~ '^[0-9]+(\\.[0-9]+)?$'
                          THEN (j->>'unit_cost')::numeric END
                 ) AS unit_cost,
-                pm.selling_price
+                COALESCE(pn.selling_price, pm.selling_price) AS selling_price
             FROM public.production_orders po
             CROSS JOIN LATERAL to_jsonb(po) j
-            LEFT JOIN LATERAL (
-                SELECT
-                    mode() WITHIN GROUP (ORDER BY p.category) AS category,
-                    mode() WITHIN GROUP (ORDER BY p.product_type) AS subcategory,
-                    mode() WITHIN GROUP (ORDER BY p.price)
-                        FILTER (WHERE p.price > 0) AS selling_price
-                FROM all_products_clean p
-                WHERE (po.style_number IS NOT NULL AND p.style_number = po.style_number)
-                   OR (COALESCE(po.style_name, j->>'style_name', po.product_name)
-                       IS NOT NULL
-                       AND p.style_name = COALESCE(po.style_name, j->>'style_name',
-                                                   po.product_name))
-            ) pm ON TRUE
+            LEFT JOIN product_by_number pn
+              ON pn.style_number = po.style_number
+            LEFT JOIN product_by_name pm
+              ON pn.style_number IS NULL
+             AND pm.style_name = COALESCE(
+                    po.style_name, j->>'style_name', po.product_name)
             WHERE po.date_ordered IS NOT NULL
               AND COALESCE(LOWER(j->>'bo_state'), '') NOT IN ('cancel', 'cancelled')
               AND COALESCE(LOWER(j->>'state'), '') NOT IN ('cancel', 'cancelled')

@@ -412,7 +412,9 @@ function Dashboard() {
   const scorecardValue = (row: FocusScorecard) => {
     if (!row.available || row.value === null) return '—';
     const isAverage = /^avg\b/i.test(row.measurable.trim());
-    const value = row.uom === 'No.' && !isAverage
+    const value = row.uom === 'Mtrs'
+      ? Math.round(row.value).toLocaleString()
+      : row.uom === 'No.' && !isAverage
       ? Math.round(row.value).toLocaleString()
       : Number.isInteger(row.value) ? row.value.toLocaleString() : row.value.toLocaleString(undefined, { maximumFractionDigits: 1 });
     return row.uom === '%' ? `${value}%` : row.uom === 'Mtrs' ? `${value} m` : value;
