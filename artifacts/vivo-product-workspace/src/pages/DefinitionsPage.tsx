@@ -17,6 +17,8 @@ type FabricRate = {
   updatedAt: string;
   updatedBy: string;
 };
+type LifecycleItem = Record<string, string | number | null> & { ruleKey: string; updatedAt: string; updatedBy: string };
+type LifecyclePayload = { tier4: LifecycleItem[]; graduation: LifecycleItem[]; reorderGate: LifecycleItem[] };
 
 const text = (value: unknown, fallback: string) => typeof value === 'string' && value.trim() ? value : fallback;
 const passes = (item: Reconciliation) => item.passed === true || ['pass', 'passed', 'ok', 'trusted', 'success'].includes(String(item.status).toLowerCase());
@@ -74,6 +76,31 @@ function FabricRateRow({ item }: { item: FabricRate }) {
   </tr>;
 }
 
+function LifecycleRuleRow({ group, item, fields }: { group: string; item: LifecycleItem; fields: Array<{ key: string; label: string; step?: string }> }) {
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState<LifecycleItem>(item);
+  useEffect(() => setDraft(item), [item]);
+  const update = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/workspace/lifecycle-rules/${group}/${item.ruleKey}`, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft),
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'Rule could not be saved');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'lifecycle-rules'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'assortment-plan'] });
+    },
+  });
+  return <tr>
+    <td><strong>{String(item.label ?? item.ruleKey)}</strong></td>
+    {fields.map((field) => <td key={field.key}><input type="number" step={field.step ?? '1'} value={draft[field.key] ?? ''} onChange={(event) => setDraft((current) => ({ ...current, [field.key]: event.target.value === '' ? null : Number(event.target.value) }))} aria-label={`${item.label} ${field.label}`} /></td>)}
+    {group === 'tier4' && <td><select value={String(draft.action)} onChange={(event) => setDraft((current) => ({ ...current, action: event.target.value }))}><option>REORDER</option><option>GRADUATE</option><option>RETIRE</option><option>WATCH</option></select></td>}
+    <td><span>{item.updatedBy}</span><small>{new Date(item.updatedAt).toLocaleString('en-GB')}</small></td>
+    <td><button className="icon-button" type="button" disabled={update.isPending} onClick={() => update.mutate()} aria-label={`Save ${item.label}`}><Save size={16} /></button>{update.isError && <small className="fabric-rate-error">{update.error.message}</small>}</td>
+  </tr>;
+}
+
 export default function DefinitionsPage() {
   const trust = useQuery({
     queryKey: ['workspace', 'range-plan', 'definitions'],
@@ -92,6 +119,14 @@ export default function DefinitionsPage() {
       return response.json() as Promise<{ items: FabricRate[] }>;
     },
   });
+  const lifecycle = useQuery({
+    queryKey: ['workspace', 'lifecycle-rules'],
+    queryFn: async () => {
+      const response = await fetch('/api/workspace/lifecycle-rules', { credentials: 'include' });
+      if (!response.ok) throw new Error(`Lifecycle rules request failed (${response.status})`);
+      return response.json() as Promise<LifecyclePayload>;
+    },
+  });
   const definitions = trust.data?.definitions ?? [];
   const reconciliations = trust.data?.reconciliations ?? [];
   const sources = trust.data?.sourceStatus ?? [];
@@ -103,6 +138,19 @@ export default function DefinitionsPage() {
       <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Planning reference / Workspace-owned</span><h2>Expected fabric consumption by subcategory</h2><p>Maintained reference metres per finished unit. These values are not yet used in calculations or validation.</p></div></div>
       {rates.isLoading ? <div className="definitions-empty">Loading fabric references…</div> : rates.isError ? <div className="definitions-empty">Fabric references could not be loaded. <button className="button" onClick={() => rates.refetch()}>Try again</button></div> :
         <div className="fabric-rate-table-wrap"><table className="fabric-rate-table"><thead><tr><th>Subcategory</th><th>Metres / unit</th><th>Confidence</th><th>Orders</th><th>Basis</th><th>Last changed</th><th /></tr></thead><tbody>{rates.data?.items.map((item) => <FabricRateRow key={item.subcategory} item={item} />)}</tbody></table></div>}
+    </section>
+    <section className="definitions-section">
+      <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Planning reference / Workspace-owned</span><h2>Tier 4 lifecycle thresholds</h2><p>Proposals only. Tier and retirement changes remain manual actions in Odoo.</p></div></div>
+      {lifecycle.isLoading ? <div className="definitions-empty">Loading lifecycle rules…</div> : lifecycle.isError ? <div className="definitions-empty">Lifecycle rules could not be loaded. <button className="button" onClick={() => lifecycle.refetch()}>Try again</button></div> :
+        <div className="fabric-rate-table-wrap"><table className="fabric-rate-table"><thead><tr><th>Rule</th><th>Week</th><th>Minimum sell-through %</th><th>Below sell-through %</th><th>Full price above %</th><th>Last sale within days</th><th>Cover at or below weeks</th><th>Action</th><th>Last changed</th><th /></tr></thead><tbody>{lifecycle.data?.tier4.map((item) => <LifecycleRuleRow key={item.ruleKey} group="tier4" item={item} fields={[{ key: 'minWeeks', label: 'week' }, { key: 'minSellThroughPct', label: 'minimum sell-through' }, { key: 'maxSellThroughPct', label: 'below sell-through' }, { key: 'minFullPricePct', label: 'full price percentage', step: '0.1' }, { key: 'maxDaysSinceLastSale', label: 'days since last sale' }, { key: 'maxCoverWeeks', label: 'cover weeks', step: '0.1' }]} />)}</tbody></table></div>}
+    </section>
+    <section className="definitions-section">
+      <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Planning reference / Workspace-owned</span><h2>Tier graduation rules</h2></div></div>
+      <div className="fabric-rate-table-wrap"><table className="fabric-rate-table"><thead><tr><th>Rule</th><th>Months since launch</th><th>Total orders</th><th>Last changed</th><th /></tr></thead><tbody>{lifecycle.data?.graduation.map((item) => <LifecycleRuleRow key={item.ruleKey} group="graduation" item={item} fields={[{ key: 'minMonths', label: 'months since launch', step: '0.1' }, { key: 'minOrders', label: 'total orders' }]} />)}</tbody></table></div>
+    </section>
+    <section className="definitions-section">
+      <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Planning reference / Workspace-owned</span><h2>Reorder gate for Tiers 1–3</h2><p>Sell-through is context only and is not part of this gate.</p></div></div>
+      <div className="fabric-rate-table-wrap"><table className="fabric-rate-table"><thead><tr><th>Rule</th><th>Full price above %</th><th>Last sale within days</th><th>Cover at or below weeks</th><th>Last changed</th><th /></tr></thead><tbody>{lifecycle.data?.reorderGate.map((item) => <LifecycleRuleRow key={item.ruleKey} group="reorder-gate" item={{ ...item, label: 'Tiers 1–3 reorder gate' }} fields={[{ key: 'minFullPricePct', label: 'full price percentage', step: '0.1' }, { key: 'maxDaysSinceLastSale', label: 'days since last sale' }, { key: 'maxCoverWeeks', label: 'cover weeks', step: '0.1' }]} />)}</tbody></table></div>
     </section>
     {trust.isLoading && <div className="range-plan-loading">Loading BI-owned definitions and data trust…</div>}
     {trust.isError && <div className="definitions-blocked" role="alert"><AlertTriangle size={22} /><div><strong>BI-owned definitions unavailable — data trust is blocked</strong><p>The Workspace-owned fabric references above remain available, but do not use BI-owned figures until their source-of-truth record is available.</p></div><button type="button" className="button button-dark" onClick={() => trust.refetch()}>Try again</button></div>}

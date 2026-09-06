@@ -19,10 +19,11 @@ type Style = Record<FilterKey, string | null> & {
   fullPricePct?: number | null; weeksOfCover?: number | null; sellThroughPct?: number | null; daysSinceLastSale?: number | null;
   awaitingDelivery?: boolean; fabricMetres?: number | null; otherColourFabricMetres?: number | null; colourwayCount?: number | null; fabric?: string | null;
   firstSaleDate?: string | null; weeksSinceFirstSale?: number | null; weeklyAvg?: number | null;
+  orderCount?: number | null; lastOrderDate?: string | null; weeksSinceLastOrder?: number | null; lifetimeSellThroughPct?: number | null;
   sourceStockUnits?: number | null; sellableStockUnits?: number | null; pipelineUnits?: number | null; stockPlusPipelineUnits?: number | null;
   sellableCoverWeeks?: number | null; planningCoverWeeks?: number | null; fabricConsumptionMetresPerUnit?: number | null;
   fabricByColour?: Array<{ colour: string | null; fabricName?: string | null; fabricBarcode?: string | null; exactMetres: number | null; otherColourMetres: number | null }>;
-  reorderSignal?: { tone: 'green' | 'amber' | 'grey'; label: string; fabricChecked: boolean; fabricNote: string };
+  reorderSignal?: { tone: 'green' | 'amber' | 'grey'; label: string; action: 'REORDER' | 'GRADUATE' | 'RETIRE' | 'WATCH' | null; actionPriority: number; fabricChecked: boolean; fabricNote: string };
 };
 type Summary = { total: number; counts: { total: number; tier1: number; tier2: number; tier3: number; tier4: number; retired: number }; filterOptions?: Record<FilterKey, string[]> };
 type Reconciliation = { status?: string; passed?: boolean; name?: string; metric?: string; label?: string; error?: string; message?: string; detail?: string };
@@ -67,7 +68,7 @@ function DestinationPicker({ seasons, weeks, disabled, onPick }: { seasons: Seas
 }
 
 function StyleCard({ style, selected, onSelect, action, expanded, onToggle }: { style: Style; selected: boolean; onSelect: () => void; action: React.ReactNode; expanded: boolean; onToggle: () => void }) {
-  const signal = style.reorderSignal ?? { tone: 'grey' as const, label: 'Not a candidate', fabricChecked: false, fabricNote: 'Fabric could not be checked' };
+  const signal = style.reorderSignal ?? { tone: 'grey' as const, label: 'No action', action: null, actionPriority: 5, fabricChecked: false, fabricNote: 'Fabric could not be checked' };
   const fabricRows = (style.fabricByColour ?? []).filter((row) => Number(row.exactMetres ?? 0) > 0 || Number(row.otherColourMetres ?? 0) > 0 || row.fabricBarcode);
   const fabricNames = [...new Set(fabricRows.map((row) => row.fabricName?.trim()).filter(Boolean) as string[])];
   const fabricName = fabricNames.length === 1 ? fabricNames[0] : fabricNames.length > 1 ? `${fabricNames[0]} + ${fabricNames.length - 1} more` : style.fabric && style.fabric !== 'Fabric pending' ? style.fabric : 'Fabric name not assigned';
@@ -79,17 +80,19 @@ function StyleCard({ style, selected, onSelect, action, expanded, onToggle }: { 
     <label className="assortment-select-card"><input type="checkbox" checked={selected} onChange={onSelect} disabled={!isBiStyle(style)} aria-label={`Select ${style.name}`} data-testid={`checkbox-select-style-${style.id}`} /></label>
     <GarmentImage className="assortment-style-image" source="catalogue" styleKey={style.styleNumber} image={style.image} alt={style.name} />
     <div className="assortment-style-copy">
-      <div className="assortment-style-topline"><span className="assortment-tier-badge">{style.tier ?? 'Unclassified'}</span><span className={`assortment-reorder-signal ${signal.tone}`}><i />{signal.label}{!signal.fabricChecked && <small>Fabric not checked</small>}</span></div>
+      <div className="assortment-style-topline"><span className="assortment-tier-badge">{style.tier ?? 'Unclassified'}</span><span className={`assortment-reorder-signal ${signal.tone} action-${(signal.action ?? 'none').toLowerCase()}`}><i />{signal.action && <b>{signal.action}</b>}{signal.label}{!signal.fabricChecked && signal.action === 'REORDER' && <small>Fabric not checked</small>}</span></div>
       <h3>{style.name || 'Unnamed style'}</h3><span className="assortment-style-number">{style.styleNumber}</span>
       <div className="assortment-stock-total"><span>SOH + Pipeline</span><strong>{n(style.stockPlusPipelineUnits)}</strong><small>{n(style.sellableStockUnits)} sellable + {n(style.pipelineUnits)} pipeline</small></div>
       <button type="button" className="assortment-details-toggle" onClick={onToggle} aria-expanded={expanded} data-testid={`button-style-details-${style.id}`}>{expanded ? 'Hide detail' : 'View detail'}</button>
       {expanded && <div className="assortment-card-details">
         <div className="assortment-detail-metrics">
-          <span><small>Sell-through</small><strong>{pct(style.sellThroughPct)}</strong></span>
+          <span><small>Lifetime sell-through</small><strong>{pct(style.lifetimeSellThroughPct)}</strong></span>
           <span><small>Cover (SOH + Pipeline)</small><strong>{n(style.planningCoverWeeks, 1)}</strong></span>
           <span><small>Full price</small><strong>{pct(style.fullPricePct)}</strong></span>
           <span><small>Days since last sale</small><strong>{n(style.daysSinceLastSale)}</strong></span>
-          {String(style.tier ?? '').startsWith('Tier 4') && <span><small>Weeks since first sale</small><strong>{n(style.weeksSinceFirstSale)}</strong></span>}
+          <span><small>Orders</small><strong>{n(style.orderCount)}</strong></span>
+          <span><small>Weeks since last order</small><strong>{n(style.weeksSinceLastOrder)}</strong></span>
+          <span><small>Weeks since launch</small><strong>{n(style.weeksSinceFirstSale)}</strong></span>
         </div>
         <div><b>Stock split</b><span>Stores {n(style.sohStores)} · Online {n(style.sohOnline)} · Warehouse {n(style.sohWarehouse)} · Pipeline {n(style.pipelineUnits)} {style.awaitingDelivery ? '· Awaiting delivery' : ''}</span></div>
         <div><b>Product</b><span>KES {n(style.price)} · {n(style.colourwayCount)} colourways · {style.category || 'Uncategorised'} / {style.subCategory || 'Uncategorised'}</span></div>
@@ -118,13 +121,13 @@ export default function AssortmentPlanPage() {
     window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-assortment-search]')?.focus());
   }, []);
   const assortmentStyles = assortment.data?.assortmentStyles ?? emptyStyles;
-  const styles = useMemo(
-    () => sortAssortmentStyles(
+  const styles = useMemo(() => {
+    const secondary = sortAssortmentStyles(
       assortmentStyles.filter((style) => matchesAssortmentFilters(style, filters) && matchesStyleCatalogueSearch(style, search)),
       sort,
-    ),
-    [assortmentStyles, filters, search, sort],
-  );
+    );
+    return secondary.sort((left, right) => (left.reorderSignal?.actionPriority ?? 5) - (right.reorderSignal?.actionPriority ?? 5));
+  }, [assortmentStyles, filters, search, sort]);
   useEffect(() => {
     if (expandedStyleId && !styles.some((style) => style.id === expandedStyleId)) setExpandedStyleId(null);
   }, [expandedStyleId, styles]);
@@ -145,7 +148,7 @@ export default function AssortmentPlanPage() {
   return <section className="page assortment-plan-page">
     <header className="assortment-plan-hero"><div><span className="range-eyebrow">Merchandising / Store edit</span><h1>Assortment Plan <span className="assortment-bi-badge hero">BI source</span></h1><p>Make range decisions with trading, stock and product context in one working view.</p></div><div className="assortment-plan-hero-mark">V</div></header>
     {(data.reconciliations ?? []).filter(reconciliationFailed).length > 0 && <div className="assortment-reconciliation-failure" role="alert" data-testid="status-assortment-reconciliation-failure"><Target size={18} /><div><strong>BI reconciliation failed — headline assortment figures are not trusted</strong><span>{(data.reconciliations ?? []).filter(reconciliationFailed).map((item) => item.name ?? item.metric ?? item.label ?? item.error ?? item.message).join(' · ')}</span></div></div>}
-    <div className="assortment-current-count" data-testid="text-assortment-filtered-count"><strong>{n(styles.length)}</strong><span>styles matching filters</span></div>
+    <div className="assortment-current-count" data-testid="text-assortment-filtered-count"><strong>{n(styles.length)}</strong><span>styles matching filters</span><small>Grouped by proposed action: Reorder → Retire → Graduate → Watch → Everything else. Your selected sort applies within each group.</small></div>
     <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter assortment</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div><label className="assortment-search-field"><Search size={16} aria-hidden="true" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search style, number or designer…" data-assortment-search data-testid="input-assortment-search" /></label>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={[...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><button type="button" className="assortment-clear-filters" onClick={() => { setSearch(''); setFilters(emptyFilters); }} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
     <div className="assortment-summary-bar"><div className="assortment-summary-lead"><Target size={17} /><span>Styles shown</span><strong>{n(styles.length)}</strong></div>{Object.entries(assortmentCounts).slice(1).map(([key, value]) => <div className="assortment-summary-item" key={key}><span>{key}</span><strong>{n(value)}</strong></div>)}</div>
     <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter(isBiStyle).map((s) => s.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div><div className="assortment-card-grid">{styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} expanded={expandedStyleId === style.id} onToggle={() => setExpandedStyleId((current) => current === style.id ? null : style.id)} />)}</div></> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>

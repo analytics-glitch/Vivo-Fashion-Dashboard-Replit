@@ -6508,6 +6508,53 @@ def register_merch_routes(app, api_pg_module):
                               if r.get("selling_price") is not None else None),
         } for r in (raw or [])]
 
+    def _apply_product_workspace_range_refresh(styled_rows):
+        """Reset lifecycle evidence after the latest Range Refreshed plan."""
+        refreshed = _db_exec("""
+            WITH refresh AS (
+                SELECT LOWER(BTRIM(l.style_number)) AS style_key,
+                       MAX(to_date(p.iso_year::text || lpad(p.iso_week::text,2,'0') || '1','IYYYIWID')) AS refresh_date
+                FROM product_workspace.weekly_order_plan_lines l
+                JOIN product_workspace.weekly_order_plans p ON p.id=l.plan_id
+                WHERE l.order_type='Range Refreshed' AND BTRIM(l.style_number)<>''
+                GROUP BY LOWER(BTRIM(l.style_number))
+            ),
+            sales AS (
+                SELECT r.style_key,r.refresh_date,MIN(s.sale_date::date) AS first_sale_date,
+                       COALESCE(SUM(CASE WHEN s.sale_kind IN ('sale','order')
+                         THEN s.ordered_item_quantity ELSE 0 END),0) AS units_life
+                FROM refresh r
+                LEFT JOIN all_products_clean ap ON LOWER(BTRIM(ap.style_number))=r.style_key
+                LEFT JOIN all_sales s ON s.variant_sku=ap.sku AND s.sale_date::date>=r.refresh_date
+                GROUP BY r.style_key,r.refresh_date
+            ),
+            orders AS (
+                SELECT r.style_key,COUNT(DISTINCT po.order_ref)::int AS order_count,
+                       MAX(po.date_ordered)::date AS last_order_date
+                FROM refresh r
+                LEFT JOIN production_orders po ON LOWER(BTRIM(po.style_number))=r.style_key
+                  AND po.date_ordered::date>=r.refresh_date
+                GROUP BY r.style_key
+            )
+            SELECT s.style_key,s.refresh_date,s.first_sale_date,s.units_life,
+                   o.order_count,o.last_order_date
+            FROM sales s JOIN orders o USING(style_key)
+        """, fetch=True) or []
+        facts = {r["style_key"]: r for r in refreshed}
+        for style in styled_rows:
+            fact = facts.get(str(style.get("style_number") or "").strip().lower())
+            if not fact:
+                continue
+            units = int(fact.get("units_life") or 0)
+            stock = int(style.get("current_stock") or 0)
+            style["range_refresh_date"] = str(fact["refresh_date"])[:10]
+            style["first_sale_date"] = str(fact["first_sale_date"])[:10] if fact.get("first_sale_date") else None
+            style["units_life"] = units
+            style["sor_life"] = round(units * 100.0 / (units + stock), 1) if units + stock > 0 else None
+            style["reorder_count"] = int(fact.get("order_count") or 0)
+            style["last_order_date"] = str(fact["last_order_date"])[:10] if fact.get("last_order_date") else None
+        return styled_rows
+
     @app.get("/api/internal/product-workspace-source")
     async def product_workspace_source(
         request: Request,
@@ -6530,7 +6577,9 @@ def register_merch_routes(app, api_pg_module):
                 brand=None, subcategory=None, tier=None,
                 from_date=date_from, to_date=date_to,
                 country=None, pos_location=None, include_retired=False))
-        styles = _product_workspace_styles(canonical_styles, stock_mix)
+        styles = await run_in_threadpool(
+            _apply_product_workspace_range_refresh,
+            _product_workspace_styles(canonical_styles, stock_mix))
         summary = _compute_summary(canonical_styles)
         orders = await run_in_threadpool(_product_workspace_orders, date_from, date_to)
         return JSONResponse({

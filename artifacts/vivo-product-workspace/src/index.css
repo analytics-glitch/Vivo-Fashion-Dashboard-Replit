@@ -1197,6 +1197,7 @@ a { color: inherit; text-decoration: none; }
 .assortment-filter-toolbar .catalogue-sort-control { flex: 1 1 190px; min-width: 190px; }
 .assortment-current-count { display: flex; align-items: baseline; gap: 8px; margin: 0 0 14px; color: #55504a; font: 11px var(--app-font-mono); text-transform: uppercase; letter-spacing: .04em; }
 .assortment-current-count strong { color: #1A1A2E; font-size: 18px; }
+.assortment-current-count small { margin-left:auto; max-width:720px; color:var(--muted); text-align:right; }
 .assortment-search-field { display: flex; flex: 1 1 240px; min-width: 220px; height: 42px; align-items: center; gap: 8px; padding: 0 12px; border: 1px solid #d8d0c5; background: #fff; color: #6f685f; }
 .assortment-search-field:focus-within { border-color: #1A1A2E; box-shadow: 0 0 0 1px #1A1A2E; }
 .assortment-search-field input { width: 100%; min-width: 0; border: 0; outline: 0; background: transparent; color: #1A1A2E; font: 12px var(--app-font-sans); }
@@ -1249,6 +1250,10 @@ a { color: inherit; text-decoration: none; }
 .assortment-reorder-signal i { width:8px; height:8px; border-radius:50%; background:#9da4ad; }
 .assortment-reorder-signal.green i { background:#4f8b64; }.assortment-reorder-signal.amber i { background:#c58b36; }
 .assortment-reorder-signal small { flex-basis:100%; color:#a17739; font-size:8px; }
+.assortment-reorder-signal b { margin-right:4px; font-size:9px; letter-spacing:.08em; }
+.assortment-reorder-signal.action-retire { color:#8b2e2e; }
+.assortment-reorder-signal.action-graduate { color:#356456; }
+.assortment-reorder-signal.action-watch { color:#7a591c; }
 .assortment-stock-total { display:grid; grid-template-columns:1fr auto; align-items:end; gap:2px 8px; margin:13px 0 10px; padding:10px; background:#f8f5ef; }
 .assortment-stock-total span { color:#6c665d; font:9px var(--app-font-mono); text-transform:uppercase; letter-spacing:.04em; }
 .assortment-stock-total strong { color:var(--navy); font:600 22px var(--app-font-serif); }

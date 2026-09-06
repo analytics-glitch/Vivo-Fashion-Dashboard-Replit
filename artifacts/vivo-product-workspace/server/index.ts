@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { computeReorderSignal, weeksSinceFirstSale, type FabricAvailability } from "./assortment-signal.js";
+import { computeReorderSignal, weeksSinceFirstSale, type FabricAvailability, type LifecycleRules } from "./assortment-signal.js";
 import { Readable } from "node:stream";
 import express, {
   type NextFunction,
@@ -206,6 +206,9 @@ function biStyle(style: Record<string, any>) {
     colourways: biValue(style, "colourways", "colours") ?? [], colourwayCount: numberOrNull("colourwayCount", "colourway_count", "colour_count"),
     fabric: String(biValue(style, "fabric") ?? "Fabric pending"), fabricByColour,
     weeklyAvg: numberOrNull("weeklyAvg", "weekly_avg"),
+    orderCount: numberOrNull("orderCount", "order_count", "reorder_count"),
+    lastOrderDate: calendarDate(biValue(style, "lastOrderDate", "last_order_date")),
+    lifetimeSellThroughPct: numberOrNull("lifetimeSellThroughPct", "lifetime_sell_through_pct", "sor_life"),
     image: biValue(style, "image", "imageUrl", "image_url") ?? null,
   };
 }
@@ -1849,6 +1852,46 @@ async function ensureFabricConsumptionRates() {
     ALTER TABLE ${schema}.subcategory_fabric_consumption_rates
       ADD CONSTRAINT subcategory_fabric_consumption_rates_confidence_check
       CHECK (confidence IN ('high','medium','low','estimate','not_set','business_confirmed'));
+    CREATE TABLE IF NOT EXISTS ${schema}.tier4_lifecycle_rules (
+      rule_key TEXT PRIMARY KEY,min_weeks NUMERIC NOT NULL,min_sell_through_pct NUMERIC,
+      max_sell_through_pct NUMERIC,min_full_price_pct NUMERIC,max_days_since_last_sale INTEGER,
+      max_cover_weeks NUMERIC,action TEXT NOT NULL,label TEXT NOT NULL,priority INTEGER NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
+    );
+    ALTER TABLE ${schema}.tier4_lifecycle_rules
+      ADD COLUMN IF NOT EXISTS min_full_price_pct NUMERIC,
+      ADD COLUMN IF NOT EXISTS max_days_since_last_sale INTEGER,
+      ADD COLUMN IF NOT EXISTS max_cover_weeks NUMERIC;
+    CREATE TABLE IF NOT EXISTS ${schema}.tier_graduation_rules (
+      rule_key TEXT PRIMARY KEY,from_tier INTEGER NOT NULL,to_tier INTEGER NOT NULL,
+      min_months NUMERIC NOT NULL DEFAULT 0,min_orders INTEGER NOT NULL,label TEXT NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.reorder_gate_rules (
+      rule_key TEXT PRIMARY KEY,min_full_price_pct NUMERIC NOT NULL,
+      max_days_since_last_sale INTEGER NOT NULL,max_cover_weeks NUMERIC NOT NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL
+    );
+  `);
+  await pool.query(`
+    INSERT INTO ${schema}.tier4_lifecycle_rules
+      (rule_key,min_weeks,min_sell_through_pct,max_sell_through_pct,min_full_price_pct,max_days_since_last_sale,max_cover_weeks,action,label,priority) VALUES
+      ('week_16_retire',16,NULL,80,NULL,NULL,NULL,'RETIRE','Retire',10),
+      ('week_12_graduate',12,80,NULL,NULL,NULL,NULL,'GRADUATE','Graduate to Tier 3',20),
+      ('week_12_retire',12,NULL,70,NULL,NULL,NULL,'RETIRE','Retire',30),
+      ('week_12_watch',12,70,80,NULL,NULL,NULL,'WATCH','Watch — 4 weeks to prove',40),
+      ('week_6_rollout',6,60,NULL,90,7,6,'REORDER','Passed week 6 read — full rollout',50),
+      ('week_2_early',2,30,NULL,NULL,NULL,NULL,'REORDER','Strong early candidate',60)
+    ON CONFLICT (rule_key) DO NOTHING;
+    INSERT INTO ${schema}.tier_graduation_rules
+      (rule_key,from_tier,to_tier,min_months,min_orders,label) VALUES
+      ('tier4_to_tier3',4,3,0,2,'Graduate to Tier 3'),
+      ('tier3_to_tier2',3,2,9,4,'Graduate to Tier 2')
+    ON CONFLICT (rule_key) DO NOTHING;
+    INSERT INTO ${schema}.reorder_gate_rules
+      (rule_key,min_full_price_pct,max_days_since_last_sale,max_cover_weeks) VALUES
+      ('tiers_1_to_3',90,7,8)
+    ON CONFLICT (rule_key) DO NOTHING;
   `);
   const taxonomy = [
     "Bodysuits","Fitted Tops","Kaftan Tops","Loose & Oversized Tops","Loose Tops",
@@ -1974,6 +2017,25 @@ function ensureFabricConsumptionRatesReady() {
     });
   }
   return fabricConsumptionReady;
+}
+
+async function loadLifecycleRules(): Promise<LifecycleRules> {
+  await ensureFabricConsumptionRatesReady();
+  const [tier4, graduation, gate] = await Promise.all([
+    pool.query(`SELECT rule_key AS "ruleKey",min_weeks::float AS "minWeeks",
+      min_sell_through_pct::float AS "minSellThroughPct",max_sell_through_pct::float AS "maxSellThroughPct",
+      min_full_price_pct::float AS "minFullPricePct",max_days_since_last_sale AS "maxDaysSinceLastSale",
+      max_cover_weeks::float AS "maxCoverWeeks",
+      action,label,priority FROM ${schema}.tier4_lifecycle_rules ORDER BY priority`),
+    pool.query(`SELECT rule_key AS "ruleKey",from_tier AS "fromTier",to_tier AS "toTier",
+      min_months::float AS "minMonths",min_orders AS "minOrders",label
+      FROM ${schema}.tier_graduation_rules ORDER BY from_tier DESC`),
+    pool.query(`SELECT min_full_price_pct::float AS "minFullPricePct",
+      max_days_since_last_sale AS "maxDaysSinceLastSale",max_cover_weeks::float AS "maxCoverWeeks"
+      FROM ${schema}.reorder_gate_rules WHERE rule_key='tiers_1_to_3'`),
+  ]);
+  if (!gate.rows[0] || tier4.rows.length !== 6 || graduation.rows.length !== 2) throw new Error("Lifecycle rules are incomplete");
+  return { tier4: tier4.rows, graduation: graduation.rows, reorderGate: gate.rows[0] };
 }
 
 async function ensureRangePlanNewnessData() {
@@ -5527,6 +5589,57 @@ router.patch("/fabric-consumption-rates/:subcategory", async (req: AuthRequest, 
   }
 });
 
+router.get("/lifecycle-rules", async (_req, res, next) => {
+  try {
+    await ensureFabricConsumptionRatesReady();
+    const [tier4, graduation, gate] = await Promise.all([
+      pool.query(`SELECT r.rule_key AS "ruleKey",r.min_weeks::float AS "minWeeks",
+        r.min_sell_through_pct::float AS "minSellThroughPct",r.max_sell_through_pct::float AS "maxSellThroughPct",
+        r.min_full_price_pct::float AS "minFullPricePct",r.max_days_since_last_sale AS "maxDaysSinceLastSale",
+        r.max_cover_weeks::float AS "maxCoverWeeks",
+        r.action,r.label,r.priority,r.updated_at AS "updatedAt",COALESCE(u.name,'System seed') AS "updatedBy"
+        FROM ${schema}.tier4_lifecycle_rules r LEFT JOIN ${schema}.users u ON u.id=r.updated_by ORDER BY r.priority`),
+      pool.query(`SELECT r.rule_key AS "ruleKey",r.from_tier AS "fromTier",r.to_tier AS "toTier",
+        r.min_months::float AS "minMonths",r.min_orders AS "minOrders",r.label,
+        r.updated_at AS "updatedAt",COALESCE(u.name,'System seed') AS "updatedBy"
+        FROM ${schema}.tier_graduation_rules r LEFT JOIN ${schema}.users u ON u.id=r.updated_by ORDER BY r.from_tier DESC`),
+      pool.query(`SELECT r.rule_key AS "ruleKey",r.min_full_price_pct::float AS "minFullPricePct",
+        r.max_days_since_last_sale AS "maxDaysSinceLastSale",r.max_cover_weeks::float AS "maxCoverWeeks",
+        r.updated_at AS "updatedAt",COALESCE(u.name,'System seed') AS "updatedBy"
+        FROM ${schema}.reorder_gate_rules r LEFT JOIN ${schema}.users u ON u.id=r.updated_by`),
+    ]);
+    res.json({ tier4: tier4.rows, graduation: graduation.rows, reorderGate: gate.rows });
+  } catch (error) { next(error); }
+});
+
+router.patch("/lifecycle-rules/:group/:key", async (req: AuthRequest, res) => {
+  try {
+    await ensureFabricConsumptionRatesReady();
+    const group = String(req.params.group);
+    const key = String(req.params.key);
+    const actor = req.workspaceUser?.id ?? null;
+    let result;
+    if (group === "tier4") {
+      const nullableNumber = (value: unknown) => value === null || value === "" || value === undefined ? null : Number(value);
+      const values = [Number(req.body.minWeeks), nullableNumber(req.body.minSellThroughPct), nullableNumber(req.body.maxSellThroughPct), nullableNumber(req.body.minFullPricePct), nullableNumber(req.body.maxDaysSinceLastSale), nullableNumber(req.body.maxCoverWeeks), String(req.body.action), String(req.body.label)];
+      if (!Number.isFinite(values[0]) || !["REORDER","GRADUATE","RETIRE","WATCH"].includes(values[6] as string) || !values[7]) throw new Error("Invalid Tier 4 rule");
+      result = await pool.query(`UPDATE ${schema}.tier4_lifecycle_rules SET min_weeks=$2,min_sell_through_pct=$3,max_sell_through_pct=$4,min_full_price_pct=$5,max_days_since_last_sale=$6,max_cover_weeks=$7,action=$8,label=$9,updated_at=NOW(),updated_by=$10 WHERE rule_key=$1 RETURNING rule_key`, [key, ...values, actor]);
+    } else if (group === "graduation") {
+      const minMonths = Number(req.body.minMonths), minOrders = Number(req.body.minOrders);
+      if (!Number.isFinite(minMonths) || minMonths < 0 || !Number.isInteger(minOrders) || minOrders < 0) throw new Error("Invalid graduation rule");
+      result = await pool.query(`UPDATE ${schema}.tier_graduation_rules SET min_months=$2,min_orders=$3,updated_at=NOW(),updated_by=$4 WHERE rule_key=$1 RETURNING rule_key`, [key, minMonths, minOrders, actor]);
+    } else if (group === "reorder-gate") {
+      const fullPrice = Number(req.body.minFullPricePct), days = Number(req.body.maxDaysSinceLastSale), cover = Number(req.body.maxCoverWeeks);
+      if (!Number.isFinite(fullPrice) || !Number.isInteger(days) || !Number.isFinite(cover)) throw new Error("Invalid reorder gate");
+      result = await pool.query(`UPDATE ${schema}.reorder_gate_rules SET min_full_price_pct=$2,max_days_since_last_sale=$3,max_cover_weeks=$4,updated_at=NOW(),updated_by=$5 WHERE rule_key=$1 RETURNING rule_key`, [key, fullPrice, days, cover, actor]);
+    } else throw new Error("Unknown lifecycle rule group");
+    if (!result.rows[0]) return res.status(404).json({ error: "Lifecycle rule not found" });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Lifecycle rule could not be updated" });
+  }
+});
+
 function styleDevelopmentStateFromTrackerStatus(value: unknown): { stage: StyleDevelopmentStage; status: StyleDevelopmentStatus } {
   const normalized = String(value ?? "").trim().toLowerCase();
   const states: Record<string, { stage: StyleDevelopmentStage; status: StyleDevelopmentStatus }> = {
@@ -8069,11 +8182,13 @@ router.get("/assortment-plan", async (_req, res, next) => {
        FROM ${schema}.subcategory_fabric_consumption_rates
        WHERE expected_metres_per_unit IS NOT NULL AND is_non_garment=FALSE`,
     );
-    const [bi, seasonsResult, weeklyDestinationsResult, fabricRatesResult] = await Promise.all([
+    const lifecycleRulesPromise = loadLifecycleRules();
+    const [bi, seasonsResult, weeklyDestinationsResult, fabricRatesResult, lifecycleRules] = await Promise.all([
       biPromise,
       seasonsPromise,
       weeklyDestinationsPromise,
       fabricRatesPromise,
+      lifecycleRulesPromise,
     ]);
     const fabricRates = new Map(fabricRatesResult.rows.map((row) => [String(row.subcategory), Number(row.metresPerUnit)]));
     const selectedAssortment = await assortmentPlanData(CURRENT_ASSORTMENT_SCOPE, true, bi);
@@ -8091,14 +8206,16 @@ router.get("/assortment-plan", async (_req, res, next) => {
       const fabricConsumptionMetresPerUnit = fabricRates.get(String(style.subCategory ?? "").trim().toLowerCase()) ?? null;
       const reorderSignal = computeReorderSignal({
         tier: style.tier,
-        sellThroughPct: style.sellThroughPct == null ? null : Number(style.sellThroughPct),
+        sellThroughPct: style.lifetimeSellThroughPct == null ? null : Number(style.lifetimeSellThroughPct),
         fullPricePct: style.fullPricePct == null ? null : Number(style.fullPricePct),
         daysSinceLastSale: style.daysSinceLastSale == null ? null : Number(style.daysSinceLastSale),
         firstSaleDate: style.firstSaleDate,
+        orderCount: style.orderCount,
         sellableCoverWeeks,
         planningCoverWeeks,
         fabricAvailability: style.fabricByColour,
         fabricConsumptionMetresPerUnit,
+        rules: lifecycleRules,
       });
       return {
         ...style,
@@ -8110,6 +8227,7 @@ router.get("/assortment-plan", async (_req, res, next) => {
         sellableCoverWeeks,
         planningCoverWeeks,
         weeksSinceFirstSale: weeksSinceFirstSale(style.firstSaleDate),
+        weeksSinceLastOrder: weeksSinceFirstSale(style.lastOrderDate),
         fabricConsumptionMetresPerUnit,
         reorderSignal,
         image: style.styleNumber

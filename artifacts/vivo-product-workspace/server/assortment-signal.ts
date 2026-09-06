@@ -7,12 +7,21 @@ export type FabricAvailability = {
 };
 
 export type ReorderSignalTone = "green" | "amber" | "grey";
+export type ProposedAction = "REORDER" | "GRADUATE" | "RETIRE" | "WATCH" | null;
 
 export type ReorderSignal = {
   tone: ReorderSignalTone;
   label: string;
+  action: ProposedAction;
+  actionPriority: number;
   fabricChecked: boolean;
   fabricNote: string;
+};
+
+export type LifecycleRules = {
+  tier4: Array<{ ruleKey: string; minWeeks: number; minSellThroughPct: number | null; maxSellThroughPct: number | null; minFullPricePct: number | null; maxDaysSinceLastSale: number | null; maxCoverWeeks: number | null; action: Exclude<ProposedAction, null>; label: string; priority: number }>;
+  graduation: Array<{ ruleKey: string; fromTier: number; toTier: number; minMonths: number; minOrders: number; label: string }>;
+  reorderGate: { minFullPricePct: number; maxDaysSinceLastSale: number; maxCoverWeeks: number };
 };
 
 type SignalInput = {
@@ -21,10 +30,12 @@ type SignalInput = {
   fullPricePct: number | null;
   daysSinceLastSale: number | null;
   firstSaleDate: string | null;
+  orderCount: number | null;
   sellableCoverWeeks: number | null;
   planningCoverWeeks: number | null;
   fabricAvailability: FabricAvailability[];
   fabricConsumptionMetresPerUnit: number | null;
+  rules: LifecycleRules;
   today?: Date;
 };
 
@@ -70,39 +81,71 @@ export function fabricCheck(
 
 export function computeReorderSignal(input: SignalInput): ReorderSignal {
   const fabric = fabricCheck(input.fabricAvailability, input.fabricConsumptionMetresPerUnit);
-  const withFabric = (tone: ReorderSignalTone, label: string): ReorderSignal => ({
+  const result = (tone: ReorderSignalTone, label: string, action: ProposedAction = null): ReorderSignal => ({
     tone,
     label,
+    action,
+    actionPriority: action === "REORDER" ? 1 : action === "RETIRE" ? 2 : action === "GRADUATE" ? 3 : action === "WATCH" ? 4 : 5,
     fabricChecked: fabric.checked,
     fabricNote: fabric.note,
   });
-  const tradingFresh = input.daysSinceLastSale !== null && input.daysSinceLastSale <= 7;
-  const fullPricePass = input.fullPricePct !== null && input.fullPricePct > 90;
+  const withReorderFabric = (label: string): ReorderSignal => {
+    if (fabric.checked && fabric.supportsFullBuy === false) return result("amber", "Fabric short", "REORDER");
+    return result("green", label, "REORDER");
+  };
+  const gate = input.rules.reorderGate;
+  const tradingFresh = input.daysSinceLastSale !== null && input.daysSinceLastSale <= gate.maxDaysSinceLastSale;
+  const fullPricePass = input.fullPricePct !== null && input.fullPricePct > gate.minFullPricePct;
   const isTier4 = String(input.tier ?? "").startsWith("Tier 4");
+  const isTier3 = String(input.tier ?? "").startsWith("Tier 3");
 
   if (isTier4) {
     const ageWeeks = weeksSinceFirstSale(input.firstSaleDate, input.today);
-    if (ageWeeks === null) return withFabric("grey", "Not yet selling");
-    if (ageWeeks < 6) return withFabric("grey", `Too early · week ${ageWeeks + 1}`);
-    const passedRead = input.sellThroughPct !== null
-      && input.sellThroughPct >= 60
-      && fullPricePass
-      && tradingFresh
-      && input.planningCoverWeeks !== null
-      && input.planningCoverWeeks <= 6;
-    if (passedRead) {
-      if (fabric.checked && fabric.supportsFullBuy === false) return withFabric("amber", "Fabric short");
-      return withFabric("green", "Passed week 6 read");
+    if (ageWeeks === null) return result("grey", "Not yet selling");
+    const lifetime = input.sellThroughPct;
+    const orderedRules = [...input.rules.tier4].sort((a, b) => a.priority - b.priority);
+    const matches = (key: string) => orderedRules.find((rule) => rule.ruleKey === key);
+    const applies = (rule: LifecycleRules["tier4"][number] | undefined) => Boolean(rule
+      && ageWeeks >= rule.minWeeks
+      && lifetime !== null
+      && (rule.minSellThroughPct === null || lifetime >= rule.minSellThroughPct)
+      && (rule.maxSellThroughPct === null || lifetime < rule.maxSellThroughPct));
+    const hardStop = matches("week_16_retire");
+    if (applies(hardStop)) return result("grey", hardStop!.label, "RETIRE");
+    const orderGraduation = input.rules.graduation.find((rule) => rule.fromTier === 4);
+    if (orderGraduation && input.orderCount !== null && input.orderCount >= orderGraduation.minOrders) {
+      return result("green", orderGraduation.label, "GRADUATE");
     }
-    if (ageWeeks < 12) return withFabric("amber", "Watch · week 12 backstop");
-    return withFabric("grey", "Missed read");
+    if (ageWeeks < 2) return result("grey", `Too early · week ${ageWeeks + 1}`);
+    for (const key of ["week_12_graduate", "week_12_retire", "week_12_watch"]) {
+      const rule = matches(key);
+      if (applies(rule)) return result(rule!.action === "RETIRE" ? "grey" : rule!.action === "WATCH" ? "amber" : "green", rule!.label, rule!.action);
+    }
+    const passedRule = matches("week_6_rollout");
+    const passedRead = applies(passedRule)
+      && passedRule!.minFullPricePct !== null && input.fullPricePct !== null && input.fullPricePct > passedRule!.minFullPricePct
+      && passedRule!.maxDaysSinceLastSale !== null && input.daysSinceLastSale !== null && input.daysSinceLastSale <= passedRule!.maxDaysSinceLastSale
+      && input.planningCoverWeeks !== null
+      && passedRule!.maxCoverWeeks !== null
+      && input.planningCoverWeeks <= passedRule!.maxCoverWeeks;
+    if (passedRead) return withReorderFabric(passedRule!.label);
+    const earlyRule = matches("week_2_early");
+    if (applies(earlyRule)) return withReorderFabric(earlyRule!.label);
+    return result("grey", "No action");
   }
 
-  if (!fullPricePass || !tradingFresh) return withFabric("grey", "Not a candidate");
-  const sellablePass = input.sellableCoverWeeks !== null && input.sellableCoverWeeks <= 8;
-  const pipelinePass = input.planningCoverWeeks !== null && input.planningCoverWeeks <= 8;
-  if (sellablePass && !pipelinePass) return withFabric("amber", "Order in production");
-  if (!pipelinePass) return withFabric("grey", "Not a candidate");
-  if (fabric.checked && fabric.supportsFullBuy === false) return withFabric("amber", "Fabric short");
-  return withFabric("green", "Reorder candidate");
+  if (isTier3) {
+    const ageWeeks = weeksSinceFirstSale(input.firstSaleDate, input.today);
+    const graduation = input.rules.graduation.find((rule) => rule.fromTier === 3);
+    if (graduation && ageWeeks !== null && ageWeeks >= graduation.minMonths * 52 / 12
+      && input.orderCount !== null && input.orderCount >= graduation.minOrders) {
+      return result("green", graduation.label, "GRADUATE");
+    }
+  }
+  if (!fullPricePass || !tradingFresh) return result("grey", "No action");
+  const sellablePass = input.sellableCoverWeeks !== null && input.sellableCoverWeeks <= gate.maxCoverWeeks;
+  const pipelinePass = input.planningCoverWeeks !== null && input.planningCoverWeeks <= gate.maxCoverWeeks;
+  if (sellablePass && !pipelinePass) return result("amber", "Order in production");
+  if (!pipelinePass) return result("grey", "No action");
+  return withReorderFabric("Reorder candidate");
 }
