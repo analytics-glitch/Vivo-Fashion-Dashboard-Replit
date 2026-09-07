@@ -14,6 +14,7 @@ import { api, comparePeriod } from "@/lib/api";
  * the user clicks Refresh (which also bumps `dataVersion`).
  */
 const kpiCache = new Map(); // key -> { promise?, data?, ts? }
+export const KPI_REQUEST_TIMEOUT_MS = 20_000;
 // 60 s TTL — long enough to dedupe a burst of concurrent component
 // mounts (Overview, AppHeader, KpiTrendChart all consume the same
 // payload) but short enough that a fresh deploy / data-pipeline update
@@ -53,6 +54,7 @@ export function fetchKpis(params) {
   }
   const promise = api
     .get("/kpis", {
+      timeout: KPI_REQUEST_TIMEOUT_MS,
       params: {
         date_from: params.date_from,
         date_to: params.date_to,
@@ -100,6 +102,7 @@ export function useKpis({ compare = false } = {}) {
   const [prevKpis, setPrevKpis] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [retryToken, setRetryToken] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -121,7 +124,9 @@ export function useKpis({ compare = false } = {}) {
       })
       .catch((err) => {
         if (!cancelled) {
-          setError(err?.response?.data?.detail || err?.message || "fetch failed");
+          setError(err?.code === "ECONNABORTED"
+            ? "Headline figures took too long to load."
+            : (err?.response?.data?.detail || err?.message || "Headline figures could not be loaded."));
         }
       })
       .finally(() => !cancelled && setLoading(false));
@@ -153,6 +158,7 @@ export function useKpis({ compare = false } = {}) {
     applied.compareDateTo,
     applied.dataVersion,
     compare,
+    retryToken,
   ]);
 
   // Auto-retry when the fetch outright FAILED (hard 5xx — distinct from
@@ -227,7 +233,12 @@ export function useKpis({ compare = false } = {}) {
   }, [kpis?.stale, applied.dateFrom, applied.dateTo,
       JSON.stringify(applied.countries), JSON.stringify(applied.channels)]);
 
-  return { kpis, prevKpis, loading, error };
+  const retry = () => {
+    invalidateKpis();
+    setRetryToken((value) => value + 1);
+  };
+
+  return { kpis, prevKpis, loading, error, retry };
 }
 
 /**

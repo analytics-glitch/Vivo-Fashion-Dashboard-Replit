@@ -19,6 +19,8 @@ import {
 import { KPICard, HighlightCard } from "@/components/KPICard";
 import { Loading, ErrorBox, SectionTitle, Empty } from "@/components/common";
 import OverviewSkeleton from "@/components/OverviewSkeleton";
+import { getOverviewLoadState } from "@/lib/overviewLoadState";
+import { loadOverviewFallback } from "@/lib/overviewFallback";
 import SortableTable from "@/components/SortableTable";
 // SalesProjection moved to /targets (Targets Tracker page).
 import StoreOfTheWeek from "@/components/StoreOfTheWeek";
@@ -365,7 +367,13 @@ const Overview = () => {
   const kfmt = isMobile ? fmtKESMobile : fmtKES;
 
   // Shared KPI state — identical values on every page for the same filters.
-  const { kpis: rawKpis, prevKpis: rawKpisPrev, loading: kpisLoading, error: kpisError } = useKpis({ compare: true });
+  const {
+    kpis: rawKpis,
+    prevKpis: rawKpisPrev,
+    loading: kpisLoading,
+    error: kpisError,
+    retry: retryKpis,
+  } = useKpis({ compare: true });
 
   const [countrySummary, setCountrySummary] = useState([]);
   const [countrySummaryPrev, setCountrySummaryPrev] = useState([]);
@@ -382,6 +390,7 @@ const Overview = () => {
   const [pairedDays, setPairedDays] = useState(null); // for single-day trend chart
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const [bootstrapRetryToken, setBootstrapRetryToken] = useState(0);
   const [sortKey, setSortKey] = useState("units_sold");
   // Iter 91m — Canonical "Units Sold" (Vivo merchandise definition,
   // single source of truth). Fetched alongside /kpis so the headline
@@ -429,7 +438,7 @@ const Overview = () => {
       ...(prev ? { compare_from: prev.date_from, compare_to: prev.date_to } : {}),
     };
 
-    api.get("/bootstrap/overview", { params: bootstrapParams })
+    api.get("/bootstrap/overview", { params: bootstrapParams, timeout: 25_000 })
       .then(({ data: b }) => {
         if (cancelled) return;
         setCountrySummary(b.country_summary || []);
@@ -449,7 +458,66 @@ const Overview = () => {
         setDailyByCountryPrev(b.daily_by_country_prev || {});
         touchLastUpdated();
       })
-      .catch((e) => !cancelled && setError(e?.response?.data?.detail || e.message))
+      .catch(async (e) => {
+        if (cancelled) return;
+        const message = e?.code === "ECONNABORTED"
+          ? "Dashboard sections took too long to load. Headline figures may still be available."
+          : (e?.response?.data?.detail || e.message || "Dashboard sections could not be loaded.");
+        const previousParams = prev ? { ...p, date_from: prev.date_from, date_to: prev.date_to } : null;
+        const requests = [
+          { key: "sales", path: "/sales-summary", params: p },
+          { key: "topStyles", path: "/top-skus", params: { ...p, limit: 10 } },
+          { key: "subcats", path: "/subcategory-sales", params: p },
+          { key: "footfall", path: "/footfall", params: p },
+          { key: "locations", path: "/locations", params: {} },
+          ...(!countries.length && !channels.length
+            ? [{ key: "countrySummary", path: "/country-summary", params: p }]
+            : []),
+          ...countriesToChart.map((country) => ({
+            key: `daily:${country}`,
+            path: "/daily-trend",
+            params: { ...p, country },
+          })),
+          ...(previousParams ? [
+            { key: "salesPrev", path: "/sales-summary", params: previousParams },
+            { key: "subcatsPrev", path: "/subcategory-sales", params: previousParams },
+            { key: "footfallPrev", path: "/footfall", params: previousParams },
+            ...(!countries.length && !channels.length
+              ? [{ key: "countrySummaryPrev", path: "/country-summary", params: previousParams }]
+              : []),
+            ...countriesToChart.map((country) => ({
+              key: `dailyPrev:${country}`,
+              path: "/daily-trend",
+              params: { ...previousParams, country },
+            })),
+          ] : []),
+        ];
+        const fallback = await loadOverviewFallback(api, requests);
+        if (cancelled) return;
+        const data = fallback.data;
+        if (data.sales) setSales(data.sales);
+        if (data.salesPrev) setSalesPrev(data.salesPrev);
+        if (data.topStyles) setTopStyles(data.topStyles);
+        if (data.subcats) setSubcats(data.subcats);
+        if (data.subcatsPrev) setSubcatsPrev(data.subcatsPrev);
+        if (data.footfall) setFootfall(data.footfall);
+        if (data.footfallPrev) setFootfallPrev(data.footfallPrev);
+        if (data.locations) setLocations(data.locations);
+        if (data.countrySummary) setCountrySummary(data.countrySummary);
+        if (data.countrySummaryPrev) setCountrySummaryPrev(data.countrySummaryPrev);
+        const daily = {};
+        const dailyPrev = {};
+        countriesToChart.forEach((country) => {
+          if (data[`daily:${country}`]) daily[country] = data[`daily:${country}`];
+          if (data[`dailyPrev:${country}`]) dailyPrev[country] = data[`dailyPrev:${country}`];
+        });
+        if (Object.keys(daily).length) setDailyByCountry(daily);
+        if (Object.keys(dailyPrev).length) setDailyByCountryPrev(dailyPrev);
+        if (Object.keys(data).length) touchLastUpdated();
+        setError(fallback.failed.length
+          ? `${message} Some sections recovered; retry to load the remaining sections.`
+          : null);
+      })
       .finally(() => !cancelled && setLoading(false));
 
     // Revenue by customer type (New / Returning cards). Uses the dedicated
@@ -475,7 +543,7 @@ const Overview = () => {
     }
     return () => { cancelled = true; };
     // eslint-disable-next-line
-  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion]);
+  }, [dateFrom, dateTo, JSON.stringify(countries), JSON.stringify(channels), compareMode, compareDateFrom, compareDateTo, dataVersion, bootstrapRetryToken]);
 
   // --- Paired-bars data for single-day range ---
   // Fetches KPIs for:  Today, Same Day Last Week, Same Day Last Month,
@@ -810,6 +878,13 @@ const Overview = () => {
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rawKpis, canonicalUnits]);
+  const overviewLoadState = getOverviewLoadState({
+    sectionLoading: loading,
+    kpiLoading: kpisLoading,
+    kpis,
+    sectionError: error,
+    kpiError: kpisError,
+  });
 
   const kpisPrev = useMemo(() => {
     if (!rawKpisPrev) return null;
@@ -1322,8 +1397,34 @@ const Overview = () => {
         )}
       </div>
 
-      {(loading || kpisLoading) && !kpis && <OverviewSkeleton />}
-      {error && <ErrorBox message={error} />}
+      {overviewLoadState.showSkeleton && <OverviewSkeleton />}
+      {overviewLoadState.showError && (
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4" data-testid="overview-load-error">
+          <ErrorBox message={error || kpisError} />
+          <div className="mt-3 flex flex-wrap gap-2">
+            {error && (
+              <button
+                type="button"
+                className="rounded-lg bg-brand px-3 py-2 text-xs font-semibold text-white"
+                onClick={() => setBootstrapRetryToken((value) => value + 1)}
+                data-testid="retry-overview-sections"
+              >
+                Retry dashboard sections
+              </button>
+            )}
+            {kpisError && !kpis && (
+              <button
+                type="button"
+                className="rounded-lg border border-brand px-3 py-2 text-xs font-semibold text-brand"
+                onClick={retryKpis}
+                data-testid="retry-overview-kpis"
+              >
+                Retry headline figures
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {degradedMessage && (
         <div
           className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-[12.5px] text-amber-900 flex items-center gap-2"
@@ -1390,7 +1491,7 @@ const Overview = () => {
         <ProjectionBanner p={projectionView} />
       )}
 
-      {!kpisLoading && !error && kpis && (
+      {overviewLoadState.showHeadline && (
         <>
           <div className="grid grid-cols-2 xl:grid-cols-5 gap-3">
             <KPICard testId="kpi-total-sales" accent label="Total Sales" value={kfmt(kpis.total_sales)} valueFull={fmtKESLong(kpis.total_sales)} icon={CurrencyCircleDollar}

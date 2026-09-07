@@ -359,7 +359,11 @@ def _cached_dashboard_snapshot(key, date_to, build, label):
             owner = False
 
     if not owner:
-        entry["event"].wait()
+        wait_sec = float(os.getenv("DASHBOARD_SNAPSHOT_WAIT_SEC", "45"))
+        if not entry["event"].wait(timeout=wait_sec):
+            raise TimeoutError(
+                f"Dashboard snapshot is still building after {wait_sec:g}s: {label}"
+            )
         cached, _ = cache_get_swr(key)
         if cached is not None:
             return cached
