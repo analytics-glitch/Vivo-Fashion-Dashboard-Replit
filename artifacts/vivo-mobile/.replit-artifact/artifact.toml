@@ -18,9 +18,6 @@ localPort = 20838
 [services.development]
 run = "pnpm --filter @workspace/vivo-mobile run dev"
 
-[services.production]
-build = [ "pnpm", "--filter", "@workspace/vivo-mobile", "run", "build" ]
-run = [ "pnpm", "--filter", "@workspace/vivo-mobile", "run", "serve" ]
 
 [services.env]
 PORT = "20838"

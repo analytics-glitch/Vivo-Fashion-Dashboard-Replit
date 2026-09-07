@@ -131,7 +131,7 @@ class StaffTwoFactorTests(unittest.TestCase):
                 "/api/auth/2fa/verify", json={"code": code})
         self.assertEqual(verified.status_code, 503, verified.text)
         self.assertNotIn("session_token", verified.cookies)
-        self.assertIn("stage=2fa_verify", repr(error_log.call_args))
+        self.assertIn("two_factor_verification", repr(error_log.call_args))
         # The failed session insert must roll back enrollment and challenge
         # consumption, allowing the same valid challenge to be retried.
         state = api_pg._users_exec(

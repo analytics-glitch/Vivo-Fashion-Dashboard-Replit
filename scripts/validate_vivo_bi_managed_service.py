@@ -64,6 +64,8 @@ def main() -> int:
         raise RuntimeError("listener changed during managed-service audit")
     liveness = require_endpoint("http://127.0.0.1:8080/api/healthz")
     readiness = require_endpoint("http://127.0.0.1:8080/api/readyz", require_ready=True)
+    if readiness.get("checks", {}).get("staff_auth") != "ok":
+        raise RuntimeError("API readiness did not certify the complete staff-auth path")
     print(json.dumps({
         "ok": True,
         "workspace": str(WORKSPACE),
@@ -80,6 +82,7 @@ def main() -> int:
         },
         "api_liveness": liveness.get("status"),
         "api_ready": readiness.get("ready"),
+        "staff_auth_ready": readiness.get("checks", {}).get("staff_auth"),
         "workflow_ready_recovery_evidence": {
             "guarded_run_command": expected_run,
             "stable_listener": True,

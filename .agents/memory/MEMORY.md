@@ -154,3 +154,4 @@
 - [Product Workspace calendar dates](product-workspace-calendar-dates.md) — serialize DATE values from local calendar parts, validate before SQL, and isolate unreadable legacy text.
 - [Exact BI benchmark parity](exact-bi-benchmark-parity.md) — compare against an immutable historical window or frozen snapshot; live ingestion can change valid outputs between runs.
 - [Assortment pipeline source](assortment-pipeline-current-stage.md) — use current Tracker stages, not order quantity; live Odoo replaces 3 ledger stages, Warehouse is excluded.
+- [Auth fallback connection budget](auth-fallback-connection-budget.md) — pool-exhaustion recovery must use a small shared reserve; an unbounded direct fallback turns contention into DB exhaustion.

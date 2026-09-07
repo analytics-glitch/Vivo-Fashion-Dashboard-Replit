@@ -497,7 +497,11 @@ def _singleflight_claim(key, ttl_minutes=30):
     errors (better to run idempotent work twice than never)."""
     owner = uuid.uuid4().hex
     try:
-        conn = get_conn()
+        conn = psycopg2.connect(
+            os.environ["DATABASE_URL"],
+            options="-c standard_conforming_strings=on",
+            connect_timeout=5,
+        )
         try:
             conn.autocommit = True
             cur = conn.cursor()
@@ -1124,12 +1128,10 @@ def _users_exec(query, params=None, fetch=False):
     try:
         conn = pool.getconn()
     except _pg_pool.PoolError:
-        # Pool exhausted — open a direct connection for this one call.
-        # This is intentionally best-effort: if the DB itself is unreachable
-        # the exception propagates to the caller (same as normal pool failure).
-        conn = psycopg2.connect(
-            os.environ['DATABASE_URL'],
-            options='-c standard_conforming_strings=on')
+        # Pool exhausted — use the same strictly bounded reserve as auth
+        # transactions/readiness. This keeps challenge/session/schema helpers
+        # available without allowing fallback traffic to exceed the DB budget.
+        conn = _open_bounded_auth_connection()
         _direct_fallback = True
         log.debug("_users_exec: pool exhausted, using direct connection for: %s",
                   query.split()[0])
@@ -1154,7 +1156,7 @@ def _users_exec(query, params=None, fetch=False):
             )
         if _direct_fallback:
             try:
-                conn.close()
+                _close_bounded_auth_connection(conn)
             except Exception:
                 pass
         else:
@@ -1162,7 +1164,7 @@ def _users_exec(query, params=None, fetch=False):
         raise
     else:
         if _direct_fallback:
-            conn.close()
+            _close_bounded_auth_connection(conn)
         else:
             pool.putconn(conn)
     if is_merch_query:
@@ -1181,6 +1183,32 @@ def _users_exec(query, params=None, fetch=False):
 # can never both pass a last-admin guard (or both bootstrap a first admin).
 _ADMIN_LOCK_KEY = 0x5669766F  # "Vivo"
 _L10_IMPORT_LOCK_KEY = 0x4C313000  # "L10\0" — serialises concurrent L10 imports
+_AUTH_DIRECT_BUDGET = threading.BoundedSemaphore(2)
+
+
+def _open_bounded_auth_connection():
+    """Open one of two reserved auth connections, or fail quickly."""
+    if not _AUTH_DIRECT_BUDGET.acquire(timeout=0.25):
+        raise _pg_pool.PoolError("auth direct connection budget exhausted")
+    try:
+        return psycopg2.connect(
+            os.environ["DATABASE_URL"],
+            options=(
+                "-c standard_conforming_strings=on "
+                "-c statement_timeout=5000 -c lock_timeout=2000"
+            ),
+            connect_timeout=5,
+        )
+    except Exception:
+        _AUTH_DIRECT_BUDGET.release()
+        raise
+
+
+def _close_bounded_auth_connection(conn):
+    try:
+        conn.close()
+    finally:
+        _AUTH_DIRECT_BUDGET.release()
 
 
 @contextlib.contextmanager
@@ -1193,7 +1221,18 @@ def _users_tx(lock=False):
     commit/rollback. Yields a RealDict cursor; commits on success, rolls back on
     error."""
     pool = _get_pool()
-    conn = pool.getconn()
+    direct_fallback = False
+    try:
+        conn = pool.getconn()
+    except _pg_pool.PoolError:
+        # Staff authentication must not fail merely because analytical requests
+        # temporarily occupy the application pool. Use one bounded, short-lived
+        # connection for the atomic auth transaction; a real database outage
+        # still raises and is surfaced by the staged 503/readiness diagnostics.
+        conn = _open_bounded_auth_connection()
+        direct_fallback = True
+    cur = None
+    failed = False
     try:
         conn.autocommit = False
         cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1201,19 +1240,27 @@ def _users_tx(lock=False):
             cur.execute("SELECT pg_advisory_xact_lock(%s)", (_ADMIN_LOCK_KEY,))
         yield cur
         conn.commit()
-        cur.close()
     except Exception:
+        failed = True
         try:
             conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        if cur is not None:
+            try:
+                cur.close()
+            except Exception:
+                failed = True
+        try:
             conn.autocommit = True
         except Exception:
-            pool.putconn(conn, close=True)
-            raise
-        pool.putconn(conn)
-        raise
-    else:
-        conn.autocommit = True
-        pool.putconn(conn)
+            failed = True
+        if direct_fallback:
+            _close_bounded_auth_connection(conn)
+        else:
+            pool.putconn(conn, close=failed)
 
 
 def _active_admins_excluding(cur, exclude_user_id=None):
@@ -1231,6 +1278,9 @@ def _active_admins_excluding(cur, exclude_user_id=None):
 
 _AUTH_SCHEMA_LOCK = threading.Lock()
 _AUTH_SCHEMA_READY = False
+_AUTH_READINESS_LOCK = threading.Lock()
+_AUTH_READINESS_CACHED = None
+_AUTH_READINESS_CACHED_AT = 0.0
 
 
 def _ensure_users_table():
@@ -1373,10 +1423,28 @@ def _ensure_users_table():
         pass
 
 
-def _auth_store_unavailable_response():
+def _auth_correlation_ref(request=None):
+    supplied = request.headers.get("X-Request-ID", "") if request is not None else ""
+    return supplied if re.fullmatch(r"[A-Za-z0-9._-]{8,80}", supplied) else uuid.uuid4().hex[:16]
+
+
+def _auth_store_unavailable_response(request=None, stage=None, exc=None):
+    correlation_ref = _auth_correlation_ref(request)
+    if stage:
+        log.error(
+            "staff_auth_failure stage=%s correlation_ref=%s error=%s",
+            stage, correlation_ref, type(exc).__name__ if exc is not None else "Unavailable",
+        )
     return JSONResponse(
-        {"detail": "Authentication service is temporarily unavailable. Please try again."},
+        {
+            "detail": (
+                "Authentication service is temporarily unavailable. Please try again. "
+                f"Support reference: {correlation_ref}"
+            ),
+            "correlation_ref": correlation_ref,
+        },
         status_code=503,
+        headers={"X-Request-ID": correlation_ref},
     )
 
 
@@ -1399,14 +1467,99 @@ def _ensure_auth_schema():
         try:
             _ensure_users_table()
         except Exception as exc:
-            # Do not include database exception text: drivers can echo SQL,
-            # bound values, or connection details. The stage and exception class
-            # are enough to identify an operational failure in server logs.
-            log.error("staff auth failed stage=schema_ready error=%s",
+            log.error("staff_auth_failure stage=schema_ready error=%s",
                       type(exc).__name__)
             return False
         _AUTH_SCHEMA_READY = True
         return True
+
+
+def _auth_readiness_probe():
+    """Exercise the production auth SQL contract without retaining test data."""
+    global _AUTH_READINESS_CACHED, _AUTH_READINESS_CACHED_AT
+    now = time.monotonic()
+    cached = _AUTH_READINESS_CACHED
+    if cached is not None:
+        ttl = 15.0 if cached[0] else 2.0
+        if now - _AUTH_READINESS_CACHED_AT < ttl:
+            return cached
+    with _AUTH_READINESS_LOCK:
+        now = time.monotonic()
+        cached = _AUTH_READINESS_CACHED
+        if cached is not None:
+            ttl = 15.0 if cached[0] else 2.0
+            if now - _AUTH_READINESS_CACHED_AT < ttl:
+                return cached
+        if not _ensure_auth_schema():
+            result = (False, "schema_preparation")
+        else:
+            conn = None
+            try:
+                conn = _open_bounded_auth_connection()
+                conn.autocommit = False
+                cur = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+                marker = uuid.uuid4().hex
+                user_id = f"readiness:{marker}"
+                email = f"readiness-{marker}@invalid.local"
+                challenge_hash = hashlib.sha256(marker.encode()).hexdigest()
+                session_token = f"readiness-session-{marker}"
+                cur.execute(
+                    "INSERT INTO app_users "
+                    "(user_id,email,name,role,status,password_hash) "
+                    "VALUES (%s,%s,'Readiness Probe','employee','active',%s)",
+                    (user_id, email, "readiness-probe-not-a-login-credential"),
+                )
+                cur.execute(
+                    "SELECT user_id, email, name, role, status, password_hash, "
+                    "extra_pages, totp_enabled FROM app_users "
+                    "WHERE email=%s FOR UPDATE",
+                    (email,),
+                )
+                if not cur.fetchone():
+                    raise RuntimeError("account_lookup")
+                encrypted = _encrypt_totp_secret(_new_totp_secret())
+                if not _decrypt_totp_secret(encrypted):
+                    raise RuntimeError("two_factor_configuration")
+                cur.execute(
+                    "INSERT INTO user_2fa_challenges "
+                    "(challenge_hash,user_id,mode,expires_at) "
+                    "VALUES (%s,%s,'enroll',now() + interval '1 minute')",
+                    (challenge_hash, user_id),
+                )
+                cur.execute(
+                    "INSERT INTO user_sessions "
+                    "(session_token,user_id,expires_at) "
+                    "VALUES (%s,%s,now() + interval '1 minute')",
+                    (session_token, user_id),
+                )
+                cur.execute(
+                    "SELECT u.user_id FROM user_sessions s "
+                    "JOIN app_users u ON u.user_id=s.user_id "
+                    "WHERE s.session_token=%s AND s.expires_at > now()",
+                    (session_token,),
+                )
+                if not cur.fetchone():
+                    raise RuntimeError("session_resolution")
+                conn.rollback()
+                cur.close()
+                result = (True, "ok")
+            except Exception as exc:
+                if conn is not None:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                log.error(
+                    "staff_auth_readiness failed stage=auth_path error=%s",
+                    type(exc).__name__,
+                )
+                result = (False, "auth_path")
+            finally:
+                if conn is not None:
+                    _close_bounded_auth_connection(conn)
+        _AUTH_READINESS_CACHED = result
+        _AUTH_READINESS_CACHED_AT = time.monotonic()
+        return result
 
 
 def _derive_pos_from_email(email: str):
@@ -1952,9 +2105,9 @@ async def clerk_auth_gate(request: Request, call_next):
         # blocking the event loop (which would freeze every concurrent
         # request on the worker, incl. health checks).
         user = (await run_in_threadpool(_user_for_session, token)) if token else None
-    except Exception:
-        return JSONResponse(
-            {"detail": "auth_store_unavailable"}, status_code=503)
+    except Exception as exc:
+        return _auth_store_unavailable_response(
+            request, "session_resolution", exc)
     if not user:
         return JSONResponse({"detail": "Not authenticated"}, status_code=401)
     request.state.user = user
@@ -6291,7 +6444,11 @@ def _readyz_sync():
     else:
         sync_state = "starting"  # heartbeat not written yet (sync hasn't run)
 
-    ready = db_ok  # DB reachability is the hard gate for promotion
+    auth_ok = False
+    auth_detail = "db_unavailable"
+    if db_ok:
+        auth_ok, auth_detail = _auth_readiness_probe()
+    ready = db_ok and auth_ok
     db_label = "ok" if db_ok else ("busy" if db_detail == "db_pool_exhausted" else "down")
 
     if _DATABASE_URL_DIRECT_IS_FALLBACK:
@@ -6305,6 +6462,7 @@ def _readyz_sync():
             "api": "ok",
             "db": db_label,
             "db_direct": direct_label,
+            "staff_auth": "ok" if auth_ok else auth_detail,
             "sync": {
                 "state": sync_state,
                 "minutes_since": minutes,
@@ -6315,7 +6473,10 @@ def _readyz_sync():
         },
     }
     if not ready:
-        body["detail"] = db_detail or "db_unreachable"
+        body["detail"] = (
+            (db_detail or "db_unreachable") if not db_ok
+            else f"staff_auth_{auth_detail}"
+        )
     if direct_ok is False:
         body.setdefault("warnings", []).append(
             "DATABASE_URL_DIRECT unreachable — advisory locks and watchdog may fail"
@@ -11099,7 +11260,7 @@ async def auth_login(request: Request):
         return JSONResponse(
             {"detail": "Too many attempts. Try again later."}, status_code=429)
     if not _ensure_auth_schema():
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(request, "schema_preparation")
     # Check-and-bump runs inside one locked tx (row FOR UPDATE) so concurrent
     # guesses can't race past the counter — same pattern as the loyalty login.
     try:
@@ -11137,9 +11298,7 @@ async def auth_login(request: Request):
                 "UPDATE app_users SET failed_logins=0, locked_until=NULL WHERE user_id=%s",
                 (rec["user_id"],))
     except Exception as exc:
-        log.error("staff auth failed stage=account_lookup error=%s",
-                  type(exc).__name__)
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(request, "account_lookup", exc)
     if rec["status"] == "rejected":
         return JSONResponse({"detail": "account_rejected"}, status_code=403)
     if rec["status"] == "disabled":
@@ -11152,9 +11311,7 @@ async def auth_login(request: Request):
         _apply_crm_admin_grants(user)
         _apply_atelier_entitlement(user)
     except Exception as exc:
-        log.error("staff auth failed stage=user_profile error=%s",
-                  type(exc).__name__)
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(request, "profile_assembly", exc)
     # In preview/dev environments skip the 2FA challenge entirely so developers
     # can sign in without an enrolled authenticator app. In production the full
     # challenge flow runs as normal.
@@ -11162,9 +11319,8 @@ async def auth_login(request: Request):
         try:
             session = _create_session(rec["user_id"])
         except Exception as exc:
-            log.error("staff auth failed stage=session_create error=%s",
-                      type(exc).__name__)
-            return _auth_store_unavailable_response()
+            return _auth_store_unavailable_response(
+                request, "session_creation", exc)
         try:
             _users_exec("UPDATE app_users SET last_login_at=now() WHERE user_id=%s",
                         (rec["user_id"],))
@@ -11183,9 +11339,8 @@ async def auth_login(request: Request):
     try:
         challenge = _create_2fa_challenge(rec["user_id"], mode)
     except Exception as exc:
-        log.error("staff auth failed stage=challenge_create error=%s",
-                  type(exc).__name__)
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(
+            request, "challenge_creation", exc)
     payload = {
         "two_factor_required": True,
         "two_factor": {"mode": mode},
@@ -11211,7 +11366,7 @@ async def auth_2fa_enroll(request: Request):
     if not token:
         return JSONResponse({"detail": "Two-factor challenge expired."}, status_code=401)
     if not _ensure_auth_schema():
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(request, "schema_preparation")
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     plain_codes = None
     try:
@@ -11253,9 +11408,8 @@ async def auth_2fa_enroll(request: Request):
             }
         return payload
     except Exception as exc:
-        log.error("staff auth failed stage=2fa_enrollment error=%s",
-                  type(exc).__name__)
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(
+            request, "two_factor_enrollment", exc)
 
 
 @app.post("/api/auth/2fa/verify")
@@ -11271,7 +11425,7 @@ async def auth_2fa_verify(request: Request):
     if not token:
         return JSONResponse({"detail": "Two-factor challenge expired."}, status_code=401)
     if not _ensure_auth_schema():
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(request, "schema_preparation")
     token_hash = hashlib.sha256(token.encode("utf-8")).hexdigest()
     user_id = None
     session = secrets.token_urlsafe(32)
@@ -11391,9 +11545,8 @@ async def auth_2fa_verify(request: Request):
             cur.execute("DELETE FROM user_2fa_challenges WHERE challenge_hash=%s",
                         (token_hash,))
     except Exception as exc:
-        log.error("staff auth failed stage=2fa_verify error=%s",
-                  type(exc).__name__)
-        return _auth_store_unavailable_response()
+        return _auth_store_unavailable_response(
+            request, "two_factor_verification", exc)
 
     payload = {
         "user": user,

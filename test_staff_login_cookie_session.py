@@ -182,11 +182,13 @@ class CookieOnlySessionTests(unittest.TestCase):
         self.assertEqual(r.status_code, 503, r.text)
         self.assertIn("temporarily unavailable", r.json().get("detail", "").lower())
         rendered_log = repr(error_log.call_args)
-        self.assertIn("stage=account_lookup", rendered_log)
+        self.assertIn("account_lookup", rendered_log)
         self.assertIn("RuntimeError", rendered_log)
         self.assertNotIn(self.EMAIL, rendered_log)
         self.assertNotIn(self.PASSWORD, rendered_log)
         self.assertNotIn("sensitive-driver-detail", rendered_log)
+        self.assertRegex(r.json().get("correlation_ref", ""), r"^[a-f0-9]{16}$")
+        self.assertEqual(r.headers.get("x-request-id"), r.json()["correlation_ref"])
 
     def test_preview_session_creation_failure_returns_safe_503(self):
         c = TestClient(api_pg.app, base_url="https://testserver")
@@ -199,7 +201,7 @@ class CookieOnlySessionTests(unittest.TestCase):
             )
         self.assertEqual(r.status_code, 503, r.text)
         self.assertNotIn("session_token", r.cookies)
-        self.assertIn("stage=session_create", repr(error_log.call_args))
+        self.assertIn("session_creation", repr(error_log.call_args))
 
     # ── Production mode (2FA required) ────────────────────────────────────────
 
@@ -256,7 +258,7 @@ class CookieOnlySessionTests(unittest.TestCase):
         self.assertEqual(r.status_code, 503, r.text)
         self.assertNotIn("session_token", r.cookies)
         self.assertNotIn("staff_2fa_challenge", r.cookies)
-        self.assertIn("stage=challenge_create", repr(error_log.call_args))
+        self.assertIn("challenge_creation", repr(error_log.call_args))
 
     # ── Unauthenticated rejection (both modes) ────────────────────────────────
 
@@ -337,10 +339,15 @@ class CookieOnlySessionTests(unittest.TestCase):
 class AuthSchemaReadinessTests(unittest.TestCase):
     def setUp(self):
         self.original_ready = api_pg._AUTH_SCHEMA_READY
+        self.original_readiness_cached = api_pg._AUTH_READINESS_CACHED
+        self.original_readiness_cached_at = api_pg._AUTH_READINESS_CACHED_AT
         api_pg._AUTH_SCHEMA_READY = False
+        api_pg._AUTH_READINESS_CACHED = None
 
     def tearDown(self):
         api_pg._AUTH_SCHEMA_READY = self.original_ready
+        api_pg._AUTH_READINESS_CACHED = self.original_readiness_cached
+        api_pg._AUTH_READINESS_CACHED_AT = self.original_readiness_cached_at
 
     def test_partial_schema_failure_is_retried_then_cached(self):
         with mock.patch.object(
@@ -352,6 +359,93 @@ class AuthSchemaReadinessTests(unittest.TestCase):
             self.assertTrue(api_pg._ensure_auth_schema())
             self.assertTrue(api_pg._ensure_auth_schema())
         self.assertEqual(ensure.call_count, 2)
+
+    def test_auth_readiness_retries_after_transient_schema_failure(self):
+        with mock.patch.object(
+            api_pg, "_ensure_users_table",
+            side_effect=[RuntimeError("temporary outage"), None],
+        ):
+            self.assertEqual(
+                api_pg._auth_readiness_probe(),
+                (False, "schema_preparation"),
+            )
+            # Failed probes are cached for only two seconds in production;
+            # clearing it here represents the next post-TTL retry.
+            api_pg._AUTH_READINESS_CACHED = None
+            ok, detail = api_pg._auth_readiness_probe()
+        self.assertTrue(ok)
+        self.assertEqual(detail, "ok")
+
+    def test_auth_transaction_falls_back_when_pool_is_exhausted(self):
+        class ExhaustedPool:
+            def getconn(self):
+                raise api_pg._pg_pool.PoolError("full")
+
+        fake_conn = mock.MagicMock()
+        fake_conn.cursor.return_value = mock.MagicMock()
+        with (
+            mock.patch.object(api_pg, "_get_pool", return_value=ExhaustedPool()),
+            mock.patch.object(
+                api_pg, "_open_bounded_auth_connection",
+                return_value=fake_conn,
+            ),
+            mock.patch.object(api_pg, "_close_bounded_auth_connection") as close,
+        ):
+            with api_pg._users_tx() as cur:
+                cur.execute("SELECT 1")
+        fake_conn.commit.assert_called_once()
+        close.assert_called_once_with(fake_conn)
+
+    def test_users_exec_uses_same_bounded_fallback(self):
+        class ExhaustedPool:
+            def getconn(self):
+                raise api_pg._pg_pool.PoolError("full")
+
+        fake_conn = mock.MagicMock()
+        fake_conn.cursor.return_value.fetchall.return_value = [{"ok": 1}]
+        with (
+            mock.patch.object(api_pg, "_get_pool", return_value=ExhaustedPool()),
+            mock.patch.object(
+                api_pg, "_open_bounded_auth_connection",
+                return_value=fake_conn,
+            ),
+            mock.patch.object(api_pg, "_close_bounded_auth_connection") as close,
+        ):
+            rows = api_pg._users_exec("SELECT 1", fetch=True)
+        self.assertEqual(rows, [{"ok": 1}])
+        close.assert_called_once_with(fake_conn)
+
+    def test_auth_direct_connection_budget_fails_closed(self):
+        held = [api_pg._AUTH_DIRECT_BUDGET.acquire() for _ in range(2)]
+        try:
+            with self.assertRaises(api_pg._pg_pool.PoolError):
+                api_pg._open_bounded_auth_connection()
+        finally:
+            for acquired in held:
+                if acquired:
+                    api_pg._AUTH_DIRECT_BUDGET.release()
+
+    def test_readyz_fails_closed_when_auth_path_is_broken(self):
+        with mock.patch.object(
+            api_pg, "_auth_readiness_probe",
+            return_value=(False, "auth_path"),
+        ):
+            response = api_pg._readyz_sync()
+        self.assertEqual(response.status_code, 503)
+        self.assertIn(b'"staff_auth":"auth_path"', response.body)
+
+    def test_production_smoke_has_cleanup_and_cookie_only_contract(self):
+        source = Path("scripts/smoke_staff_auth_production.py").read_text(
+            encoding="utf-8")
+        self.assertIn('"/api/auth/login"', source)
+        self.assertIn('"/api/auth/2fa/verify"', source)
+        self.assertIn('"/api/auth/me"', source)
+        self.assertIn("HTTPCookieProcessor", source)
+        self.assertNotIn('"x-vivo-mobile"', source.lower())
+        self.assertIn("finally:", source)
+        self.assertIn("DELETE FROM user_2fa_challenges", source)
+        self.assertIn("DELETE FROM user_sessions", source)
+        self.assertIn("DELETE FROM app_users", source)
 
 
 if __name__ == "__main__":

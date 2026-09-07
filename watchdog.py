@@ -284,12 +284,17 @@ def check_ready():
     Deliberately NOT used to trigger restarts: the restart decision stays on
     check_api() (DB-free liveness) + check_sync() so a database blip never makes
     the watchdog bounce the API (which can't fix a DB outage and would only flap).
-    /api/readyz returns 503 when the DB is unreachable, so read the body on both
-    2xx and HTTPError. Returns (ready_bool, db_state_str|None).
+    /api/readyz returns 503 when the DB or complete staff-auth path is not ready,
+    so read the body on both 2xx and HTTPError. Returns
+    (ready_bool, readiness_state_str|None).
     """
     def _parse(raw):
         body = _json.loads(raw.decode())
-        return bool(body.get("ready")), body.get("checks", {}).get("db")
+        checks = body.get("checks", {})
+        return bool(body.get("ready")), (
+            checks.get("staff_auth") if checks.get("db") == "ok"
+            else checks.get("db")
+        )
     try:
         with urllib.request.urlopen(READYZ_URL, timeout=8) as r:
             return _parse(r.read())
