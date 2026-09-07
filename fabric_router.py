@@ -588,7 +588,7 @@ def _months_of_cover(conn, fabric_stock_kg, scope="main", product_ids=None):
     model.
     """
     fabric_stock_kg = float(fabric_stock_kg or 0)
-    # When a curated product-id set is supplied (e.g. the Basic Fabrics KPI) the
+    # When a product-id set is supplied (e.g. the Odoo NOOS Fabrics KPI) the
     # consumption universe is JUST those products — the support/main scope filter
     # is bypassed entirely. Ids come straight from the DB (integers), so inlining
     # them is injection-safe.
@@ -662,7 +662,7 @@ def _months_of_cover_prev_month(conn, fabric_stock_kg, scope="main", product_ids
     The window is exactly the previous completed calendar month (the current,
     in-progress month is excluded). Consumption stays net-of-production-returns +
     fabric-only via the shared net-consumption model, and honours the support/main
-    scope (or a curated product-id set), identically to `_months_of_cover`.
+    scope (or an explicit product-id set), identically to `_months_of_cover`.
     """
     fabric_stock_kg = float(fabric_stock_kg or 0)
     # Curated product-id set bypasses the support/main scope filter entirely (same
@@ -854,64 +854,19 @@ def _category_label_sql(scope, col="p.fabric_category"):
     _ = scope
     return f"COALESCE(NULLIF({col},''),'Unknown')"
 
-# ── Basic (core staple) fabrics ─────────────────────────────
-# A curated set of staple fabrics the buying team always wants to keep in stock,
-# identified by a (vendor/supplier → fabric-code) pairing. SINGLE SOURCE OF TRUTH
-# for the "Basic Fabrics — Months of Cover" Overview KPI; edit here to change it.
-# A row qualifies only when its supplier matches the listed vendor AND its
-# name/default_code/barcode contains the listed code — code alone is not enough,
-# so an unrelated fabric sharing a number is never pulled in. Matching is
-# case-insensitive and tolerant of surrounding text (the code is embedded in a
-# longer fabric name) and supplier-name casing variants. '367#' carries a literal
-# '#' handled as plain text. A listed pairing that matches nothing simply
-# contributes zero (the KPI never errors); the matched-count is surfaced.
-BASIC_FABRICS = {
-    "Runfeng":            ["8003", "8004", "8224"],
-    "Yat Taj Hong":       ["CA10091", "CA12220"],
-    "Reeyon":             ["LY001", "LY004", "LY470"],
-    "Yitai Cloth Trade":  ["91005"],
-    "Dong Sheng (DS)":    ["82033"],
-    "Fashion Knitted":    ["1629"],
-    "Shunwang Textiles":  ["367#"],
-    "Yajun":              ["HS8912"],
-    "Worldview":          ["Interfacing"],
-    "Lexin":              ["Interlining"],
-    "Yun Xiang":          ["A1507"],
-}
-
+# ── NOOS fabric universe ────────────────────────────────────
 def _resolve_basic_fabrics(conn):
-    """Resolve the curated supplier→codes map to matching raw_fabric_products.
-
-    Returns (product_ids, matched_pairs, total_pairs):
-      product_ids  – distinct ids across every matched pairing (the KPI universe)
-      matched_pairs – count of (supplier, code) entries that matched ≥1 product
-      total_pairs   – total curated (supplier, code) entries
-    Matching is per-pair so the matched-count is meaningful (an unmatched code is
-    visible in the KPI sub-line). Supplier is matched case-insensitively/trimmed;
-    the code is matched as a substring of name/default_code/barcode (ILIKE), with
-    LIKE wildcards in the code escaped so '%'/'_' (and the literal '#') are inert.
-    """
-    ids = set()
-    matched = 0
-    total = 0
-    for supplier, codes in BASIC_FABRICS.items():
-        for code in codes:
-            total += 1
-            esc = (str(code).replace("\\", "\\\\")
-                            .replace("%", "\\%")
-                            .replace("_", "\\_"))
-            like = f"%{esc}%"
-            rows = q(conn, r"""
-                SELECT id FROM raw_fabric_products p
-                WHERE lower(btrim(COALESCE(p.supplier,''))) = lower(btrim(%s))
-                  AND (COALESCE(p.name,'')         ILIKE %s ESCAPE '\'
-                    OR COALESCE(p.default_code,'') ILIKE %s ESCAPE '\'
-                    OR COALESCE(p.barcode,'')      ILIKE %s ESCAPE '\')
-            """, [supplier, like, like, like])
-            if rows:
-                matched += 1
-                ids.update(r["id"] for r in rows)
-    return list(ids), matched, total
+    """Return active Odoo Fabric product ids explicitly marked NOOS Fabric=Yes."""
+    return [
+        r["id"] for r in q(conn, """
+            SELECT id
+            FROM raw_fabric_products
+            WHERE category = 'Fabric'
+              AND active IS TRUE
+              AND noos_fabric IS TRUE
+            ORDER BY id
+        """)
+    ]
 
 # ── Months-of-Cover daily snapshot ─────────────────────────
 # The Fabric "Months of Cover" KPI is a ratio of two independently-moving parts:
@@ -926,6 +881,8 @@ def _resolve_basic_fabrics(conn):
 # history is accrued from inside the incremental sync loop; the writer is
 # standalone + idempotent (upsert on the EAT capture date).
 _COVER_SNAPSHOT_READY = False
+_NOOS_SNAPSHOT_UNIVERSE = "odoo-noos-v1"
+_LEGACY_NOOS_SNAPSHOT_UNIVERSE = "curated-basic-v1"
 
 def _ensure_cover_snapshot_table(conn):
     """Create the months-of-cover snapshot table (idempotent, once per process)."""
@@ -944,14 +901,33 @@ def _ensure_cover_snapshot_table(conn):
                 basic_avg_monthly_consumption_kg NUMERIC,
                 basic_months_of_cover            NUMERIC,
                 basic_months_breakdown           JSONB,
+                noos_universe_version             TEXT NOT NULL
+                                                    DEFAULT 'odoo-noos-v1',
                 captured_at                      TIMESTAMPTZ NOT NULL DEFAULT now()
             )
+        """)
+        # Existing rows predate the Odoo-backed NOOS universe and contain values
+        # from the retired curated supplier/code list. Mark them explicitly so
+        # historical and delta reads can never present or compare unlike data.
+        cur.execute("""
+            ALTER TABLE fabric_cover_snapshot
+            ADD COLUMN IF NOT EXISTS noos_universe_version TEXT
+        """)
+        cur.execute("""
+            UPDATE fabric_cover_snapshot
+            SET noos_universe_version = %s
+            WHERE noos_universe_version IS NULL
+        """, (_LEGACY_NOOS_SNAPSHOT_UNIVERSE,))
+        cur.execute("""
+            ALTER TABLE fabric_cover_snapshot
+            ALTER COLUMN noos_universe_version SET DEFAULT 'odoo-noos-v1',
+            ALTER COLUMN noos_universe_version SET NOT NULL
         """)
     conn.commit()
     _COVER_SNAPSHOT_READY = True
 
 def _compute_cover_snapshot(conn):
-    """Compute the current Months-of-Cover inputs (headline + Basic Fabrics) using
+    """Compute the current Months-of-Cover inputs (headline + NOOS Fabrics) using
     the SAME helpers behind the live summary card, so the snapshot always agrees
     with what the KPI shows. Returns a dict ready to upsert."""
     # Headline — live RMAT/Stock fabric base (main scope), same base the summary
@@ -965,9 +941,8 @@ def _compute_cover_snapshot(conn):
     """)[0]['kg'] or 0
     cover = _months_of_cover(conn, rmat_kg, "main")
 
-    # Basic Fabrics — curated staple set only (bypasses the support/main scope),
-    # mirroring the summary card's Basic Fabrics computation.
-    basic_ids, _matched, _total = _resolve_basic_fabrics(conn)
+    # NOOS Fabrics — active Odoo products explicitly marked NOOS Fabric=Yes.
+    basic_ids = _resolve_basic_fabrics(conn)
     if basic_ids:
         basic_kg = q(conn, f"""
             SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
@@ -1017,10 +992,10 @@ def write_cover_snapshot(conn=None):
                     capture_date, rmat_stock_kg, avg_monthly_consumption_kg,
                     months_of_cover, months_breakdown, basic_stock_kg,
                     basic_avg_monthly_consumption_kg, basic_months_of_cover,
-                    basic_months_breakdown, captured_at
+                    basic_months_breakdown, noos_universe_version, captured_at
                 ) VALUES (
                     (now() AT TIME ZONE 'Africa/Nairobi')::date,
-                    %s, %s, %s, %s, %s, %s, %s, %s, now()
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, now()
                 )
                 ON CONFLICT (capture_date) DO UPDATE SET
                     rmat_stock_kg = EXCLUDED.rmat_stock_kg,
@@ -1031,6 +1006,7 @@ def write_cover_snapshot(conn=None):
                     basic_avg_monthly_consumption_kg = EXCLUDED.basic_avg_monthly_consumption_kg,
                     basic_months_of_cover = EXCLUDED.basic_months_of_cover,
                     basic_months_breakdown = EXCLUDED.basic_months_breakdown,
+                    noos_universe_version = EXCLUDED.noos_universe_version,
                     captured_at = now()
             """, (
                 snap["rmat_stock_kg"], snap["avg_monthly_consumption_kg"],
@@ -1038,6 +1014,7 @@ def write_cover_snapshot(conn=None):
                 snap["basic_stock_kg"], snap["basic_avg_monthly_consumption_kg"],
                 snap["basic_months_of_cover"],
                 json.dumps(snap["basic_months_breakdown"]),
+                _NOOS_SNAPSHOT_UNIVERSE,
             ))
         conn.commit()
         return snap
@@ -1047,7 +1024,7 @@ def write_cover_snapshot(conn=None):
 
 def _cover_delta(now_row, prev_row):
     """Decompose the day-over-day months-of-cover change for one series (headline
-    or Basic Fabrics) into a stock lever and a run-rate lever, so the frontend
+    or NOOS Fabrics) into a stock lever and a run-rate lever, so the frontend
     does no maths. cover = stock ÷ rate; the change splits as:
       stock component = (stock_now − stock_prev) ÷ rate_prev   (rate held at prior)
       rate component  = stock_now ÷ rate_now − stock_now ÷ rate_prev (stock at now)
@@ -1085,7 +1062,7 @@ def _cover_delta(now_row, prev_row):
 @fabric_router.get("/api/fabric/cover-snapshot-delta")
 def cover_snapshot_delta():
     """The two most-recent Months-of-Cover snapshots and the day-over-day change,
-    decomposed into a stock lever and a run-rate lever (headline + Basic Fabrics).
+    decomposed into a stock lever and a run-rate lever (headline + NOOS Fabrics).
     Returns status 'no_data' when no snapshots exist yet and 'no_prior' when only
     one day of history exists, so the card can degrade gracefully."""
     with _get_conn() as conn:
@@ -1095,9 +1072,10 @@ def cover_snapshot_delta():
                    months_of_cover, basic_stock_kg,
                    basic_avg_monthly_consumption_kg, basic_months_of_cover
             FROM fabric_cover_snapshot
+            WHERE noos_universe_version = %s
             ORDER BY capture_date DESC
             LIMIT 2
-        """)
+        """, (_NOOS_SNAPSHOT_UNIVERSE,))
         if not rows:
             return {"status": "no_data"}
         cur = rows[0]
@@ -1133,8 +1111,9 @@ def cover_snapshot_dates():
         rows = q(conn, """
             SELECT capture_date
             FROM fabric_cover_snapshot
+            WHERE noos_universe_version = %s
             ORDER BY capture_date ASC
-        """)
+        """, (_NOOS_SNAPSHOT_UNIVERSE,))
     dates = [r["capture_date"].isoformat() for r in rows]
     return {"dates": dates, "earliest": dates[0] if dates else None, "count": len(dates)}
 
@@ -1160,7 +1139,11 @@ def cover_snapshot_lookup(date: str = Query(default=None)):
         req_date = today_eat
     with _get_conn() as conn:
         _ensure_cover_snapshot_table(conn)
-        earliest_rows = q(conn, "SELECT MIN(capture_date) AS d FROM fabric_cover_snapshot")
+        earliest_rows = q(conn, """
+            SELECT MIN(capture_date) AS d
+            FROM fabric_cover_snapshot
+            WHERE noos_universe_version = %s
+        """, (_NOOS_SNAPSHOT_UNIVERSE,))
         earliest = earliest_rows[0]["d"] if earliest_rows else None
         if earliest is None:
             return {"status": "no_data"}
@@ -1179,10 +1162,11 @@ def cover_snapshot_lookup(date: str = Query(default=None)):
                    basic_avg_monthly_consumption_kg,
                    basic_months_of_cover
             FROM fabric_cover_snapshot
-            WHERE capture_date <= %s
+            WHERE noos_universe_version = %s
+              AND capture_date <= %s
             ORDER BY capture_date DESC
             LIMIT 1
-        """, (req_date,))
+        """, (_NOOS_SNAPSHOT_UNIVERSE, req_date))
     if not rows:
         return {"status": "no_data"}
     r = rows[0]
@@ -1493,15 +1477,13 @@ def summary(location: str = Query(default="RMAT/Stock"),
         # month's net consumption (a more reactive signal than the 6-month average).
         cover_prev = _months_of_cover_prev_month(conn, rmat_stock_kg, scope_param)
 
-        # Basic Fabrics — Months of Cover. One combined cover figure across the
-        # curated staple-fabric set ONLY (supplier+code pairs in BASIC_FABRICS),
+        # NOOS Fabrics — Months of Cover. One combined cover figure across active
+        # Odoo Fabric products explicitly marked NOOS Fabric=Yes,
         # computed with the SAME method as the headline cover: live RMAT/Stock kg
         # base ÷ the average net run-rate over the last 6 fully completed months,
-        # restricted to the curated product
-        # ids. Bypasses the support/main scope (the curated set is its own
-        # universe). Never errors — an unmatched pairing just contributes nothing;
-        # the matched/total counts are surfaced so a gap is noticeable.
-        basic_ids, basic_matched, basic_total = _resolve_basic_fabrics(conn)
+        # restricted to those product ids. Bypasses support/main scope because
+        # the Odoo attribute defines its own universe.
+        basic_ids = _resolve_basic_fabrics(conn)
         if basic_ids:
             basic_stock_kg = q(conn, f"""
                 SELECT ROUND(SUM(i.quantity)::numeric,1) AS kg
@@ -1516,12 +1498,10 @@ def summary(location: str = Query(default="RMAT/Stock"),
             basic_cover = _basic['months_of_cover']
             basic_cover_status = _basic['months_of_cover_status']
         else:
-            # No curated pairing matched any product (e.g. mid-rebuild): there is
-            # genuinely nothing to compute. Surface this distinctly from a
-            # stock-but-no-usage "overstocked" state so the card stays legible.
+            # No active Odoo fabric is explicitly marked Yes.
             basic_stock_kg = 0
             basic_cover = None
-            basic_cover_status = "no_match"
+            basic_cover_status = "no_data"
 
         # Headline KPIs reflect the selected scope; All = RMAT + Dead.
         _result = {
@@ -1556,8 +1536,6 @@ def summary(location: str = Query(default="RMAT/Stock"),
             "styles_with_bom": bom['styles'] or 0,
             "basic_months_of_cover": basic_cover,
             "basic_months_of_cover_status": basic_cover_status,
-            "basic_fabrics_matched": basic_matched,
-            "basic_fabrics_total": basic_total,
             "basic_fabrics_stock_kg": round(float(basic_stock_kg or 0), 1),
             # Fabric-feed freshness (display-only; same value regardless of scope).
             "fabric_last_loaded_secs": round(fresh_secs) if fresh_secs is not None else None,
@@ -2900,13 +2878,13 @@ def shrinkage_audit(roll_id: int = Query(default=None),
     return {"entries": out, "total": len(out)}
 
 
-# ── Basic Fabrics — Months of Cover: downloadable .xlsx calculations report ──
-# The full audit trail behind the "Basic Fabrics — Months of Cover" Overview KPI:
-# every curated (vendor, fabric-code) pairing and whether it matched a product,
-# each matched product with its RMAT/Stock on-hand kg, and the 6-month net
+# ── NOOS Fabrics — Months of Cover: downloadable .xlsx calculations report ──
+# The full audit trail behind the "NOOS Fabrics — Months of Cover" Overview KPI:
+# every active Odoo Fabric product explicitly marked NOOS Fabric=Yes, its
+# RMAT/Stock on-hand kg, and the 6-month net
 # consumption that drives the run-rate denominator. The cover figure and the
 # stock/run-rate it divides MUST mirror the summary KPI exactly (same resolver,
-# same RMAT/Stock base, same _months_of_cover projection over the curated ids) so
+# same RMAT/Stock base, same _months_of_cover projection over the Odoo ids) so
 # the workbook reconciles to the card.
 @fabric_router.get("/api/fabric/basic-fabrics-cover.xlsx")
 def basic_fabrics_cover_xlsx():
@@ -2916,31 +2894,7 @@ def basic_fabrics_cover_xlsx():
     from openpyxl.styles import Font, Alignment, PatternFill
 
     with _get_conn() as conn:
-        # Per-pair resolution — same matching as _resolve_basic_fabrics, but the
-        # per-pairing product ids are kept so the "Curated fabrics" sheet can show
-        # exactly which pairings matched and what each one holds in stock.
-        pair_rows = []   # {supplier, code, ids:set}
-        all_ids = set()
-        for supplier, codes in BASIC_FABRICS.items():
-            for code in codes:
-                esc = (str(code).replace("\\", "\\\\")
-                                .replace("%", "\\%")
-                                .replace("_", "\\_"))
-                like = f"%{esc}%"
-                rows = q(conn, r"""
-                    SELECT id FROM raw_fabric_products p
-                    WHERE lower(btrim(COALESCE(p.supplier,''))) = lower(btrim(%s))
-                      AND (COALESCE(p.name,'')         ILIKE %s ESCAPE '\'
-                        OR COALESCE(p.default_code,'') ILIKE %s ESCAPE '\'
-                        OR COALESCE(p.barcode,'')      ILIKE %s ESCAPE '\')
-                """, [supplier, like, like, like])
-                ids = {r["id"] for r in rows}
-                all_ids.update(ids)
-                pair_rows.append({"supplier": supplier, "code": code, "ids": ids})
-
-        basic_ids = list(all_ids)
-        matched = sum(1 for p in pair_rows if p["ids"])
-        total = len(pair_rows)
+        basic_ids = _resolve_basic_fabrics(conn)
 
         # Per-product master info + RMAT/Stock on-hand kg (the cover stock base).
         prod_info, stock_by_pid = {}, {}
@@ -2948,7 +2902,7 @@ def basic_fabrics_cover_xlsx():
             ids_csv = ",".join(str(int(x)) for x in basic_ids)
             for r in q(conn, f"""
                 SELECT id, default_code AS sku, name, supplier,
-                       fabric_category AS category
+                       fabric_category AS category, active, noos_fabric
                 FROM raw_fabric_products WHERE id IN ({ids_csv})
             """):
                 prod_info[r["id"]] = r
@@ -2977,17 +2931,17 @@ def basic_fabrics_cover_xlsx():
             basic_stock_kg = 0.0
 
         # Cover + run-rate (identical to the summary KPI: bypasses main/support
-        # scope, restricted to the curated ids, RMAT/Stock kg base).
+        # scope, restricted to the Odoo NOOS ids, RMAT/Stock kg base).
         if basic_ids:
             cov = _months_of_cover(conn, basic_stock_kg, "main",
                                    product_ids=basic_ids)
             status = cov["months_of_cover_status"]
         else:
-            cov = {"months_of_cover": None, "months_of_cover_status": "no_match",
+            cov = {"months_of_cover": None, "months_of_cover_status": "no_data",
                    "avg_monthly_consumption_kg": 0.0}
-            status = "no_match"
+            status = "no_data"
 
-        # 6-month net consumption by month for the curated set (same window/model
+        # 6-month net consumption by month for the Odoo NOOS set (same window/model
         # as _months_of_cover so the run-rate denominator is auditable).
         if basic_ids:
             ids_csv = ",".join(str(int(x)) for x in basic_ids)
@@ -3023,8 +2977,7 @@ def basic_fabrics_cover_xlsx():
     _status_text = {
         "ok": "OK — computed from run-rate",
         "overstocked": "Overstocked — stock on hand but no recent consumption",
-        "no_data": "No data — no curated stock or consumption",
-        "no_match": "No match — no curated fabric resolved to a product",
+        "no_data": "No data — no active Odoo NOOS fabrics",
     }
     cover_disp = (cov["months_of_cover"] if status == "ok"
                   and cov["months_of_cover"] is not None
@@ -3033,18 +2986,18 @@ def basic_fabrics_cover_xlsx():
     # Summary sheet
     ws = wb.active
     ws.title = "Summary"
-    ws["A1"] = "Basic Fabrics — Months of Cover — calculations report"
+    ws["A1"] = "NOOS Fabrics — Months of Cover — calculations report"
     ws["A1"].font = TITLE
     srows = [
-        ("Basic Fabrics — Months of Cover (KPI)", cover_disp),
+        ("NOOS Fabrics — Months of Cover (KPI)", cover_disp),
         ("Status", _status_text.get(status, status)),
-        ("Curated fabrics matched", "%d of %d" % (matched, total)),
+        ("Active Odoo NOOS products", len(basic_ids)),
         ("RMAT/Stock on hand (kg)", basic_stock_kg),
         ("Avg monthly net consumption (kg)", cov.get("avg_monthly_consumption_kg")),
         ("Cover window (months)", 6),
         ("Basis", "RMAT/Stock on-hand kg ÷ average net monthly consumption over "
-                  "the last 6 fully completed months, restricted to the curated "
-                  "staple fabrics"),
+                  "the last 6 fully completed months, restricted to active Odoo "
+                  "Fabric products with NOOS Fabric = Yes"),
         ("Reconciliation", "Stock on hand ÷ Avg monthly net consumption "
                            "= Months of cover"),
     ]
@@ -3054,38 +3007,23 @@ def basic_fabrics_cover_xlsx():
     ws.column_dimensions["A"].width = 40
     ws.column_dimensions["B"].width = 58
 
-    # Curated fabrics sheet (one row per vendor+code pairing)
-    ws2 = wb.create_sheet("Curated fabrics")
-    cur_cols = ["Vendor / supplier", "Fabric code", "Matched",
-                "Products matched", "Stock on hand (kg)"]
-    ws2.append(cur_cols)
-    _style_header(ws2, len(cur_cols))
-    for p in pair_rows:
-        pkg = round(sum(stock_by_pid.get(pid, 0.0) for pid in p["ids"]), 1)
-        ws2.append([
-            p["supplier"], str(p["code"]),
-            "Yes" if p["ids"] else "No",
-            len(p["ids"]),
-            pkg if p["ids"] else None,
-        ])
-    for col, w in zip("ABCDE", [24, 18, 10, 18, 18]):
-        ws2.column_dimensions[col].width = w
-
-    # Matched products sheet (one row per resolved product; reconciles to stock)
-    ws3 = wb.create_sheet("Matched products")
+    # Odoo NOOS products sheet (same shared universe as the card).
+    ws3 = wb.create_sheet("Odoo NOOS products")
     prod_cols = ["Fabric SKU", "Fabric name", "Supplier", "Category",
-                 "Stock on hand (kg)", "Open in Odoo"]
+                 "Active", "NOOS Fabric", "Stock on hand (kg)", "Open in Odoo"]
     ws3.append(prod_cols)
     _style_header(ws3, len(prod_cols))
     prod_sorted = sorted(
         basic_ids, key=lambda pid: stock_by_pid.get(pid, 0.0), reverse=True)
     if not prod_sorted:
-        ws3.append(["No curated fabric currently resolves to a product."])
+        ws3.append(["No active Odoo Fabric product has NOOS Fabric = Yes."])
     for pid in prod_sorted:
         info = prod_info.get(pid, {})
         ws3.append([
             info.get("sku"), info.get("name"), info.get("supplier"),
-            info.get("category"), round(stock_by_pid.get(pid, 0.0), 1), None,
+            info.get("category"), "Yes" if info.get("active") else "No",
+            "Yes" if info.get("noos_fabric") else "No",
+            round(stock_by_pid.get(pid, 0.0), 1), None,
         ])
         url = _odoo_product_url(pid)
         if url:
@@ -3093,7 +3031,7 @@ def basic_fabrics_cover_xlsx():
             cell.value = "Open in Odoo"
             cell.hyperlink = url
             cell.font = LINK
-    for col, w in zip("ABCDEF", [18, 40, 22, 18, 18, 14]):
+    for col, w in zip("ABCDEFGH", [18, 40, 22, 18, 10, 14, 18, 14]):
         ws3.column_dimensions[col].width = w
 
     # Monthly consumption sheet (the 6-month net run-rate detail)
@@ -3117,13 +3055,13 @@ def basic_fabrics_cover_xlsx():
         content=data,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition":
-                 'attachment; filename="basic-fabrics-months-of-cover.xlsx"'},
+                 'attachment; filename="noos-fabrics-months-of-cover.xlsx"'},
     )
 
 
 # ── Months of Cover (general) — downloadable .xlsx calculations report ──
 # The full audit trail behind the general "Months of cover" Overview KPI (the
-# main-scope figure, NOT the curated Basic-Fabrics set): the current RMAT/Stock
+# main-scope figure, NOT the Odoo NOOS set): the current RMAT/Stock
 # fabric on-hand kg, the trailing 6-completed-month average net monthly run-rate,
 # and the resulting cover value — with the per-month net-consumption breakdown
 # that drives the denominator. Stock base + run-rate MUST mirror the summary KPI

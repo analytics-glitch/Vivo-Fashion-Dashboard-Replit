@@ -3074,7 +3074,8 @@ def main():
         if cur.fetchone()[0] is not None:
             cur.execute(
                 "SELECT 1 FROM fabric_cover_snapshot "
-                "WHERE capture_date = (now() AT TIME ZONE 'Africa/Nairobi')::date"
+                "WHERE capture_date = (now() AT TIME ZONE 'Africa/Nairobi')::date "
+                "AND noos_universe_version = 'odoo-noos-v1'"
             )
             need_cover_snapshot = cur.fetchone() is None
         conn.commit()

@@ -155,6 +155,19 @@ def _props_by_label(props):
     return out
 
 
+def _normalize_yes(value):
+    """Normalize an Odoo Yes/No property to a strict boolean.
+
+    Only the explicit display value ``Yes`` qualifies. Empty values, booleans,
+    numbers, and every other label are false so a malformed catalogue value
+    cannot accidentally enter the NOOS universe.
+    """
+    value = _odoo_value(value)
+    if isinstance(value, str):
+        return value.strip().casefold() == "yes"
+    return False
+
+
 # Odoo Studio field ids are configuration data, not an API contract.  Keep the
 # business vocabulary here and resolve the live x_* field names from fields_get
 # for every product-master pull.  The aliases deliberately tolerate the small
@@ -195,6 +208,7 @@ FABRIC_ATTRIBUTE_SPECS = {
     "primary_color": (("Primary Color", "Primary Colour"), False),
     "source_city": (("Source City",), False),
     "source_country": (("Source Country",), False),
+    "noos_fabric": (("NOOS Fabric",), False),
 }
 
 
@@ -531,6 +545,7 @@ def extract_products(uid, models, cur, now, since=None):
         ADD COLUMN IF NOT EXISTS fabric_name TEXT,
         ADD COLUMN IF NOT EXISTS fabric_supplier_name TEXT,
         ADD COLUMN IF NOT EXISTS odoo_fabric_color TEXT,
+        ADD COLUMN IF NOT EXISTS noos_fabric BOOLEAN NOT NULL DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS write_date TIMESTAMP
     """)
 
@@ -670,6 +685,7 @@ def extract_products(uid, models, cur, now, since=None):
             fabric_name_odoo     = props.get(_label_key("Fabric Name"))
             fabric_supplier_odoo = props.get(_label_key("Fabric Supplier Name"))
             fabric_color_odoo    = props.get(_label_key("Fabric Colour"))
+            noos_fabric          = _normalize_yes(pick("noos_fabric"))
 
             rows.append((
                 r["id"],
@@ -701,6 +717,7 @@ def extract_products(uid, models, cur, now, since=None):
                 fabric_name_odoo,
                 fabric_supplier_odoo,
                 fabric_color_odoo,
+                noos_fabric,
                 r.get("write_date") or None,
                 now
             ))
@@ -730,7 +747,7 @@ def extract_products(uid, models, cur, now, since=None):
             fiber_content, fabric_type, supplier, supplier_fabric_code, primary_color,
             source_city, source_country, barcode,
             derived_color, fabric_color,
-            fabric_name, fabric_supplier_name, odoo_fabric_color,
+            fabric_name, fabric_supplier_name, odoo_fabric_color, noos_fabric,
             write_date, _loaded_at
         ) VALUES %s
         ON CONFLICT (id) DO UPDATE SET
@@ -753,6 +770,7 @@ def extract_products(uid, models, cur, now, since=None):
             fabric_name=EXCLUDED.fabric_name,
             fabric_supplier_name=EXCLUDED.fabric_supplier_name,
             odoo_fabric_color=EXCLUDED.odoo_fabric_color,
+            noos_fabric=EXCLUDED.noos_fabric,
             write_date=EXCLUDED.write_date,
             _loaded_at=EXCLUDED._loaded_at
         """, rows, page_size=200)

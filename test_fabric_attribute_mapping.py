@@ -160,6 +160,11 @@ class ResolverOrderingTests(unittest.TestCase):
         resolved = ef.resolve_fabric_fields(meta)
         self.assertEqual(resolved["kg_per_mtr"], ["x_kg_attr", "x_kg_text"])
 
+    def test_noos_field_resolves_by_business_label(self):
+        meta = _required_meta(x_noos={"string": "NOOS Fabric", "type": "many2one"})
+        self.assertEqual(
+            ef.resolve_fabric_fields(meta)["noos_fabric"], ["x_noos"])
+
 
 class NormalizeNumericTests(unittest.TestCase):
     def test_accepted_values(self):
@@ -190,6 +195,20 @@ class NormalizeNumericTests(unittest.TestCase):
         # slip through as a real reading. It must be treated as ABSENT.
         self.assertIsNone(ef._fabric_value({"x": False}, "x", numeric=True))
         self.assertIsNone(ef._fabric_value({"x": False}, "x"))
+
+
+class NormalizeNoosTests(unittest.TestCase):
+    def test_only_explicit_yes_qualifies(self):
+        for raw in (
+            "Yes", " yes ", "YES", "YeS",
+            [42, "Yes"], (42, " yes "),
+            {"display_name": "YES"},
+        ):
+            self.assertTrue(ef._normalize_yes(raw), msg=repr(raw))
+
+    def test_blank_false_no_and_other_values_do_not_qualify(self):
+        for raw in (None, False, True, "", "No", "N/A", "1", 1):
+            self.assertFalse(ef._normalize_yes(raw), msg=repr(raw))
 
 
 class PickerTests(unittest.TestCase):
@@ -332,7 +351,7 @@ class _FakeModels:
         raise AssertionError(f"unexpected Odoo call {model}.{method}")
 
 
-def _product_105433_record():
+def _product_105433_record(noos_value=False):
     """Reported barcode shape with reference-backed conversion values."""
     return {
         "id": 682430,
@@ -346,6 +365,7 @@ def _product_105433_record():
         "x_gsm_attr": False,
         "x_width_from_ref": [64271, "1.70"],
         "x_gsm_from_ref": [64272, "157"],
+        "x_noos": noos_value,
         "barcode": "105433",
         "product_properties": [],
         "write_date": "2026-08-19 09:39:48",
@@ -358,7 +378,8 @@ class ReconcileWiringTests(unittest.TestCase):
     META = None  # set in setUp
 
     def setUp(self):
-        self.meta = _reference_backed_meta()
+        self.meta = _reference_backed_meta(
+            x_noos={"string": "NOOS Fabric", "type": "many2one"})
         self.current_sig = ef.mapping_signature(
             ef.resolve_fabric_fields(self.meta), self.meta)
         self.captured = []
@@ -408,6 +429,15 @@ class ReconcileWiringTests(unittest.TestCase):
         upserts = self._state_upserts(cur)
         self.assertEqual(len(upserts), 1)
         self.assertEqual(upserts[0][1][1], self.current_sig)
+
+    def test_noos_attribute_is_extracted_and_persisted(self):
+        cur = _StateCursor(stored_signature=self.current_sig)
+        models = self._run(
+            cur, [_product_105433_record([61306, " Yes "])], since=self.SINCE)
+        (_, rows), = self.captured
+        self.assertIs(rows[0][29], True)
+        self.assertIn("x_noos", models.search_fields[0])
+        self.assertIn("noos_fabric", self.captured[0][0])
 
     def test_stored_signature_change_also_promotes(self):
         cur = _StateCursor(stored_signature='{"gsm":[["x_old","many2one"]]}')
