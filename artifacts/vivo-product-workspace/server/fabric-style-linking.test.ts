@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canonicalFabricStyle, certainFabricStyleMatch, fabricStyleBase, normalizeFabricStyle } from "./fabric-style-linking.js";
+import { canonicalFabricStyle, certainFabricStyleMatch, fabricStyleBase, fabricSupplierCodeIdentity, normalizeFabricStyle } from "./fabric-style-linking.js";
 
 test("Level 3 base stops at the Fabric BI colour separator", () => {
   assert.equal(fabricStyleBase("  Linen / Rayon - Dark Blue "), "Linen / Rayon");
@@ -10,6 +10,17 @@ test("Level 3 base stops at the Fabric BI colour separator", () => {
 test("authoritative Fabric BI fabric_name wins over the Level 4 product-name base", () => {
   assert.equal(canonicalFabricStyle("AMDHIR Light Linen Blend", "AMDHIR Cotton Linen Blend - Black"), "AMDHIR Light Linen Blend");
   assert.equal(canonicalFabricStyle("", "YIYI N272 - Navy"), "YIYI N272");
+});
+
+test("supplier plus supplier code collapses repetitive Level 3 labels", () => {
+  assert.equal(
+    fabricSupplierCodeIdentity("SHOW ME 18126", "SHOW ME", "SHOW ME 18126 - Chocolate", "SHOW ME 18126"),
+    "showme18126",
+  );
+  assert.equal(
+    fabricSupplierCodeIdentity(null, "Showme", "Showme-18126---Black", "Showme 18126 Heavy Stretch Satin"),
+    "showme18126",
+  );
 });
 
 test("noisy duplicate Level 3 labels collapse to one certain exact match", () => {

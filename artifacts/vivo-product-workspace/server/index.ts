@@ -56,7 +56,7 @@ import {
   rangePlanAosDefaultMigrationSql,
 } from "./range-plan-defaults.js";
 import { calendarDate, legacyCalendarDate, styleDateInput } from "./calendar-date.js";
-import { canonicalFabricStyle, certainFabricStyleMatch, normalizeFabricStyle, type FabricStyleCandidate } from "./fabric-style-linking.js";
+import { canonicalFabricStyle, certainFabricStyleMatch, fabricSupplierCodeIdentity, normalizeFabricStyle, type FabricStyleCandidate } from "./fabric-style-linking.js";
 import {
   DEFAULT_NEW_STYLE_ORDER_UNITS,
   calculateNewnessCommitment,
@@ -6488,7 +6488,9 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
     GROUP BY r.product_id
   ) SELECT p.id::text product_id,
     COALESCE(to_jsonb(p)->>'barcode',to_jsonb(p)->>'default_code',p.id::text) barcode,
-    p.name, p.fabric_name, BTRIM(split_part(p.name,' - ',1)) product_name_base,
+    p.name, p.fabric_name, p.supplier_fabric_code,
+    COALESCE(NULLIF(BTRIM(p.fabric_supplier_name),''),NULLIF(BTRIM(p.supplier),'')) identity_supplier,
+    BTRIM(split_part(p.name,' - ',1)) product_name_base,
     NULLIF(BTRIM(p.fabric_category),'') category,
     NULLIF(BTRIM(p.fabric_subcategory),'') subcategory,
     NULLIF(BTRIM(p.plain_print),'') plain_print,
@@ -6508,7 +6510,12 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
   const groups = new Map<string, any>();
   for (const row of result.rows) {
     const fabricStyle = canonicalFabricStyle(row.fabric_name, row.product_name_base);
-    const fabricStyleKey = normalizeFabricStyle(fabricStyle);
+    const fabricStyleKey = fabricSupplierCodeIdentity(
+      row.supplier_fabric_code,
+      row.identity_supplier,
+      row.name,
+      fabricStyle,
+    );
     if (!fabricStyleKey) continue;
     const level4: FabricLevel4 = { productId: Number(row.product_id), barcode: row.barcode, productName: row.name,
       colour: row.colour ?? "Unspecified", category: row.category, subcategory: row.subcategory,
@@ -6519,6 +6526,7 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
     const group = groups.get(fabricStyleKey) ?? { fabricStyleKey, fabricStyle, category: row.category, subcategory: row.subcategory,
       patternPlainPrint: row.plain_print, structure: row.structure, width: row.width, gsm: row.gsm, supplier: row.supplier,
       fibreComposition: row.fibre_composition, aliases: new Set<string>(), level4: [] as FabricLevel4[] };
+    if (fabricStyle.length < String(group.fabricStyle ?? "").length) group.fabricStyle = fabricStyle;
     group.aliases.add(fabricStyle);
     const productNameBase = canonicalFabricStyle("", row.product_name_base);
     if (productNameBase) group.aliases.add(productNameBase);

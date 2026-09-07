@@ -32,6 +32,20 @@ function compactFabricStyle(value: unknown) {
   return normalizeFabricStyle(value).replace(/\s+/g, "");
 }
 
+export function fabricSupplierCodeIdentity(
+  supplierFabricCode: unknown,
+  supplier: unknown,
+  productName: unknown,
+  fallbackStyle: unknown,
+) {
+  const explicit = compactFabricStyle(supplierFabricCode);
+  if (explicit) return explicit;
+  const pairs = [...String(productName ?? "").matchAll(/([a-z]+)[\s-]+([a-z]*\d[\da-z/]*)/gi)];
+  const derivedCode = pairs.at(-1)?.[2] ?? "";
+  const derived = compactFabricStyle(`${String(supplier ?? "").trim()} ${derivedCode}`);
+  return derived || compactFabricStyle(fallbackStyle);
+}
+
 function supplierCodeRoot(value: unknown) {
   return compactFabricStyle(value).replace(/(\d)[a-z]$/, "$1");
 }

@@ -4752,7 +4752,10 @@ fabric_stock_base AS (
         p.id AS fabric_product_id,
         p.name AS fabric_name,
         NULLIF(BTRIM(p.barcode), '') AS fabric_barcode,
-        NULLIF(BTRIM(p.supplier_fabric_code), '') AS fabric_quality_key,
+        NULLIF(
+            REGEXP_REPLACE(LOWER(BTRIM(p.supplier_fabric_code)), '[^a-z0-9]+', '', 'g'),
+            ''
+        ) AS fabric_quality_key,
         ROUND(COALESCE(SUM(
             CASE
                 WHEN i.location_name = 'RMAT/Stock' AND p.kg_per_mtr_eff > 0
@@ -6790,7 +6793,7 @@ def register_merch_routes(app, api_pg_module):
         """Single internal canonical source for the BI Product Workspace."""
         from starlette.concurrency import run_in_threadpool
         stock_mix_key = (
-            f"merch_stock_mix_v8|None|None|None|{date_from}|{date_to}|"
+            f"merch_stock_mix_v9|None|None|None|{date_from}|{date_to}|"
             "None|None|False"
         )
         # These reads share no intermediate state. Run them together so a cold
@@ -7463,7 +7466,7 @@ def register_merch_routes(app, api_pg_module):
         (the fabric Stock Mix pattern for finished goods). Plain `def` on
         purpose: the cache-miss query is heavy, and a sync route runs in
         Starlette's threadpool instead of blocking the event loop."""
-        key = f"merch_stock_mix_v8|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
+        key = f"merch_stock_mix_v9|{brand}|{subcategory}|{tier}|{from_date}|{to_date}|{country}|{pos_location}|{include_retired}"
         result = _cached(key, _TTL, lambda: _fetch_stock_mix(
             brand=brand, subcategory=subcategory,
             tier=tier,
