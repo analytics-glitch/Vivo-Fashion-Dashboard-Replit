@@ -61,6 +61,7 @@ import {
   weeklyNewnessTarget,
 } from "./range-plan-newness.js";
 import { loadProductionPipelineByStyle } from "./production-pipeline.js";
+import { BI_SNAPSHOT_VERSION, attachKnownGarmentImageUrls, buildOrderCountIndex, validateWorkspaceBiSource, type WorkspaceBiSource } from "./bi-workspace-snapshot.js";
 
 const { Pool } = pg;
 const databaseUrl = process.env.VIVO_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -95,11 +96,11 @@ const newnessSql = (expression: string) =>
  * last successful, short-lived BI document, and a failed refresh is never
  * substituted with a database query.
  */
-type BiWorkspaceSource = { styles: Array<Record<string, any>>; orders: Array<Record<string, any>>; definitions?: unknown; reconciliations?: unknown; [key: string]: any };
-let biWorkspaceCache: { value: BiWorkspaceSource; expiresAt: number; staleUntil: number } | null = null;
-let biWorkspaceFlight: Promise<BiWorkspaceSource> | null = null;
-const BI_WORKSPACE_TTL_MS = 60_000;
-const BI_WORKSPACE_STALE_MS = 5 * 60_000;
+type BiWorkspaceSource = WorkspaceBiSource & { definitions?: unknown; reconciliations?: unknown };
+type BiSnapshotMeta = { generatedAt: string | null; refreshedAt: string | null; refreshFailedAt: string | null; refreshError: string | null; version: number };
+let biWorkspaceCache: { value: BiWorkspaceSource; meta: BiSnapshotMeta } | null = null;
+let biWorkspaceFlight: Promise<void> | null = null;
+const BI_WORKSPACE_REFRESH_MS = 12 * 60 * 60 * 1000;
 const biWorkspaceUrl = () => `http://127.0.0.1:${process.env.BI_API_PORT ?? "8080"}/api/internal/product-workspace-source`;
 class BiSourceUnavailable extends Error {
   status = 503;
@@ -135,31 +136,93 @@ function biRequest<T>(url: string, method: "GET" | "POST", body?: unknown): Prom
     request.end();
   });
 }
-async function biWorkspaceSource() {
-  const now = Date.now();
-  if (biWorkspaceCache && biWorkspaceCache.expiresAt > now) return biWorkspaceCache.value;
-  if (!biWorkspaceFlight) {
-    biWorkspaceFlight = biRequest<BiWorkspaceSource>(biWorkspaceUrl(), "GET").then((value) => {
-      if (!Array.isArray(value.styles) || !Array.isArray(value.orders)) throw new BiSourceUnavailable("BI source has an invalid payload");
-      const refreshedAt = Date.now();
-      biWorkspaceCache = {
-        value,
-        expiresAt: refreshedAt + BI_WORKSPACE_TTL_MS,
-        staleUntil: refreshedAt + BI_WORKSPACE_TTL_MS + BI_WORKSPACE_STALE_MS,
-      };
-      return value;
-    }).finally(() => { biWorkspaceFlight = null; });
-  }
-  if (biWorkspaceCache && biWorkspaceCache.staleUntil > now) {
-    void biWorkspaceFlight.catch((error) => {
-      console.error("Unable to refresh BI workspace source; serving the last complete document", error);
-    });
-    return biWorkspaceCache.value;
-  }
+async function ensureBiWorkspaceSnapshotTable() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS ${schema}.bi_workspace_snapshot (
+    singleton boolean PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    version integer NOT NULL,
+    payload jsonb,
+    generated_at timestamptz,
+    refreshed_at timestamptz,
+    refresh_claimed_until timestamptz,
+    refresh_claim_token text,
+    refresh_failed_at timestamptz,
+    refresh_error text
+  )`);
+  await pool.query(`ALTER TABLE ${schema}.bi_workspace_snapshot
+    ADD COLUMN IF NOT EXISTS refresh_claim_token text`);
+  await pool.query(`INSERT INTO ${schema}.bi_workspace_snapshot(singleton,version)
+    VALUES(TRUE,$1) ON CONFLICT(singleton) DO NOTHING`, [BI_SNAPSHOT_VERSION]);
+}
+async function loadBiWorkspaceSnapshot() {
+  await ensureBiWorkspaceSnapshotTable();
+  const result = await pool.query(`SELECT version,payload,generated_at AS "generatedAt",refreshed_at AS "refreshedAt",
+    refresh_failed_at AS "refreshFailedAt",refresh_error AS "refreshError"
+    FROM ${schema}.bi_workspace_snapshot WHERE singleton=TRUE`);
+  const row = result.rows[0];
+  if (!row?.payload) return null;
+  if (Number(row.version) !== BI_SNAPSHOT_VERSION) return null;
+  const value = validateWorkspaceBiSource(row.payload) as BiWorkspaceSource;
+  const meta = { version: Number(row.version), generatedAt: row.generatedAt?.toISOString?.() ?? row.generatedAt ?? null,
+    refreshedAt: row.refreshedAt?.toISOString?.() ?? row.refreshedAt ?? null,
+    refreshFailedAt: row.refreshFailedAt?.toISOString?.() ?? row.refreshFailedAt ?? null,
+    refreshError: row.refreshError ?? null };
+  biWorkspaceCache = { value, meta };
+  return biWorkspaceCache;
+}
+async function refreshBiWorkspaceSnapshot() {
+  if (biWorkspaceFlight) return biWorkspaceFlight;
+  biWorkspaceFlight = (async () => {
+    await ensureBiWorkspaceSnapshotTable();
+    const claimToken = crypto.randomUUID();
+    const claim = await pool.query(`UPDATE ${schema}.bi_workspace_snapshot
+      SET refresh_claimed_until=NOW()+INTERVAL '2 minutes',refresh_claim_token=$1
+      WHERE singleton=TRUE AND (refresh_claimed_until IS NULL OR refresh_claimed_until<NOW())
+      RETURNING singleton`, [claimToken]);
+    if (!claim.rowCount) return;
+    try {
+      const value = validateWorkspaceBiSource(await biRequest<BiWorkspaceSource>(biWorkspaceUrl(), "GET")) as BiWorkspaceSource;
+      const generatedAt = value.generatedAt && !Number.isNaN(Date.parse(value.generatedAt)) ? value.generatedAt : new Date().toISOString();
+      await pool.query(`UPDATE ${schema}.bi_workspace_snapshot SET version=$1,payload=$2::jsonb,
+        generated_at=$3::timestamptz,refreshed_at=NOW(),refresh_claimed_until=NULL,refresh_claim_token=NULL,
+        refresh_failed_at=NULL,refresh_error=NULL
+        WHERE singleton=TRUE AND refresh_claim_token=$4`,
+      [BI_SNAPSHOT_VERSION, JSON.stringify(value), generatedAt, claimToken]);
+      await loadBiWorkspaceSnapshot();
+    } catch (error) {
+      const message = error instanceof Error ? error.message.slice(0, 500) : "Unknown refresh failure";
+      await pool.query(`UPDATE ${schema}.bi_workspace_snapshot SET refresh_claimed_until=NULL,refresh_claim_token=NULL,
+        refresh_failed_at=NOW(),refresh_error=$1
+        WHERE singleton=TRUE AND refresh_claim_token=$2`, [message, claimToken]).catch(() => undefined);
+      if (biWorkspaceCache) biWorkspaceCache.meta = { ...biWorkspaceCache.meta, refreshFailedAt: new Date().toISOString(), refreshError: message };
+      console.error("Unable to refresh BI workspace snapshot; retaining last complete snapshot", error);
+    }
+  })().finally(() => { biWorkspaceFlight = null; });
   return biWorkspaceFlight;
+}
+async function biWorkspaceSource() {
+  if (biWorkspaceCache) return biWorkspaceCache.value;
+  const snapshot = await loadBiWorkspaceSnapshot();
+  if (snapshot) return snapshot.value;
+  void refreshBiWorkspaceSnapshot();
+  throw new BiSourceUnavailable("BI snapshot is warming; no verified snapshot is available yet");
 }
 // Named export point for Workspace facts.  Do not bypass this adapter.
 const getBiWorkspaceSource = biWorkspaceSource;
+let productionPipelineCache: { value: Map<string, number>; expiresAt: number } | null = null;
+let productionPipelineFlight: Promise<Map<string, number>> | null = null;
+async function currentProductionPipelineByStyle() {
+  const now = Date.now();
+  if (productionPipelineCache && productionPipelineCache.expiresAt > now) return productionPipelineCache.value;
+  if (!productionPipelineFlight) {
+    productionPipelineFlight = loadProductionPipelineByStyle(pool)
+      .then((value) => {
+        productionPipelineCache = { value, expiresAt: Date.now() + 30_000 };
+        return value;
+      })
+      .finally(() => { productionPipelineFlight = null; });
+  }
+  return productionPipelineFlight;
+}
 async function biWorkspaceCogs(payload: Record<string, unknown>) {
   const base = `http://127.0.0.1:${process.env.BI_API_PORT ?? "8080"}/api/internal/product-workspace-cogs`;
   return biRequest<Record<string, unknown>>(base, "POST", payload);
@@ -4592,11 +4655,7 @@ async function applyGarmentImageOverrides<T extends Record<string, unknown>>(
      WHERE source=$1 AND style_key=ANY($2::text[])`,
     [source, keys],
   );
-  const available = new Set(result.rows.map((row) => row.styleKey));
-  return rows.map((row) => {
-    const key = garmentImageKey(keyFor(row));
-    return available.has(key) ? { ...row, image: garmentImageUrl(source, key) } : row;
-  });
+  return attachKnownGarmentImageUrls(rows, result.rows.map((row) => row.styleKey), source, keyFor);
 }
 
 function validateGarmentImageMeta(name: unknown, size: unknown, contentType: unknown) {
@@ -7384,7 +7443,7 @@ async function assortmentPlanData(quarter: string, activeOnly = false, source?: 
         WHERE season=$1 AND source='all_products_clean'`,
       [quarter],
     ),
-    loadProductionPipelineByStyle(pool),
+    currentProductionPipelineByStyle(),
   ]);
   const intent = new Map(membership.rows.map((row) => [String(row.style_key), String(row.intent)]));
   const styles = bi.styles.map(biStyle)
@@ -8217,7 +8276,8 @@ router.get("/assortment-plan", async (_req, res, next) => {
     const fabricRates = new Map(fabricRatesResult.rows.map((row) => [String(row.subcategory), Number(row.metresPerUnit)]));
     const selectedAssortment = await assortmentPlanData(CURRENT_ASSORTMENT_SCOPE, true, bi);
     const actualOrders = activeBiOrders(bi.orders).filter((order) => order.quantity > 0);
-    const assortmentStyles = selectedAssortment.styles.map((style) => {
+    const actualOrderCount = buildOrderCountIndex(actualOrders);
+    const assortmentStyleRows = selectedAssortment.styles.map((style) => {
       const sourceStockUnits = style.stockUnits == null ? null : Number(style.stockUnits);
       const sohStores = Number(style.sohStores ?? 0);
       const sohOnline = Number(style.sohOnline ?? 0);
@@ -8268,6 +8328,11 @@ router.get("/assortment-plan", async (_req, res, next) => {
           : style.image,
       };
     });
+    const assortmentStyles = await applyGarmentImageOverrides(
+      assortmentStyleRows,
+      "catalogue",
+      (style) => style.styleNumber,
+    );
     const payload = {
       assortmentStyles,
       assortmentSummary: {
@@ -8282,12 +8347,15 @@ router.get("/assortment-plan", async (_req, res, next) => {
       weeklyDestinations: weeklyDestinationsResult.rows,
       reconciliations: Array.isArray(bi.reconciliations) ? bi.reconciliations : [],
       sourceStatus: Array.isArray(bi.sourceStatus) ? bi.sourceStatus : [],
+      snapshot: biWorkspaceCache?.meta ?? null,
     };
     const serializationStartedAt = performance.now();
     const serialized = JSON.stringify(payload);
     const serializationMs = performance.now() - serializationStartedAt;
     const totalMs = performance.now() - requestStartedAt;
     res.setHeader("Server-Timing", `bi;dur=${biMs.toFixed(1)}, serialize;dur=${serializationMs.toFixed(1)}, total;dur=${totalMs.toFixed(1)}`);
+    res.setHeader("X-Assortment-Styles", String(assortmentStyles.length));
+    res.setHeader("X-Payload-Bytes", String(Buffer.byteLength(serialized)));
     res.type("json").send(serialized);
   } catch (error) {
     next(error);
@@ -13455,10 +13523,26 @@ io.on("connection", (socket) => {
 });
 
 const port = Number(process.env.PORT ?? 23661);
+let biSnapshotSchedulerStarted = false;
+function startBiSnapshotScheduler() {
+  if (biSnapshotSchedulerStarted) return;
+  biSnapshotSchedulerStarted = true;
+  void loadBiWorkspaceSnapshot()
+    .then(async (snapshot) => {
+      const refreshedAt = snapshot?.meta.refreshedAt ? Date.parse(snapshot.meta.refreshedAt) : 0;
+      if (!snapshot || Date.now() - refreshedAt >= BI_WORKSPACE_REFRESH_MS) await refreshBiWorkspaceSnapshot();
+    })
+    .catch((error) => console.warn("Unable to load Product Workspace BI snapshot", error));
+  setInterval(() => { void refreshBiWorkspaceSnapshot(); }, BI_WORKSPACE_REFRESH_MS).unref();
+  setInterval(() => {
+    if (!biWorkspaceCache) void refreshBiWorkspaceSnapshot();
+  }, 60_000).unref();
+}
 
 httpServer.listen(port, "0.0.0.0", () => {
   serviceReady = true;
   console.log(`Vivo workspace API listening on ${port}`);
+  startBiSnapshotScheduler();
   void withTimeout(ensureSchema(), 15000, "workspace schema initialisation")
     .then(() => {
       schemaReady = true;
@@ -13468,6 +13552,7 @@ httpServer.listen(port, "0.0.0.0", () => {
       setInterval(() => {
         void cleanupExpiredFeedbackImageUploads().catch((error) => console.warn("Unable to clean expired feedback images", error));
       }, 5 * 60 * 1000).unref();
+      startBiSnapshotScheduler();
     })
     .catch(async (error) => {
       console.error("Unable to initialise workspace database", error);
@@ -13476,6 +13561,7 @@ httpServer.listen(port, "0.0.0.0", () => {
       await ensureRecentWorkspaceMigrations();
       await ensureStyleDevelopmentTrackerData();
       schemaReady = await isDatabaseReachable();
+      startBiSnapshotScheduler();
       console.warn(`Vivo workspace starting in ${schemaReady ? "degraded" : "unavailable"} database mode`);
     });
 });

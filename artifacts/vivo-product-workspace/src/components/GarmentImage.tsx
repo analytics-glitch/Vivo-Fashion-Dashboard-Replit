@@ -36,32 +36,18 @@ function putWithProgress(url: string, file: File, onProgress: (progress: number)
 export default function GarmentImage({ source, styleKey, image, alt, className = '', children, onSaved }: Props) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [preview, setPreview] = useState<string | null>(null);
-  const [persistedImage, setPersistedImage] = useState<string | null>(null);
   const [failedImage, setFailedImage] = useState<string | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const key = String(styleKey ?? '').trim();
-  const canonicalImageUrl = key ? `/api/workspace/garment-images/${source}/${encodeURIComponent(key)}` : null;
-  const imageCandidate = preview || persistedImage || image || null;
+  const imageCandidate = preview || image || null;
   const currentImage = imageCandidate && imageCandidate !== failedImage ? imageCandidate : null;
   const uploading = progress !== null;
 
   useEffect(() => {
-    let cancelled = false;
-    setPersistedImage(null);
-    // A supplied route image is already authoritative and the <img> below is
-    // lazy. Avoid an eager HEAD probe for every off-screen catalogue card.
-    if (!canonicalImageUrl || image) return undefined;
-    void fetch(canonicalImageUrl, { method: 'HEAD', credentials: 'include' })
-      .then((response) => { if (!cancelled && response.ok) setPersistedImage(canonicalImageUrl); })
-      .catch(() => undefined);
-    return () => { cancelled = true; };
-  }, [canonicalImageUrl, image]);
-
-  useEffect(() => {
     setFailedImage(null);
-  }, [preview, persistedImage, image]);
+  }, [preview, image]);
 
   const chooseFile = async (file?: File) => {
     if (!file || uploading || !key) return;

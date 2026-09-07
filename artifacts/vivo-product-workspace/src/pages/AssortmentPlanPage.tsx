@@ -28,7 +28,8 @@ type Style = Record<FilterKey, string | null> & {
 };
 type Summary = { total: number; counts: { total: number; tier1: number; tier2: number; tier3: number; tier4: number; retired: number }; filterOptions?: Record<FilterKey, string[]> };
 type Reconciliation = { status?: string; passed?: boolean; name?: string; metric?: string; label?: string; error?: string; message?: string; detail?: string };
-type Payload = { assortmentStyles: Style[]; assortmentSummary: Summary; seasons?: Season[]; weeklyDestinations?: Week[]; assortmentFilterOptions?: Record<FilterKey, string[]>; sourceStatus?: unknown; reconciliations?: Reconciliation[] };
+type Payload = { assortmentStyles: Style[]; assortmentSummary: Summary; seasons?: Season[]; weeklyDestinations?: Week[]; assortmentFilterOptions?: Record<FilterKey, string[]>; sourceStatus?: unknown; reconciliations?: Reconciliation[]; snapshot?: { generatedAt?: string | null; refreshFailedAt?: string | null } | null };
+const CARD_BATCH_SIZE = 60;
 const actionGroups = [
   { key: 'Reorder', label: 'Reorder', description: 'Trading-qualified replenishment proposals' },
   { key: 'Retire', label: 'Retire', description: 'Lifecycle exit proposals' },
@@ -124,6 +125,8 @@ export default function AssortmentPlanPage() {
   const [selected, setSelected] = useState<string[]>([]);
   const [expandedStyleId, setExpandedStyleId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
+  const [visibleCardLimit, setVisibleCardLimit] = useState(CARD_BATCH_SIZE);
+  const loadMoreRef = useRef<HTMLDivElement>(null);
   const assortment = useQuery({ queryKey: ['workspace', 'assortment-plan'], queryFn: async () => { const r = await fetch('/api/workspace/assortment-plan', { credentials: 'include' }); if (!r.ok) throw new Error(`Assortment Plan request failed (${r.status})`); return r.json() as Promise<Payload>; }, staleTime: 60_000 });
   const exclude = useMutation({ mutationFn: async ({ styleId, excluded }: { styleId: string; excluded: boolean }) => { const r = await fetch('/api/workspace/range-plan/exclusions', { method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ source: 'bi', styleId, excluded }) }); if (!r.ok) throw new Error('Could not update assortment exclusion'); }, onSuccess: () => client.invalidateQueries({ queryKey: ['workspace', 'assortment-plan'] }) });
   const add = useMutation({ mutationFn: async ({ styles, destination }: { styles: Style[]; destination: Destination }) => { const r = await fetch('/api/workspace/assortment-plan/add-selected', { method: 'POST', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ styles: styles.map((s) => ({ source: 'bi', styleNumber: s.styleNumber })), destination }) }); const body = await r.json().catch(() => ({})); if (!r.ok) throw new Error(body.error || 'Could not add selected styles'); return body; }, onSuccess: (_data, variables) => { setSelected([]); setToast(`${variables.styles.length} style${variables.styles.length === 1 ? '' : 's'} added to plan.`); client.invalidateQueries({ queryKey: ['workspace'] }); } });
@@ -176,6 +179,30 @@ export default function AssortmentPlanPage() {
     ...group,
     styles: styles.filter((style) => style.proposedAction === group.key),
   })).filter((group) => group.styles.length > 0), [styles]);
+  useEffect(() => { setVisibleCardLimit(CARD_BATCH_SIZE); }, [filters, search, sort]);
+  useEffect(() => {
+    const marker = loadMoreRef.current;
+    if (!marker || visibleCardLimit >= styles.length) return;
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setVisibleCardLimit((value) => Math.min(value + CARD_BATCH_SIZE, styles.length));
+      }
+    }, { rootMargin: '600px' });
+    observer.observe(marker);
+    return () => observer.disconnect();
+  }, [styles.length, visibleCardLimit]);
+  const visibleGroups = useMemo(() => {
+    let remaining = visibleCardLimit;
+    return groupedStyles.map((group) => {
+      const visible = group.styles.slice(0, Math.max(0, remaining));
+      remaining -= visible.length;
+      return { ...group, styles: visible, total: group.styles.length };
+    }).filter((group) => group.styles.length > 0);
+  }, [groupedStyles, visibleCardLimit]);
+  const visibleStyleIds = useMemo(
+    () => new Set(visibleGroups.flatMap((group) => group.styles.map((style) => style.id))),
+    [visibleGroups],
+  );
   if (assortment.isLoading) return <section className="page"><div className="range-plan-loading"><RefreshCw size={20} />Loading assortment plan…</div></section>;
   if (assortment.isError || !assortment.data) return <section className="page"><div className="range-plan-error"><Target size={22} /><h2>Assortment Plan is unavailable</h2><button className="button button-dark" onClick={() => assortment.refetch()} data-testid="button-retry-assortment">Try again</button></div></section>;
   const data = assortment.data; const options = data.assortmentFilterOptions ?? data.assortmentSummary.filterOptions ?? ({} as Record<FilterKey, string[]>);
@@ -184,10 +211,11 @@ export default function AssortmentPlanPage() {
   return <section className="page assortment-plan-page">
     <header className="assortment-plan-hero"><div><span className="range-eyebrow">Merchandising / Store edit</span><h1>Assortment Plan <span className="assortment-bi-badge hero">BI source</span></h1><p>Make range decisions with trading, stock and product context in one working view.</p></div><div className="assortment-plan-hero-mark">V</div></header>
     {(data.reconciliations ?? []).filter(reconciliationFailed).length > 0 && <div className="assortment-reconciliation-failure" role="alert" data-testid="status-assortment-reconciliation-failure"><Target size={18} /><div><strong>BI reconciliation failed — headline assortment figures are not trusted</strong><span>{(data.reconciliations ?? []).filter(reconciliationFailed).map((item) => item.name ?? item.metric ?? item.label ?? item.error ?? item.message).join(' · ')}</span></div></div>}
+    {data.snapshot && <div className="assortment-current-count" data-testid="status-assortment-snapshot"><span>Commercial snapshot</span><strong>{data.snapshot.generatedAt ? new Date(data.snapshot.generatedAt).toLocaleString() : 'Time unavailable'}</strong>{data.snapshot.refreshFailedAt && <small>Latest refresh failed; showing the last verified snapshot.</small>}</div>}
     <div className="assortment-current-count" data-testid="text-assortment-filtered-count"><strong>{n(styles.length)}</strong><span>styles matching filters</span><small>Proposed action is the primary grouping. Your selected sort applies within each group.</small></div>
     <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter assortment</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div><label className="assortment-search-field"><Search size={16} aria-hidden="true" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search style, number or designer…" data-assortment-search data-testid="input-assortment-search" /></label>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={key === 'proposedAction' ? [...proposedActionOptions] : [...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} optionLabels={key === 'proposedAction' ? proposedActionLabels : undefined} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><button type="button" className="assortment-clear-filters" onClick={() => { setSearch(''); setFilters(emptyFilters); }} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
     <div className="assortment-summary-bar"><div className="assortment-summary-lead"><Target size={17} /><span>Styles shown</span><strong>{n(styles.length)}</strong></div>{Object.entries(assortmentCounts).slice(1).map(([key, value]) => <div className="assortment-summary-item" key={key}><span>{key}</span><strong>{n(value)}</strong></div>)}</div>
-    <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter(isBiStyle).map((s) => s.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div>{groupedStyles.map((group) => { const slug = group.key.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, ''); return <section className={`assortment-action-group action-${slug}`} key={group.key} data-testid={`assortment-action-group-${slug}`}><header><div><span>Proposed action</span><h2>{group.label}</h2><p>{group.description}</p></div><strong>{n(group.styles.length)}</strong></header><div className="assortment-card-grid">{group.styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} expanded={expandedStyleId === style.id} onToggle={() => setExpandedStyleId((current) => current === style.id ? null : style.id)} />)}</div></section>; })}</> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>
+    <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter((style) => isBiStyle(style) && visibleStyleIds.has(style.id)).map((style) => style.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div>{visibleGroups.map((group) => { const slug = group.key.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, ''); return <section className={`assortment-action-group action-${slug}`} key={group.key} data-testid={`assortment-action-group-${slug}`}><header><div><span>Proposed action</span><h2>{group.label}</h2><p>{group.description}</p></div><strong>{n(group.total)}</strong></header><div className="assortment-card-grid">{group.styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} expanded={expandedStyleId === style.id} onToggle={() => setExpandedStyleId((current) => current === style.id ? null : style.id)} />)}</div></section>; })}{visibleCardLimit < styles.length && <div ref={loadMoreRef} className="assortment-empty">Loading more styles…</div>}</> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>
     {selectedStyles.length > 0 && <aside className="assortment-bulk-bar"><CheckSquare size={18} /><strong>{selectedStyles.length} selected</strong><DestinationPicker seasons={data.seasons ?? []} weeks={data.weeklyDestinations ?? []} disabled={add.isPending} onPick={(destination) => add.mutate({ styles: selectedStyles, destination })} /><button type="button" onClick={() => setSelected([])} data-testid="button-clear-bulk-selection">Clear</button></aside>}
     {toast && <div className="assortment-toast" role="status" data-testid="status-assortment-add">{toast}</div>}{(exclude.isError || add.isError) && <div className="form-error">{add.error instanceof Error ? add.error.message : 'That assortment change could not be saved.'}</div>}
   </section>;
