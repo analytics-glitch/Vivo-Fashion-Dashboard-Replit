@@ -25,6 +25,30 @@ DEFAULT_EXPECTED_SOURCES = (
 )
 
 
+def _column_exists(cur, table, column):
+    cur.execute("""SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema='public' AND table_name=%s AND column_name=%s
+    )""", (table, column))
+    return bool(cur.fetchone()[0])
+
+
+def _constraint_exists(cur, table, constraint):
+    cur.execute("""SELECT EXISTS (
+        SELECT 1
+        FROM pg_constraint c
+        JOIN pg_class t ON t.oid=c.conrelid
+        JOIN pg_namespace n ON n.oid=t.relnamespace
+        WHERE n.nspname='public' AND t.relname=%s AND c.conname=%s
+    )""", (table, constraint))
+    return bool(cur.fetchone()[0])
+
+
+def _index_exists(cur, index):
+    cur.execute("SELECT to_regclass(%s) IS NOT NULL", ("public." + index,))
+    return bool(cur.fetchone()[0])
+
+
 def source_system(store):
     return "odoo" if store == "vivofashiongroup" else "shopify"
 
@@ -46,6 +70,10 @@ def pseudo(name, email):
 
 def ensure_schema(cur):
     # Kept here too so the CLI is deployable before the additive SQL migration.
+    # Never let an idempotent migration wait indefinitely behind BI readers.
+    # On an already-current schema the guards below avoid requesting DDL locks
+    # at all; on a genuinely old schema this bounds the maintenance attempt.
+    cur.execute("SET LOCAL lock_timeout = '5s'")
     cur.execute("""CREATE TABLE IF NOT EXISTS customer_person_registry (
         person_id BIGSERIAL PRIMARY KEY, created_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
     cur.execute("""CREATE TABLE IF NOT EXISTS customer_identity_registry (
@@ -57,7 +85,8 @@ def ensure_schema(cur):
         singleton BOOLEAN PRIMARY KEY DEFAULT true CHECK(singleton),
         published_at TIMESTAMPTZ, source_rows INTEGER, source_fingerprint TEXT,
         status TEXT NOT NULL DEFAULT 'never', error TEXT)""")
-    cur.execute("ALTER TABLE customer_identity_publish ADD COLUMN IF NOT EXISTS last_error TEXT")
+    if not _column_exists(cur, "customer_identity_publish", "last_error"):
+        cur.execute("ALTER TABLE customer_identity_publish ADD COLUMN last_error TEXT")
     cur.execute("""CREATE TABLE IF NOT EXISTS customer_identity_publish_source (
        source_system TEXT NOT NULL, store_id TEXT NOT NULL, source_rows INTEGER NOT NULL,
        published_at TIMESTAMPTZ NOT NULL DEFAULT now(), PRIMARY KEY(source_system,store_id))""")
@@ -83,9 +112,12 @@ def ensure_schema(cur):
         reason TEXT, created_by TEXT, applied_at TIMESTAMPTZ NOT NULL DEFAULT now())""")
     # Legacy schemas key overrides without store; retain them but qualify lookup
     # only when a matching source key is supplied in the newer source_key column.
-    cur.execute("ALTER TABLE customer_identity_override ADD COLUMN IF NOT EXISTS store_id TEXT")
-    cur.execute("ALTER TABLE customer_identity_override ADD COLUMN IF NOT EXISTS source_key TEXT")
-    cur.execute("ALTER TABLE customer_identity_override ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ")
+    if not _column_exists(cur, "customer_identity_override", "store_id"):
+        cur.execute("ALTER TABLE customer_identity_override ADD COLUMN store_id TEXT")
+    if not _column_exists(cur, "customer_identity_override", "source_key"):
+        cur.execute("ALTER TABLE customer_identity_override ADD COLUMN source_key TEXT")
+    if not _column_exists(cur, "customer_identity_override", "updated_at"):
+        cur.execute("ALTER TABLE customer_identity_override ADD COLUMN updated_at TIMESTAMPTZ")
     cur.execute("""UPDATE customer_identity_override
                    SET source_key=source_system || ':' ||
                      CASE WHEN source_system='odoo' THEN 'vivofashiongroup'
@@ -95,26 +127,35 @@ def ensure_schema(cur):
     # The legacy (system,bare ID) key collides across Shopify stores. Keep
     # unmigrated store-less rows inert for audit/history, while all actionable
     # overrides are uniquely keyed by their fully qualified source key.
-    cur.execute("ALTER TABLE customer_identity_override DROP CONSTRAINT IF EXISTS customer_identity_override_pkey")
-    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS customer_identity_override_source_key_uq
-                   ON customer_identity_override(source_key) WHERE source_key IS NOT NULL""")
-    cur.execute("ALTER TABLE customer_identity_review ADD COLUMN IF NOT EXISTS source_key TEXT")
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS customer_identity_review_source_phone_uq ON customer_identity_review(source_key,match_key,key_type)")
-    cur.execute("ALTER TABLE customer_identity ADD COLUMN IF NOT EXISTS source_key TEXT")
+    if _constraint_exists(cur, "customer_identity_override", "customer_identity_override_pkey"):
+        cur.execute("ALTER TABLE customer_identity_override DROP CONSTRAINT customer_identity_override_pkey")
+    if not _index_exists(cur, "customer_identity_override_source_key_uq"):
+        cur.execute("""CREATE UNIQUE INDEX customer_identity_override_source_key_uq
+                       ON customer_identity_override(source_key) WHERE source_key IS NOT NULL""")
+    if not _column_exists(cur, "customer_identity_review", "source_key"):
+        cur.execute("ALTER TABLE customer_identity_review ADD COLUMN source_key TEXT")
+    if not _index_exists(cur, "customer_identity_review_source_phone_uq"):
+        cur.execute("CREATE UNIQUE INDEX customer_identity_review_source_phone_uq ON customer_identity_review(source_key,match_key,key_type)")
+    if not _column_exists(cur, "customer_identity", "source_key"):
+        cur.execute("ALTER TABLE customer_identity ADD COLUMN source_key TEXT")
     cur.execute("""UPDATE customer_identity SET source_key=source_system || ':' || COALESCE(store_id,'') || ':' || source_customer_id
                    WHERE source_key IS NULL""")
     # The former (system, bare ID) primary key cannot represent Shopify's
     # per-store namespaces. A unique source_key is the durable compatibility
     # constraint (we intentionally do not DROP tables, grants or review data).
-    cur.execute("ALTER TABLE customer_identity DROP CONSTRAINT IF EXISTS customer_identity_pkey")
-    cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS customer_identity_source_key_uq ON customer_identity(source_key)")
+    if _constraint_exists(cur, "customer_identity", "customer_identity_pkey"):
+        cur.execute("ALTER TABLE customer_identity DROP CONSTRAINT customer_identity_pkey")
+    if not _index_exists(cur, "customer_identity_source_key_uq"):
+        cur.execute("CREATE UNIQUE INDEX customer_identity_source_key_uq ON customer_identity(source_key)")
     # Every reader resolves a ledger customer through this *store-qualified*
     # pair.  A bare Shopify id is not a customer key, and a sequential scan here
     # makes the otherwise small identity map an expensive part of BI queries.
-    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS customer_identity_store_customer_uq
-                   ON customer_identity(store_id, source_customer_id)""")
-    cur.execute("""CREATE INDEX IF NOT EXISTS customer_identity_person_idx
-                   ON customer_identity(person_id)""")
+    if not _index_exists(cur, "customer_identity_store_customer_uq"):
+        cur.execute("""CREATE UNIQUE INDEX customer_identity_store_customer_uq
+                       ON customer_identity(store_id, source_customer_id)""")
+    if not _index_exists(cur, "customer_identity_person_idx"):
+        cur.execute("""CREATE INDEX customer_identity_person_idx
+                       ON customer_identity(person_id)""")
     # Seed registry for legacy persons before adding the FK.  Old IDs can then
     # remain valid instead of being renumbered during the additive migration.
     cur.execute("""INSERT INTO customer_person_registry(person_id)
@@ -122,10 +163,11 @@ def ensure_schema(cur):
       ON CONFLICT DO NOTHING""")
     cur.execute("""SELECT setval(pg_get_serial_sequence('customer_person_registry','person_id'),
                    COALESCE((SELECT max(person_id) FROM customer_person_registry),1), true)""")
-    cur.execute("ALTER TABLE customer_identity DROP CONSTRAINT IF EXISTS customer_identity_person_fk")
-    cur.execute("""ALTER TABLE customer_identity ADD CONSTRAINT customer_identity_person_fk
-                   FOREIGN KEY(person_id) REFERENCES customer_person_registry(person_id) NOT VALID""")
-    cur.execute("ALTER TABLE customer_people ADD COLUMN IF NOT EXISTS built_at TIMESTAMPTZ")
+    if not _constraint_exists(cur, "customer_identity", "customer_identity_person_fk"):
+        cur.execute("""ALTER TABLE customer_identity ADD CONSTRAINT customer_identity_person_fk
+                       FOREIGN KEY(person_id) REFERENCES customer_person_registry(person_id) NOT VALID""")
+    if not _column_exists(cur, "customer_people", "built_at"):
+        cur.execute("ALTER TABLE customer_people ADD COLUMN built_at TIMESTAMPTZ")
 
 
 def _new_person(cur):
