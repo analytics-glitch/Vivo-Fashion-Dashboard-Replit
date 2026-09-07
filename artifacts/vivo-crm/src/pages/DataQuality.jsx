@@ -25,10 +25,9 @@ export default function DataQuality() {
       <h1 className="font-display text-4xl md:text-5xl mt-2 tracking-tight">Customer duplicates</h1>
       <div className="gold-rule mt-4" />
       <p className="text-sm text-[var(--vivo-muted)] mt-3 max-w-2xl">
-        Likely duplicate customer records grouped by <strong>matching phone number</strong> (last 9 digits) or
-        <strong> highly similar email</strong> (&gt;90% character match within the same domain). Names are
-        ignored to avoid false positives across common Kenyan first names. Merge in your source-of-truth
-        (Shopify / Odoo) before associates pollute records further.
+        Canonical people collapse only conservatively linked source records. Shared phones remain
+        <strong> review-required</strong> and are never automatically merged. Each record below shows
+        its source-qualified provenance.
       </p>
 
       {loading ? (
@@ -63,10 +62,10 @@ export default function DataQuality() {
                       <Link to={`/customers/${c.customer_id}`} className="flex-1 min-w-0 hover:text-[var(--vivo-navy)]">
                         <div className="font-medium truncate flex items-center gap-2">{c.customer_name || c.customer_id} <RfmBadge tier={c.rfm_tier} /></div>
                         <div className="text-xs text-[var(--vivo-muted)] mt-0.5">
-                          {c.city || "—"} · {c.total_orders} orders · {formatKES(c.total_sales)} LTV · last buy {formatDate(c.last_purchase_date)}
+                          {c.source_key} · {c.total_orders} orders · {formatKES(c.total_sales)} LTV · last buy {formatDate(c.last_purchase_date)}
                         </div>
                       </Link>
-                      <span className="text-xs text-[var(--vivo-muted)] font-mono-num shrink-0">{c.customer_id}</span>
+                      <span className="text-xs text-[var(--vivo-muted)] font-mono-num shrink-0">person:{c.person_id}</span>
                     </li>
                   ))}
                 </ul>

@@ -619,11 +619,148 @@ def _base_filters():
     return A.BASE_FILTERS
 
 
+def _identity_source_key_sql(alias=""):
+    """Canonical source key, including pre-column identity snapshots."""
+    p = (alias + ".") if alias else ""
+    return ("COALESCE(" + p + "source_key," + p + "source_system||':'||" +
+            p + "store_id||':'||" + p + "source_customer_id)")
+
+
+def _person_ref(value, required=False):
+    """Resolve a CRM URL/write identity without ever guessing a bare source ID.
+
+    Canonical URLs use ``person:<person_id>``.  A fully-qualified source key is
+    also accepted for deep links.  Old bare customer IDs remain readable only
+    where every matching source alias has the *same* person; colliding Shopify
+    IDs deliberately return no link rather than attaching history incorrectly.
+    """
+    raw = str(value or "").strip()
+    canonical = raw.startswith("person:")
+    if canonical:
+        raw = raw[7:]
+    if canonical and raw.isdigit():
+        row = _one("SELECT person_id FROM customer_people WHERE person_id=%s",
+                   (_int(raw),))
+        if row:
+            return {"person_id": _int(row["person_id"]), "ref": "person:" + raw,
+                    "source_key": None, "legacy_id": None,
+                    "legacy_ids": _safe_legacy_ids(_int(row["person_id"]))}
+    if raw.count(":") >= 2:
+        source_key_sql = _identity_source_key_sql()
+        row = _one("SELECT person_id," + source_key_sql +
+                   " source_key,source_customer_id FROM customer_identity WHERE " +
+                   source_key_sql + "=%s", (raw,))
+        if row:
+            return {"person_id": _int(row["person_id"]), "ref": "person:" + str(row["person_id"]),
+                    "source_key": row["source_key"], "legacy_id": row["source_customer_id"],
+                    "legacy_ids": _safe_legacy_ids(_int(row["person_id"]))}
+    # Legacy IDs are only safe if source aliases resolve to one canonical person.
+    rows = _ex("SELECT DISTINCT person_id FROM customer_identity "
+               "WHERE source_customer_id=%s", (raw,), fetch=True) or []
+    if len(rows) == 1:
+        pid = _int(rows[0]["person_id"])
+        return {"person_id": pid, "ref": "person:" + str(pid),
+                "source_key": None, "legacy_id": raw, "legacy_ids": [raw]}
+    if required:
+        raise HTTPException(status_code=409 if rows else 404,
+                            detail=("Ambiguous legacy customer ID; use person:<id> or a source-qualified alias"
+                                    if rows else "Canonical customer not found"))
+    return None
+
+
+def _safe_legacy_ids(person_id):
+    """Only historical bare IDs that cannot collide with another person."""
+    rows = _ex(
+        "SELECT source_customer_id FROM customer_identity WHERE person_id=%s "
+        "GROUP BY source_customer_id HAVING (SELECT COUNT(DISTINCT ci2.person_id) "
+        "FROM customer_identity ci2 WHERE ci2.source_customer_id=customer_identity.source_customer_id)=1",
+        (person_id,), fetch=True) or []
+    return [r["source_customer_id"] for r in rows]
+
+
+def _person_owned_clause(alias, ident):
+    """SQL predicate/params for canonical rows plus safely resolvable history."""
+    return ("(" + alias + ".person_id=%s OR (" + alias +
+            ".person_id IS NULL AND " + alias + ".customer_id = ANY(%s)))",
+            [ident["person_id"], ident.get("legacy_ids") or []])
+
+
+def _person_aliases(person_id):
+    """All exact external aliases for a person, retained as provenance."""
+    return _ex("SELECT " + _identity_source_key_sql() +
+               " source_key,source_system,store_id,source_customer_id,display_name "
+               "FROM customer_identity WHERE person_id=%s ORDER BY source_system,store_id,source_customer_id",
+               (person_id,), fetch=True) or []
+
+
+def _loyalty_account_ref(cid, payload=None):
+    """Choose one account, never a merged person-level loyalty balance."""
+    ident = _person_ref(cid, required=True)
+    requested = ((payload or {}).get("source_key") or "").strip()
+    aliases = _person_aliases(ident["person_id"])
+    all_aliases = aliases
+    if requested:
+        aliases = [a for a in aliases if a["source_key"] == requested]
+        if not aliases:
+            raise HTTPException(status_code=409, detail="source_key is not an alias of this canonical person")
+    # Loyalty needs stricter provenance than generic CRM history: a bare
+    # enrollment ID is safe only when it names exactly one source alias, not
+    # merely one canonical person.
+    alias_counts = {}
+    for alias in all_aliases:
+        legacy_id = alias["source_customer_id"]
+        alias_counts[legacy_id] = alias_counts.get(legacy_id, 0) + 1
+    safe_ids = [legacy_id for legacy_id, count in alias_counts.items() if count == 1]
+    all_ids = list(alias_counts)
+    keys = [a["source_key"] for a in aliases]
+    accounts = _ex(
+        "SELECT e.customer_id,e.source_key,e.tier,e.points_balance,e.points_lifetime,e.enrolment_date "
+        "FROM crm_loyalty_enrolment e WHERE e.source_key=ANY(%s) "
+        "OR (e.source_key IS NULL AND e.customer_id=ANY(%s))",
+        (keys, all_ids), fetch=True) or []
+    ambiguous_legacy = [e for e in accounts if not e.get("source_key")
+                        and alias_counts.get(e["customer_id"], 0) != 1]
+    if ambiguous_legacy and (not requested or any(
+            e["customer_id"] == aliases[0]["source_customer_id"]
+            for e in ambiguous_legacy)):
+        raise HTTPException(
+            status_code=409,
+            detail="Loyalty account provenance requires review; select an account after its exact source is linked",
+        )
+    accounts = [e for e in accounts if e.get("source_key") or e["customer_id"] in safe_ids]
+    if requested:
+        chosen = next(a for a in aliases if a["source_key"] == requested)
+        accounts = [e for e in accounts if e.get("source_key") == requested or
+                    (not e.get("source_key") and chosen["source_customer_id"] in safe_ids
+                     and e["customer_id"] == chosen["source_customer_id"])]
+    # A source-qualified request selects its alias; absent enrollment is valid
+    # for preview. Without one, a person with more than one account must choose.
+    if not requested and len(accounts) > 1:
+        raise HTTPException(status_code=409, detail="Multiple loyalty accounts; supply an exact source_key")
+    account = accounts[0] if accounts else None
+    matching = [a for a in aliases if account and (
+        (account.get("source_key") and a["source_key"] == account["source_key"]) or
+        (not account.get("source_key") and a["source_customer_id"] == account["customer_id"]))]
+    if account and not requested and len(matching) != 1:
+        raise HTTPException(status_code=409, detail="Loyalty account provenance is ambiguous; supply an exact source_key")
+    selected = aliases[0] if requested else (matching[0] if matching else None)
+    available = [{**a, "enrolled": any(
+        e.get("source_key") == a["source_key"] or
+        (not e.get("source_key") and a["source_customer_id"] in safe_ids
+         and e["customer_id"] == a["source_customer_id"]) for e in accounts)}
+                 for a in aliases]
+    return ident, selected, account, available
+
+
 # --------------------------------------------------------------------------- #
 # Idempotent supporting tables (features with no existing crm_* home)          #
 # --------------------------------------------------------------------------- #
 def _ensure_cl_tables():
     stmts = [
+        # Older live identity snapshots predate the persisted source_key column.
+        # Keep the canonical alias contract available before any CRM linkage DDL
+        # references it; the value is deterministic and source-qualified.
+        "ALTER TABLE customer_identity ADD COLUMN IF NOT EXISTS source_key text",
         "CREATE TABLE IF NOT EXISTS crm_assignment ("
         " customer_id text PRIMARY KEY, assignee_user_id text, assignee_name text,"
         " assigned_by text, assigned_at timestamptz DEFAULT now())",
@@ -638,6 +775,12 @@ def _ensure_cl_tables():
         " id serial PRIMARY KEY, name text, channel text, body text,"
         " bsp_status text DEFAULT 'approved', created_by text,"
         " created_at timestamptz DEFAULT now())",
+        "ALTER TABLE crm_loyalty_enrolment ADD COLUMN IF NOT EXISTS source_key text",
+        "UPDATE crm_loyalty_enrolment e SET source_key=x.source_key FROM ("
+        "SELECT source_customer_id,MIN(" + _identity_source_key_sql() + ") source_key FROM customer_identity "
+        "GROUP BY source_customer_id HAVING COUNT(DISTINCT person_id)=1 AND "
+        "COUNT(DISTINCT " + _identity_source_key_sql() + ")=1) x "
+        "WHERE e.source_key IS NULL AND e.customer_id=x.source_customer_id",
         "CREATE TABLE IF NOT EXISTS crm_lookbook ("
         " id serial PRIMARY KEY, customer_id text, title text, description text,"
         " items jsonb DEFAULT '[]'::jsonb, created_by text,"
@@ -686,6 +829,49 @@ def _ensure_cl_tables():
         " bsp_status text DEFAULT 'approved', created_by text,"
         " created_at timestamptz DEFAULT now())",
     ]
+    # CRM data predates clean identity.  These additive links make new writes
+    # canonical and backfill only rows whose old bare ID has exactly one person.
+    # Ambiguous rows stay linked to their immutable legacy value and are auditable.
+    for table in ("crm_assignment", "crm_preferences", "crm_consent",
+                  "crm_lookbook", "crm_lookbook_interest", "crm_wishlist",
+                  "crm_moment", "crm_social_handle", "crm_social_feedback",
+                  "crm_interactions", "crm_tasks", "crm_customer_tags"):
+        stmts.extend([
+            "ALTER TABLE " + table + " ADD COLUMN IF NOT EXISTS person_id bigint",
+            "ALTER TABLE " + table + " ADD COLUMN IF NOT EXISTS source_key text",
+            "CREATE INDEX IF NOT EXISTS idx_" + table + "_person ON " + table + "(person_id)",
+        ])
+    stmts.extend([
+        "CREATE TABLE IF NOT EXISTS crm_identity_link_audit ("
+        " id bigserial PRIMARY KEY, table_name text NOT NULL, record_id text NOT NULL,"
+        " legacy_customer_id text, person_id bigint, source_key text, status text NOT NULL,"
+        " detail text, linked_at timestamptz NOT NULL DEFAULT now())",
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_crm_identity_link_backfill ON "
+        "crm_identity_link_audit(table_name,record_id,status) WHERE status='backfilled'",
+        "INSERT INTO crm_identity_link_audit(table_name,record_id,legacy_customer_id,person_id,status,detail) "
+        "SELECT 'crm_assignment',customer_id,customer_id,MIN(ci.person_id),'backfilled','unique legacy alias' "
+        "FROM crm_assignment a JOIN customer_identity ci ON ci.source_customer_id=a.customer_id "
+        "WHERE a.person_id IS NULL GROUP BY customer_id HAVING COUNT(DISTINCT ci.person_id)=1 "
+        "ON CONFLICT DO NOTHING",
+        "UPDATE crm_assignment a SET person_id=x.person_id FROM (SELECT source_customer_id,MIN(person_id) person_id "
+        "FROM customer_identity GROUP BY source_customer_id HAVING COUNT(DISTINCT person_id)=1) x "
+        "WHERE a.person_id IS NULL AND a.customer_id=x.source_customer_id",
+    ])
+    for table in ("crm_preferences", "crm_consent", "crm_lookbook",
+                  "crm_lookbook_interest", "crm_wishlist", "crm_moment",
+                  "crm_social_handle", "crm_social_feedback", "crm_interactions",
+                  "crm_tasks", "crm_customer_tags"):
+        stmts.extend([
+            "UPDATE " + table + " o SET person_id=x.person_id FROM "
+            "(SELECT source_customer_id,MIN(person_id) person_id FROM customer_identity "
+            "GROUP BY source_customer_id HAVING COUNT(DISTINCT person_id)=1) x "
+            "WHERE o.person_id IS NULL AND o.customer_id=x.source_customer_id",
+            "INSERT INTO crm_identity_link_audit(table_name,record_id,legacy_customer_id,person_id,status,detail) "
+            "SELECT '" + table + "',o.ctid::text,o.customer_id,o.person_id,'backfilled','unique legacy alias' "
+            "FROM " + table + " o WHERE o.person_id IS NOT NULL AND NOT EXISTS ("
+            "SELECT 1 FROM crm_identity_link_audit a WHERE a.table_name='" + table +
+            "' AND a.record_id=o.ctid::text AND a.status='backfilled')",
+        ])
     for s in stmts:
         try:
             _ex(s)
@@ -861,36 +1047,32 @@ def _nba_action(r):
 # STAGE 1 — Customers grid, 360 profile, NBA, timeline, churn, assignment      #
 # --------------------------------------------------------------------------- #
 def _grid_base():
-    """Cached per-customer aggregation backing the customers grid (one row per
-    customer_id). No user input → executed via run_query (cached, no param
-    binding so BASE_FILTERS' literal % is safe). Excludes assignment, which is
-    merged live per request."""
-    rec = ("CASE WHEN b.last_order_date " + _ISO +
-           " THEN (CURRENT_DATE - b.last_order_date::date) END")
+    """Canonical people backing the grid: exactly one row per person_id."""
+    rec = ("CASE WHEN cp.last_purchase " + _ISO +
+           " THEN (CURRENT_DATE - cp.last_purchase::date) END")
     sql = (
-        "WITH s12 AS ("
-        " SELECT s.customer_id, SUM(s.total_sales_kes::numeric) AS spend12 "
-        " FROM all_sales s WHERE s.customer_id IS NOT NULL AND s.customer_id<>'' "
-        " AND s.sale_date " + _ISO +
-        " AND s.sale_date::date >= CURRENT_DATE - INTERVAL '12 months' AND " +
-        A.BASE_FILTERS + " GROUP BY s.customer_id), "
-        "b AS ("
-        " SELECT ac.customer_id, "
-        "  NULLIF(TRIM(MAX(COALESCE(ac.first_name,''))||' '||MAX(COALESCE(ac.last_name,''))),'') AS nm, "
-        "  SUM(ac.total_orders) AS orders, SUM(ac.total_spend_kes::numeric) AS spend, "
-        "  MAX(NULLIF(ac.email,'')) AS email, MAX(NULLIF(ac.phone,'')) AS phone, "
-        "  MAX(NULLIF(ac.city,'')) AS city, MAX(ac.last_order_date) AS last_order_date "
-        " FROM all_customers ac GROUP BY ac.customer_id) "
-        "SELECT b.customer_id, COALESCE(b.nm,'Guest') AS customer_name, "
-        " COALESCE(b.orders,0) AS total_orders, COALESCE(b.spend,0) AS total_sales, "
-        " CASE WHEN COALESCE(b.orders,0)>0 THEN ROUND(COALESCE(b.spend,0)/b.orders,2) ELSE 0 END AS avg_order_value, "
-        " b.last_order_date AS last_purchase_date, (" + rec + ") AS days_since_last_purchase, "
-        " b.city, b.email, b.phone, (b.email IS NOT NULL) AS has_email, (b.phone IS NOT NULL) AS has_phone, "
-        " COALESCE(s.spend12,0) AS spend_12mo_kes, "
-        " COALESCE(le.tier, " + _tier_case("COALESCE(s.spend12,0)") + ") AS loyalty_tier, " +
-        _rfm_case("COALESCE(b.orders,0)", rec) + " AS rfm_tier "
-        "FROM b LEFT JOIN s12 s ON s.customer_id=b.customer_id "
-        "LEFT JOIN crm_loyalty_enrolment le ON le.customer_id=b.customer_id")
+        "WITH s12 AS (SELECT ci.person_id,SUM(s.total_sales_kes::numeric) spend12 "
+        "FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+        "AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+        "WHERE s.sale_date " + _ISO + " AND s.sale_date::date>=CURRENT_DATE-INTERVAL '12 months' "
+        "AND " + A.BASE_FILTERS + " GROUP BY ci.person_id), aliases AS ("
+        "SELECT person_id,string_agg(" + _identity_source_key_sql() + ", ' | ' ORDER BY " +
+        _identity_source_key_sql() + ") provenance FROM customer_identity GROUP BY person_id), cities AS ("
+        "SELECT person_id,(array_agg(city ORDER BY n DESC,city))[1] city FROM ("
+        "SELECT ci.person_id,TRIM(ac.city) city,COUNT(*) n FROM all_customers ac "
+        "JOIN customer_identity ci ON ci.source_customer_id=ac.customer_id::text "
+        "AND ci.store_id=ac.store_id AND ci.source_system="
+        "CASE WHEN ac.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+        "WHERE NULLIF(TRIM(ac.city),'') IS NOT NULL GROUP BY ci.person_id,TRIM(ac.city)) v GROUP BY person_id) "
+        "SELECT ('person:'||cp.person_id)::text customer_id,cp.person_id,COALESCE(cp.name,'Guest') customer_name,"
+        "COALESCE(cp.total_orders,0) total_orders,COALESCE(cp.total_spend_kes,0) total_sales,"
+        "CASE WHEN COALESCE(cp.total_orders,0)>0 THEN ROUND(cp.total_spend_kes/cp.total_orders,2) ELSE 0 END avg_order_value,"
+        "cp.last_purchase last_purchase_date,(" + rec + ") days_since_last_purchase,cities.city,cp.email,cp.phone,"
+        "(NULLIF(cp.email,'') IS NOT NULL) has_email,(NULLIF(cp.phone,'') IS NOT NULL) has_phone,"
+        "COALESCE(s12.spend12,0) spend_12mo_kes," + _tier_case("COALESCE(s12.spend12,0)") + " loyalty_tier,"
+        + _rfm_case("COALESCE(cp.total_orders,0)", rec) + " rfm_tier,aliases.provenance "
+        "FROM customer_people cp LEFT JOIN s12 ON s12.person_id=cp.person_id "
+        "LEFT JOIN aliases USING(person_id) LEFT JOIN cities USING(person_id)")
     return A.run_query(sql) or []
 
 
@@ -900,8 +1082,8 @@ def _grid_matched(flt, request):
     list of (row, assignee_name) tuples in base order."""
     flt = flt or {}
     base = _grid_base()
-    asg_map = {r["customer_id"]: r for r in (_ex(
-        "SELECT customer_id, assignee_user_id, assignee_name FROM crm_assignment",
+    asg_map = {str(r["person_id"]): r for r in (_ex(
+        "SELECT person_id, assignee_user_id, assignee_name FROM crm_assignment WHERE person_id IS NOT NULL",
         fetch=True) or [])}
 
     q = (flt.get("q") or "").strip().lower()
@@ -921,13 +1103,15 @@ def _grid_matched(flt, request):
 
     matched = []
     for r in base:
-        asg = asg_map.get(r["customer_id"])
+        asg = asg_map.get(str(r.get("person_id")))
         assignee_uid = asg["assignee_user_id"] if asg else None
         assignee_name = asg["assignee_name"] if asg else None
         if q:
             hay = (str(r.get("customer_name") or "").lower() + "\x00" +
                    str(r.get("email") or "").lower() + "\x00" +
-                   str(r.get("phone") or "") + "\x00" + str(r["customer_id"]))
+                   str(r.get("phone") or "") + "\x00" +
+                   str(r.get("provenance") or "").lower() + "\x00" +
+                   str(r["customer_id"]))
             if q not in hay:
                 continue
         if cities and (r.get("city") or "") not in cities:
@@ -994,6 +1178,8 @@ def _reg_customers(app):
         for r, assignee_name in page:
             out.append({
                 "customer_id": r["customer_id"],
+                "person_id": r.get("person_id"),
+                "provenance": r.get("provenance"),
                 "customer_name": r["customer_name"],
                 "loyalty_tier": r["loyalty_tier"],
                 "rfm_tier": r["rfm_tier"],
@@ -1013,7 +1199,7 @@ def _reg_customers(app):
     @app.get("/api/customers/grid/facets")
     def cl_customers_facets(request: Request):
         total = A.run_query(
-            "SELECT COUNT(DISTINCT customer_id) AS n FROM all_customers") or [{}]
+            "SELECT COUNT(*) AS n FROM customer_people") or [{}]
         cities = A.run_query(
             "SELECT NULLIF(city,'') AS city, COUNT(*) n FROM all_customers "
             "WHERE NULLIF(city,'') IS NOT NULL GROUP BY city ORDER BY n DESC LIMIT 100") or []
@@ -1042,21 +1228,22 @@ def _reg_customers(app):
     @app.get("/api/customers/grid/export", response_class=PlainTextResponse)
     def cl_customers_export(request: Request):
         rows = A.run_query(
-            "SELECT customer_id, "
-            " COALESCE(NULLIF(TRIM(MAX(COALESCE(first_name,''))||' '||MAX(COALESCE(last_name,''))),''),'Guest') AS name, "
-            " MAX(NULLIF(email,'')) AS email, MAX(NULLIF(phone,'')) AS phone, "
-            " MAX(NULLIF(city,'')) AS city, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS last_order "
-            "FROM all_customers GROUP BY customer_id ORDER BY spend DESC NULLS LAST "
+            "SELECT cp.person_id,COALESCE(cp.name,'Guest') name,cp.email,cp.phone,NULL::text city,"
+            "cp.total_orders orders,cp.total_spend_kes spend,cp.last_purchase last_order,"
+            "string_agg(" + _identity_source_key_sql("ci") + ",' | ' ORDER BY " +
+            _identity_source_key_sql("ci") + ") provenance "
+            "FROM customer_people cp LEFT JOIN customer_identity ci USING(person_id) "
+            "GROUP BY cp.person_id,cp.name,cp.email,cp.phone,cp.total_orders,cp.total_spend_kes,cp.last_purchase "
+            "ORDER BY spend DESC NULLS LAST "
             "LIMIT 5000") or []
-        lines = ["customer_id,name,email,phone,city,total_orders,total_spend_kes,last_order_date"]
+        lines = ["person_id,canonical_id,source_provenance,name,email,phone,city,total_orders,total_spend_kes,last_order_date"]
 
         def _csv(v):
             s = "" if v is None else str(v)
             return '"' + s.replace('"', '""') + '"' if ("," in s or '"' in s) else s
         for r in rows:
             lines.append(",".join(_csv(x) for x in [
-                r["customer_id"], r["name"], r["email"], r["phone"], r["city"],
+                r["person_id"], "person:" + str(r["person_id"]), r["provenance"], r["name"], r["email"], r["phone"], r["city"],
                 _int(r["orders"]), round(_num(r["spend"]), 2), r["last_order"]]))
         return "\n".join(lines)
 
@@ -1069,7 +1256,7 @@ def _reg_customers(app):
         flt = payload.get("filters") or {}
         cap = _clamp(payload.get("limit"), 1, 50000, 50000)
         matched = _grid_matched(flt, request)
-        cols = ["customer_id", "customer_name", "loyalty_tier", "rfm_tier",
+        cols = ["person_id", "canonical_id", "source_provenance", "customer_name", "loyalty_tier", "rfm_tier",
                 "spend_12mo_kes", "total_sales", "total_orders", "avg_order_value",
                 "last_purchase_date", "days_since_last_purchase", "city",
                 "assignee_name", "phone", "email"]
@@ -1081,7 +1268,7 @@ def _reg_customers(app):
                     if ("," in s or '"' in s or "\n" in s) else s)
         for r, assignee_name in matched[:cap]:
             lines.append(",".join(_csv(x) for x in [
-                r["customer_id"], r.get("customer_name"), r.get("loyalty_tier"),
+                r.get("person_id"), r["customer_id"], r.get("provenance"), r.get("customer_name"), r.get("loyalty_tier"),
                 r.get("rfm_tier"), round(_num(r.get("spend_12mo_kes")), 2),
                 round(_num(r.get("total_sales")), 2), _int(r.get("total_orders")),
                 round(_num(r.get("avg_order_value")), 2), r.get("last_purchase_date"),
@@ -1097,15 +1284,18 @@ def _reg_customers(app):
     def cl_my_customers(request: Request):
         uid, _n, _r = _actor(request)
         rows = _ex(
-            "WITH a AS (SELECT customer_id FROM crm_assignment WHERE assignee_user_id=%s) "
-            "SELECT a.customer_id, " + _name_sql("a") + " AS customer_name, "
-            " (SELECT SUM(total_spend_kes::numeric) FROM all_customers ac WHERE ac.customer_id=a.customer_id) AS total_sales, "
-            " (SELECT SUM(total_orders) FROM all_customers ac WHERE ac.customer_id=a.customer_id) AS total_orders, "
-            " (SELECT MAX(last_order_date) FROM all_customers ac WHERE ac.customer_id=a.customer_id) AS last_purchase_date "
-            "FROM a ORDER BY total_sales DESC NULLS LAST LIMIT 500",
+            "SELECT ('person:'||cp.person_id)::text customer_id,cp.person_id,COALESCE(cp.name,'Guest') customer_name,"
+            "cp.total_spend_kes total_sales,cp.total_orders,cp.last_purchase last_purchase_date,"
+            "string_agg(" + _identity_source_key_sql("ci") + ",' | ' ORDER BY " +
+            _identity_source_key_sql("ci") + ") provenance "
+            "FROM crm_assignment a JOIN customer_people cp ON cp.person_id=a.person_id "
+            "LEFT JOIN customer_identity ci ON ci.person_id=cp.person_id WHERE a.assignee_user_id=%s "
+            "GROUP BY cp.person_id,cp.name,cp.total_spend_kes,cp.total_orders,cp.last_purchase "
+            "ORDER BY total_sales DESC NULLS LAST LIMIT 500",
             (uid,), fetch=True) or []
         return [{
             "customer_id": r["customer_id"],
+            "person_id": r["person_id"], "provenance": r["provenance"],
             "customer_name": r["customer_name"],
             "total_sales": round(_num(r["total_sales"]), 2),
             "total_orders": _int(r["total_orders"]),
@@ -1117,6 +1307,7 @@ def _reg_customers(app):
         prof = _customer_profile(cid)
         if not prof:
             raise HTTPException(status_code=404, detail="Customer not found")
+        pid = prof["person_id"]
         products = _ex(
             "SELECT s.product_title, "
             " COALESCE(MAX(inv.style_name), s.product_title) AS style_name, "
@@ -1130,9 +1321,11 @@ def _reg_customers(app):
             "  SELECT sku, MAX(style_name) style_name, MAX(color_print) color_print, "
             "  MAX(sub_category) sub_category FROM all_inventory GROUP BY sku) inv "
             "  ON inv.sku = s.variant_sku "
-            "WHERE s.customer_id=%s AND s.sale_kind IN ('sale','order') "
+            "JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id "
+            "AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            "WHERE ci.person_id=%s AND s.sale_kind IN ('sale','order') "
             "GROUP BY s.product_title ORDER BY total_sales DESC NULLS LAST LIMIT 100",
-            (cid,), fetch=True) or []
+            (pid,), fetch=True) or []
         return {
             "profile": prof,
             "products": [{
@@ -1166,15 +1359,19 @@ def _reg_customers(app):
 
     @app.get("/api/customers/{cid}/timeline")
     def cl_customer_timeline(request: Request, cid: str):
+        ident = _person_ref(cid, required=True)
+        pid = ident["person_id"]
         events = []
         purchases = _ex(
             "SELECT s.sale_date AS ts, COUNT(DISTINCT s.order_id) AS orders, "
             " SUM(s.total_sales_kes::numeric) AS amt, "
             " STRING_AGG(DISTINCT s.product_title, ', ') AS items "
-            "FROM all_sales s WHERE s.customer_id=%s AND s.sale_kind IN ('sale','order') "
+            "FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            "AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            "WHERE ci.person_id=%s AND s.sale_kind IN ('sale','order') "
             " AND s.sale_date " + _ISO +
             " GROUP BY s.sale_date ORDER BY s.sale_date DESC LIMIT 50",
-            (cid,), fetch=True) or []
+            (pid,), fetch=True) or []
         for p in purchases:
             items = (p["items"] or "")[:120]
             events.append({
@@ -1185,8 +1382,8 @@ def _reg_customers(app):
             })
         inter = _ex(
             "SELECT type, channel, notes, user_name, created_at FROM crm_interactions "
-            "WHERE customer_id=%s ORDER BY created_at DESC LIMIT 50",
-            (cid,), fetch=True) or []
+            "WHERE person_id=%s OR (person_id IS NULL AND customer_id=ANY(%s)) ORDER BY created_at DESC LIMIT 50",
+            (pid, ident.get("legacy_ids") or []), fetch=True) or []
         for i in inter:
             kind = "note" if i["type"] == "note" else (
                 "message" if i["type"] == "message" else "note")
@@ -1200,8 +1397,8 @@ def _reg_customers(app):
             })
         tasks = _ex(
             "SELECT title, due_date, status, created_at FROM crm_tasks "
-            "WHERE customer_id=%s ORDER BY created_at DESC LIMIT 25",
-            (cid,), fetch=True) or []
+            "WHERE person_id=%s OR (person_id IS NULL AND customer_id=ANY(%s)) ORDER BY created_at DESC LIMIT 25",
+            (pid, ident.get("legacy_ids") or []), fetch=True) or []
         for t in tasks:
             events.append({
                 "kind": "task",
@@ -1223,17 +1420,19 @@ def _reg_customers(app):
         page = _clamp(request.query_params.get("page"), 1, 100000, 1)
         page_size = _clamp(request.query_params.get("page_size"), 1, 100, 20)
         offset = (page - 1) * page_size
-        cid_l = (cid or "")[:128]
+        ident = _person_ref(cid, required=True)
         src_sql = ("CASE WHEN s.country='Online' "
                    "OR bool_or(s.channel='Online') "
                    "OR s.pos_location_name ILIKE '%%online%%' "
                    "THEN 'Online' ELSE 'Retail POS' END")
         total = _num((_ex(
             "SELECT COUNT(*) AS c FROM ("
-            " SELECT 1 FROM all_sales s WHERE s.customer_id=%s "
+            " SELECT 1 FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            " WHERE ci.person_id=%s "
             "  AND s.sale_date " + _ISO +
             "  GROUP BY s.order_id, s.sale_kind, s.sale_date) t",
-            (cid_l,), fetch=True) or [{}])[0].get("c"))
+            (ident["person_id"],), fetch=True) or [{}])[0].get("c"))
         rows = _ex(
             "SELECT s.sale_date AS ts, s.order_id, s.sale_kind, "
             " COALESCE(NULLIF(MAX(s.channel),''), MAX(s.pos_location_name)) AS channel, "
@@ -1241,13 +1440,15 @@ def _reg_customers(app):
             " SUM(s.total_sales_kes::numeric) AS amount, "
             " SUM(s.ordered_item_quantity) AS units, "
             " STRING_AGG(DISTINCT s.product_title, ', ') AS items "
-            "FROM all_sales s WHERE s.customer_id=%s "
+            "FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            "WHERE ci.person_id=%s "
             " AND s.sale_date " + _ISO +
             " GROUP BY s.order_id, s.sale_kind, s.sale_date, s.country, "
             "  s.pos_location_name "
             " ORDER BY s.sale_date DESC, s.order_id DESC "
             " LIMIT %s OFFSET %s",
-            (cid_l, page_size, offset), fetch=True) or []
+            (ident["person_id"], page_size, offset), fetch=True) or []
         txns = []
         for r in rows:
             kind = (r["sale_kind"] or "").lower()
@@ -1309,9 +1510,11 @@ def _reg_customers(app):
 
     @app.get("/api/customers/{cid}/assignment")
     def cl_customer_assignment_get(request: Request, cid: str):
+        ident = _person_ref(cid, required=True)
         row = _one(
-            "SELECT assignee_user_id, assignee_name FROM crm_assignment WHERE customer_id=%s",
-            (cid,))
+            "SELECT assignee_user_id, assignee_name FROM crm_assignment WHERE person_id=%s "
+            "OR (person_id IS NULL AND customer_id=ANY(%s)) ORDER BY (person_id IS NOT NULL) DESC LIMIT 1",
+            (ident["person_id"], ident["legacy_ids"]))
         return {
             "assignee_user_id": row["assignee_user_id"] if row else None,
             "assignee_name": row["assignee_name"] if row else None,
@@ -1321,6 +1524,7 @@ def _reg_customers(app):
     def cl_customer_assignment_set(request: Request, cid: str,
                                    payload: dict = Body(default=None)):
         uid, name, _r = _actor(request)
+        ident = _person_ref(cid, required=True)
         payload = payload or {}
         target_uid = payload.get("assignee_user_id") or uid
         urow = _one("SELECT name, email FROM app_users WHERE user_id=%s", (target_uid,))
@@ -1328,12 +1532,13 @@ def _reg_customers(app):
         if not payload.get("assignee_user_id"):
             target_name = name
         _ex(
-            "INSERT INTO crm_assignment (customer_id, assignee_user_id, assignee_name, assigned_by) "
-            "VALUES (%s,%s,%s,%s) ON CONFLICT (customer_id) DO UPDATE "
-            "SET assignee_user_id=EXCLUDED.assignee_user_id, "
+            "INSERT INTO crm_assignment (customer_id, person_id, source_key, assignee_user_id, assignee_name, assigned_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (customer_id) DO UPDATE "
+            "SET person_id=EXCLUDED.person_id,source_key=EXCLUDED.source_key, "
+            "assignee_user_id=EXCLUDED.assignee_user_id, "
             "assignee_name=EXCLUDED.assignee_name, assigned_by=EXCLUDED.assigned_by, "
-            "assigned_at=now()", (cid, target_uid, target_name, name))
-        A._crm_audit("customer", cid, "assign", "→ " + str(target_name), request)
+            "assigned_at=now()", (ident["ref"], ident["person_id"], ident["source_key"], target_uid, target_name, name))
+        A._crm_audit("customer", ident["ref"], "assign", "→ " + str(target_name), request)
         return {"ok": True, "assignee_user_id": target_uid, "assignee_name": target_name}
 
     @app.put("/api/customers/{cid}/assignment")
@@ -1342,11 +1547,13 @@ def _reg_customers(app):
         # The grid/profile UI sends PUT to assign (assignee_user_id + name) and
         # to unassign (assignee_user_id: null).
         _uid, name, _r = _actor(request)
+        ident = _person_ref(cid, required=True)
         payload = payload or {}
         target_uid = payload.get("assignee_user_id")
         if not target_uid:
-            _ex("DELETE FROM crm_assignment WHERE customer_id=%s", (cid,))
-            A._crm_audit("customer", cid, "unassign", "cleared", request)
+            _ex("DELETE FROM crm_assignment WHERE person_id=%s OR (person_id IS NULL AND customer_id=ANY(%s))",
+                (ident["person_id"], ident["legacy_ids"]))
+            A._crm_audit("customer", ident["ref"], "unassign", "cleared", request)
             return {"ok": True, "assignee_user_id": None, "assignee_name": None}
         target_name = (payload.get("assignee_name") or "").strip()
         if not target_name:
@@ -1354,78 +1561,89 @@ def _reg_customers(app):
                         (target_uid,))
             target_name = (urow.get("name") or urow.get("email")) if urow else target_uid
         _ex(
-            "INSERT INTO crm_assignment (customer_id, assignee_user_id, assignee_name, assigned_by) "
-            "VALUES (%s,%s,%s,%s) ON CONFLICT (customer_id) DO UPDATE "
-            "SET assignee_user_id=EXCLUDED.assignee_user_id, "
+            "INSERT INTO crm_assignment (customer_id, person_id, source_key, assignee_user_id, assignee_name, assigned_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s) ON CONFLICT (customer_id) DO UPDATE "
+            "SET person_id=EXCLUDED.person_id,source_key=EXCLUDED.source_key,assignee_user_id=EXCLUDED.assignee_user_id, "
             "assignee_name=EXCLUDED.assignee_name, assigned_by=EXCLUDED.assigned_by, "
-            "assigned_at=now()", (cid, target_uid, target_name, name))
-        A._crm_audit("customer", cid, "assign", "→ " + str(target_name), request)
+            "assigned_at=now()", (ident["ref"], ident["person_id"], ident["source_key"], target_uid, target_name, name))
+        A._crm_audit("customer", ident["ref"], "assign", "→ " + str(target_name), request)
         return {"ok": True, "assignee_user_id": target_uid, "assignee_name": target_name}
 
     @app.post("/api/customers/{cid}/forget")
     def cl_customer_forget(request: Request, cid: str):
         # GDPR erasure of CRM-held personal data for this customer (the
         # read-only warehouse rows are not mutated here).
+        ident = _person_ref(cid, required=True)
         for tbl in ("crm_assignment", "crm_preferences", "crm_consent",
                     "crm_interactions", "crm_wishlist", "crm_lookbook",
                     "crm_moment", "crm_customer_tags"):
             try:
-                _ex("DELETE FROM " + tbl + " WHERE customer_id=%s", (cid,))
+                clause, bound = _person_owned_clause(tbl, ident)
+                _ex("DELETE FROM " + tbl + " WHERE " + clause, tuple(bound))
             except Exception:
                 pass
-        try:
-            _ex("UPDATE crm_customer SET first_name=NULL, last_name=NULL, phone=NULL, "
-                "email=NULL, dob=NULL WHERE customer_id=%s", (cid,))
-        except Exception:
-            pass
-        A._crm_audit("customer", cid, "forget", "GDPR erasure", request)
+        # crm_customer is source-account keyed without source provenance in
+        # older installs; do not erase it through a canonical person route.
+        A._crm_audit("customer", ident["ref"], "forget", "GDPR erasure", request)
         return {"ok": True}
 
 
 def _customer_profile(cid):
-    row = _one(
-        "SELECT customer_id, "
-        " COALESCE(NULLIF(TRIM(MAX(COALESCE(first_name,''))||' '||MAX(COALESCE(last_name,''))),''),'Guest') AS customer_name, "
-        " MAX(NULLIF(phone,'')) AS phone, MAX(NULLIF(email,'')) AS email, "
-        " MAX(NULLIF(country,'')) AS country, SUM(total_orders) AS orders, "
-        " SUM(total_spend_kes::numeric) AS spend, MIN(NULLIF(first_order_date,'')) AS first_order, "
-        " MAX(last_order_date) AS last_order "
-        "FROM all_customers WHERE customer_id=%s GROUP BY customer_id", (cid,))
+    ident = _person_ref(cid)
+    if not ident:
+        return None
+    pid = ident["person_id"]
+    row = _one("SELECT person_id,COALESCE(name,'Guest') customer_name,phone,email,"
+               "total_orders orders,total_spend_kes spend,first_purchase first_order,last_purchase last_order "
+               "FROM customer_people WHERE person_id=%s", (pid,))
     if not row:
         return None
-    # CRM override (manual contacts / edits)
-    ov = _one("SELECT first_name, last_name, phone, email FROM crm_customer WHERE customer_id=%s", (cid,))
     name = row["customer_name"]
     phone = row["phone"]
     email = row["email"]
-    if ov:
-        nm = ((ov.get("first_name") or "") + " " + (ov.get("last_name") or "")).strip()
-        if nm:
-            name = nm
-        phone = ov.get("phone") or phone
-        email = ov.get("email") or email
-    spend12 = _crm_spend12(cid)
-    enr = _one("SELECT tier FROM crm_loyalty_enrolment WHERE customer_id=%s", (cid,))
+    spend12 = _crm_spend12("person:" + str(pid))
     orders = _int(row["orders"])
     spend = _num(row["spend"])
     rec = _recency_days(row["last_order"])
+    aliases = _person_aliases(pid)
+    # Loyalty principals/balances are intentionally account-owned.  We expose
+    # only exact source aliases; callers must select one for loyalty operations.
+    loyalty_accounts = _ex(
+        "SELECT e.customer_id,e.tier,e.points_balance FROM crm_loyalty_enrolment e "
+        "WHERE e.customer_id=ANY(%s)", ([a["source_customer_id"] for a in aliases],),
+        fetch=True) or []
     return {
-        "customer_id": cid,
+        "customer_id": "person:" + str(pid),
+        "person_id": pid,
+        "source_aliases": aliases,
+        "loyalty_accounts": [{"customer_id": a["customer_id"], "tier": a.get("tier"),
+                              "points_balance": _num(a.get("points_balance"))}
+                             for a in loyalty_accounts],
         "customer_name": name,
         "phone": phone,
         "email": email,
-        "customer_country": row["country"],
+        "customer_country": None,
         "first_purchase_date": row["first_order"],
         "last_purchase_date": row["last_order"],
         "total_sales": round(spend, 2),
         "total_orders": orders,
         "avg_basket": round(spend / orders, 2) if orders else 0,
-        "loyalty_tier": (enr["tier"] if enr else _tier_for_spend(spend12)),
+        # Loyalty accounts remain source-account scoped and are never merged.
+        "loyalty_tier": _tier_for_spend(spend12),
         "rfm_tier": _rfm_tier(orders, rec),
     }
 
 
 def _crm_spend12(cid):
+    ident = _person_ref(cid)
+    if ident:
+        row = _one(
+            "SELECT COALESCE(SUM(s.total_sales_kes::numeric),0) s FROM all_sales s "
+            "JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id "
+            "AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            "WHERE ci.person_id=%s AND s.sale_kind IN ('sale','order') AND s.sale_date " + _ISO +
+            " AND s.sale_date::date >= CURRENT_DATE - INTERVAL '12 months'", (ident["person_id"],))
+        return _num(row["s"]) if row else 0
     row = _one(
         "SELECT COALESCE(SUM(total_sales_kes::numeric),0) AS s FROM all_sales "
         "WHERE customer_id=%s AND sale_kind IN ('sale','order') AND sale_date " + _ISO +
@@ -1510,8 +1728,10 @@ def _reg_tasks_notes(app):
             where.append("t.assignee_user_id=%s")
             params.append(uid)
         if customer_id:
-            where.append("t.customer_id=%s")
-            params.append(customer_id)
+            ident = _person_ref(customer_id, required=True)
+            clause, bound = _person_owned_clause("t", ident)
+            where.append(clause)
+            params.extend(bound)
         wh = (" WHERE " + " AND ".join(where)) if where else ""
         rows = _ex(
             "SELECT t.id, t.title, t.customer_id, t.due_date, t.completed_at, t.status, " +
@@ -1535,12 +1755,13 @@ def _reg_tasks_notes(app):
         if not title:
             raise HTTPException(status_code=400, detail="title is required")
         cid = payload.get("customer_id")
+        ident = _person_ref(cid, required=True)
         due = payload.get("due_date") or None
         row = _one(
-            "INSERT INTO crm_tasks (customer_id, title, due_date, status, "
+            "INSERT INTO crm_tasks (customer_id, person_id, source_key, title, due_date, status, "
             "assignee_user_id, brand_code, created_at) "
-            "VALUES (%s,%s,%s,'open',%s,%s,now()) RETURNING id",
-            (cid, title, due, uid, _DEF))
+            "VALUES (%s,%s,%s,%s,%s,'open',%s,%s,now()) RETURNING id",
+            (ident["ref"], ident["person_id"], ident["source_key"], title, due, uid, _DEF))
         A._crm_audit("task", row["id"] if row else "", "create", title, request)
         return {"ok": True, "task_id": str(row["id"]) if row else None}
 
@@ -1556,8 +1777,10 @@ def _reg_tasks_notes(app):
         where = "WHERE i.type='note'"
         params = []
         if customer_id:
-            where += " AND i.customer_id=%s"
-            params.append(customer_id)
+            ident = _person_ref(customer_id, required=True)
+            clause, bound = _person_owned_clause("i", ident)
+            where += " AND " + clause
+            params.extend(bound)
         rows = _ex(
             "SELECT i.id, i.customer_id, i.notes AS body, i.user_name, i.created_at, " +
             _name_sql("i") + " AS customer_name FROM crm_interactions i " + where +
@@ -1577,11 +1800,13 @@ def _reg_tasks_notes(app):
         payload = payload or {}
         body = (payload.get("body") or "").strip()
         cid = payload.get("customer_id")
+        ident = _person_ref(cid, required=True)
         if not body or not cid:
             raise HTTPException(status_code=400, detail="customer_id and body required")
         row = _one(
-            "INSERT INTO crm_interactions (customer_id, type, notes, user_name, created_at) "
-            "VALUES (%s,'note',%s,%s,now()) RETURNING id", (cid, body, name))
+            "INSERT INTO crm_interactions (customer_id, person_id, source_key, type, notes, user_name, created_at) "
+            "VALUES (%s,%s,%s,'note',%s,%s,now()) RETURNING id",
+            (ident["ref"], ident["person_id"], ident["source_key"], body, name))
         A._crm_audit("note", row["id"] if row else "", "create", body[:120], request)
         return {"ok": True, "id": str(row["id"]) if row else None}
 
@@ -1596,8 +1821,10 @@ def _reg_tasks_notes(app):
         where = "WHERE i.type='message'"
         params = []
         if customer_id:
-            where += " AND i.customer_id=%s"
-            params.append(customer_id)
+            ident = _person_ref(customer_id, required=True)
+            clause, bound = _person_owned_clause("i", ident)
+            where += " AND " + clause
+            params.extend(bound)
         rows = _ex(
             "SELECT i.id, i.customer_id, i.channel, i.notes AS body, i.user_name, "
             "i.created_at, " + _name_sql("i") + " AS customer_name "
@@ -1618,6 +1845,7 @@ def _reg_tasks_notes(app):
         _uid, name, _r = _actor(request)
         payload = payload or {}
         cid = payload.get("customer_id")
+        ident = _person_ref(cid, required=True)
         body = (payload.get("body") or "").strip()
         channel = (payload.get("channel") or "whatsapp").strip()
         if not cid or not body:
@@ -1625,9 +1853,9 @@ def _reg_tasks_notes(app):
         # No outbound BSP/SMS gateway is wired in this project — the message is
         # logged as an interaction so it appears on the timeline and dashboards.
         row = _one(
-            "INSERT INTO crm_interactions (customer_id, type, channel, notes, outcome, user_name, created_at) "
-            "VALUES (%s,'message',%s,%s,'logged',%s,now()) RETURNING id",
-            (cid, channel, body, name))
+            "INSERT INTO crm_interactions (customer_id, person_id, source_key, type, channel, notes, outcome, user_name, created_at) "
+            "VALUES (%s,%s,%s,'message',%s,%s,'logged',%s,now()) RETURNING id",
+            (ident["ref"], ident["person_id"], ident["source_key"], channel, body, name))
         A._crm_audit("message", cid, "send", channel + ": " + body[:80], request)
         return {"ok": True, "id": str(row["id"]) if row else None, "delivery": "logged"}
 
@@ -1895,18 +2123,18 @@ def _reg_bi(app):
         w = _sales_where(date_from, date_to)
         lim = _clamp(limit, 1, 200, 20)
         rows = _q(
-            "WITH agg AS (SELECT s.customer_id, "
+            "WITH agg AS (SELECT ci.person_id, "
             " SUM(s.total_sales_kes) AS sales, COUNT(DISTINCT s.order_id) AS orders, "
             " MAX(s.sale_date) AS last_sale "
-            " FROM all_sales s WHERE " + w + " AND s.customer_id IS NOT NULL "
-            " GROUP BY s.customer_id ORDER BY sales DESC LIMIT " + str(lim) + ") "
-            "SELECT a.customer_id, a.sales, a.orders, "
-            " COALESCE((SELECT NULLIF(TRIM(COALESCE(ac.first_name,'')||' '||"
-            "   COALESCE(ac.last_name,'')),'') FROM all_customers ac "
-            "   WHERE ac.customer_id=a.customer_id LIMIT 1),'Guest') AS customer_name "
-            "FROM agg a")
+            " FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            " WHERE " + w + " GROUP BY ci.person_id ORDER BY sales DESC LIMIT " + str(lim) + ") "
+            "SELECT ('person:'||a.person_id)::text customer_id,a.person_id,a.sales,a.orders,COALESCE(cp.name,'Guest') customer_name,"
+            "string_agg(" + _identity_source_key_sql("ci") + ",' | ' ORDER BY " +
+            _identity_source_key_sql("ci") + ") provenance FROM agg a JOIN customer_people cp USING(person_id) "
+            "LEFT JOIN customer_identity ci USING(person_id) GROUP BY a.person_id,a.sales,a.orders,cp.name")
         return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"], "provenance": r["provenance"], "customer_name": r["customer_name"],
             "total_sales": round(_num(r["sales"]), 2),
             "total_orders": _int(r["orders"]),
             "rfm_tier": _tier_label(_num(r["sales"])),
@@ -1938,18 +2166,15 @@ def _reg_bi(app):
         d = _clamp(days, 30, 1095, 180)
         lim = _clamp(limit, 1, 500, 50)
         rows = _q(
-            "WITH c AS (SELECT customer_id, "
-            " MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||COALESCE(last_name,'')),'')) AS nm, "
-            " SUM(total_orders) AS orders, SUM(total_spend_kes::numeric) AS spend, "
-            " MAX(last_order_date) AS last_order_date FROM all_customers "
-            " GROUP BY customer_id) "
-            "SELECT customer_id, COALESCE(nm,'Guest') AS customer_name, "
-            " COALESCE(orders,0) AS orders, COALESCE(spend,0) AS spend, last_order_date "
-            "FROM c WHERE last_order_date " + _ISO +
-            " AND (CURRENT_DATE - last_order_date::date) > " + str(d) +
-            " AND COALESCE(orders,0) >= 2 ORDER BY spend DESC LIMIT " + str(lim))
+            "SELECT ('person:'||cp.person_id)::text customer_id,cp.person_id,COALESCE(cp.name,'Guest') customer_name,"
+            "COALESCE(cp.total_orders,0) orders,COALESCE(cp.total_spend_kes,0) spend,cp.last_purchase last_order_date,"
+            "string_agg(" + _identity_source_key_sql("ci") + ",' | ' ORDER BY " +
+            _identity_source_key_sql("ci") + ") provenance FROM customer_people cp "
+            "LEFT JOIN customer_identity ci USING(person_id) WHERE cp.last_purchase " + _ISO +
+            " AND (CURRENT_DATE-cp.last_purchase::date)>" + str(d) + " AND COALESCE(cp.total_orders,0)>=2 "
+            "GROUP BY cp.person_id,cp.name,cp.total_orders,cp.total_spend_kes,cp.last_purchase ORDER BY spend DESC LIMIT " + str(lim))
         return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"], "provenance": r["provenance"], "customer_name": r["customer_name"],
             "total_sales": round(_num(r["spend"]), 2),
             "total_orders": _int(r["orders"]),
             "last_purchase_date": r["last_order_date"],
@@ -2003,18 +2228,16 @@ def _reg_bi(app):
             return []
         like = "%" + term + "%"
         rows = _ex(
-            "WITH c AS (SELECT customer_id, "
-            " MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||COALESCE(last_name,'')),'')) AS nm, "
-            " MAX(phone) AS phone, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend "
-            " FROM all_customers GROUP BY customer_id) "
-            "SELECT customer_id, COALESCE(nm,'Guest') AS customer_name, phone, "
-            " COALESCE(spend,0) AS spend FROM c "
-            "WHERE nm ILIKE %s OR phone ILIKE %s OR customer_id ILIKE %s "
-            "ORDER BY spend DESC NULLS LAST LIMIT %s",
-            (like, like, like, lim), fetch=True) or []
+            "SELECT ('person:'||cp.person_id)::text customer_id,cp.person_id,COALESCE(cp.name,'Guest') customer_name,"
+            "cp.phone,cp.total_spend_kes spend,string_agg(" + _identity_source_key_sql("ci") +
+            ",' | ' ORDER BY " + _identity_source_key_sql("ci") + ") provenance "
+            "FROM customer_people cp LEFT JOIN customer_identity ci USING(person_id) "
+            "WHERE cp.name ILIKE %s OR cp.phone ILIKE %s OR cp.email ILIKE %s OR cp.person_id::text=%s "
+            "OR EXISTS(SELECT 1 FROM customer_identity x WHERE x.person_id=cp.person_id AND x.source_key ILIKE %s) "
+            "GROUP BY cp.person_id,cp.name,cp.phone,cp.email,cp.total_spend_kes ORDER BY spend DESC NULLS LAST LIMIT %s",
+            (like, like, like, term, like, lim), fetch=True) or []
         return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"], "provenance": r["provenance"], "customer_name": r["customer_name"],
             "phone": r["phone"], "rfm_tier": _tier_label(_num(r["spend"])),
         } for r in rows]
 
@@ -2058,9 +2281,8 @@ def _reg_insights(app):
         # Customer base: totals, tiers, VIP & at-risk counts ------------------ #
         try:
             r = _q1(
-                "WITH c AS (SELECT customer_id, SUM(total_orders) AS orders, "
-                " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS lod "
-                " FROM all_customers GROUP BY customer_id) "
+                "WITH c AS (SELECT person_id,total_orders orders,total_spend_kes spend,last_purchase lod "
+                " FROM customer_people) "
                 "SELECT COUNT(*) AS total, "
                 " COUNT(*) FILTER (WHERE COALESCE(spend,0) < 50000) AS bronze, "
                 " COUNT(*) FILTER (WHERE COALESCE(spend,0) BETWEEN 50000 AND 149999) AS silver, "
@@ -2082,9 +2304,10 @@ def _reg_insights(app):
         # New customers (first-ever sale) in last 30d vs prior 30d ------------ #
         try:
             r = _q1(
-                "WITH firsts AS (SELECT s.customer_id, MIN(s.sale_date::date) AS fs "
-                " FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
-                "   AND s.customer_id IS NOT NULL GROUP BY s.customer_id) "
+                "WITH firsts AS (SELECT ci.person_id,MIN(s.sale_date::date) fs FROM all_sales s "
+                " JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id "
+                " AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+                " WHERE s.sale_date " + _ISO + " AND " + _bf() + " GROUP BY ci.person_id) "
                 "SELECT COUNT(*) FILTER (WHERE fs >= CURRENT_DATE - 30) AS cur, "
                 " COUNT(*) FILTER (WHERE fs >= CURRENT_DATE - 60 AND fs < CURRENT_DATE - 30) AS prev "
                 "FROM firsts") or {}
@@ -2097,8 +2320,8 @@ def _reg_insights(app):
         try:
             r = _q1(
                 "SELECT "
-                " COUNT(DISTINCT customer_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 30) AS act_cur, "
-                " COUNT(DISTINCT customer_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 60 "
+                " COUNT(DISTINCT ci.person_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 30) AS act_cur, "
+                " COUNT(DISTINCT ci.person_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 60 "
                 "   AND sale_date::date < CURRENT_DATE - 30) AS act_prev, "
                 " SUM(total_sales_kes) FILTER (WHERE sale_date::date >= CURRENT_DATE - 30) AS rev_cur, "
                 " COUNT(DISTINCT order_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 30) AS ord_cur, "
@@ -2106,8 +2329,9 @@ def _reg_insights(app):
                 "   AND sale_date::date < CURRENT_DATE - 30) AS rev_prev, "
                 " COUNT(DISTINCT order_id) FILTER (WHERE sale_date::date >= CURRENT_DATE - 60 "
                 "   AND sale_date::date < CURRENT_DATE - 30) AS ord_prev "
-                "FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
-                " AND s.customer_id IS NOT NULL") or {}
+                "FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+                "AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+                "WHERE s.sale_date " + _ISO + " AND " + _bf()) or {}
             kpis["active_customers_30d"] = _int(r.get("act_cur"))
             kpis["active_customers_delta_pct"] = _pct(r.get("act_cur"), r.get("act_prev"))
             ord_cur = _num(r.get("ord_cur"))
@@ -2206,18 +2430,20 @@ def _reg_insights(app):
         d = _clamp(days, 1, 365, 30)
         lim = _clamp(limit, 1, 300, 50)
         rows = _q(
-            "WITH firsts AS (SELECT s.customer_id, MIN(s.sale_date) AS first_sale, "
+            "WITH firsts AS (SELECT ci.person_id, MIN(s.sale_date) AS first_sale, "
             "  SUM(s.total_sales_kes) AS spend "
-            "  FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
-            "  AND s.customer_id IS NOT NULL GROUP BY s.customer_id) "
-            "SELECT f.customer_id, f.first_sale, COALESCE(f.spend,0) AS spend, "
-            " COALESCE((SELECT NULLIF(TRIM(COALESCE(ac.first_name,'')||' '||"
-            "   COALESCE(ac.last_name,'')),'') FROM all_customers ac "
-            "   WHERE ac.customer_id=f.customer_id LIMIT 1),'Guest') AS customer_name "
-            "FROM firsts f WHERE f.first_sale >= '" + _ago(d) + "' "
+            " FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            " WHERE s.sale_date " + _ISO + " AND " + _bf() + " GROUP BY ci.person_id) "
+            "SELECT ('person:'||f.person_id)::text customer_id,f.person_id,f.first_sale,COALESCE(f.spend,0) spend,"
+            "COALESCE(cp.name,'Guest') customer_name,string_agg(" + _identity_source_key_sql("ci") +
+            ",' | ' ORDER BY " + _identity_source_key_sql("ci") + ") provenance "
+            "FROM firsts f JOIN customer_people cp USING(person_id) LEFT JOIN customer_identity ci USING(person_id) "
+            "WHERE f.first_sale >= '" + _ago(d) + "' GROUP BY f.person_id,f.first_sale,f.spend,cp.name "
             "ORDER BY f.first_sale DESC LIMIT " + str(lim))
         return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"],
+            "provenance": r["provenance"], "customer_name": r["customer_name"],
             "first_purchase_date": r["first_sale"],
             "total_sales": round(_num(r["spend"]), 2),
         } for r in rows]
@@ -2226,10 +2452,12 @@ def _reg_insights(app):
     def cl_ins_freq(request: Request):
         _staff(request)
         rows = _q(
-            "WITH c AS (SELECT customer_id, COUNT(DISTINCT order_id) AS orders, "
+            "WITH c AS (SELECT ci.person_id, COUNT(DISTINCT (s.store_id,order_id)) AS orders, "
             "  (MAX(sale_date::date) - MIN(sale_date::date)) AS span "
-            "  FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
-            "  AND s.customer_id IS NOT NULL GROUP BY customer_id HAVING COUNT(DISTINCT order_id) >= 2) "
+            " FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            " WHERE s.sale_date " + _ISO + " AND " + _bf() +
+            " GROUP BY ci.person_id HAVING COUNT(DISTINCT (s.store_id,order_id)) >= 2) "
             "SELECT width_bucket(GREATEST(span/NULLIF(orders-1,0),0),0,365,12) AS b, "
             " COUNT(*) AS n FROM c GROUP BY b ORDER BY b")
         dist = []
@@ -2263,22 +2491,25 @@ def _reg_insights(app):
         _staff(request)
         lim = _clamp(limit, 1, 300, 50)
         rows = _q(
-            "WITH c AS (SELECT s.customer_id, COUNT(DISTINCT s.order_id) AS orders, "
+            "WITH c AS (SELECT ci.person_id, COUNT(DISTINCT (s.store_id,s.order_id)) AS orders, "
             "  MAX(s.sale_date) AS last_sale, "
-            "  (MAX(s.sale_date::date)-MIN(s.sale_date::date))/NULLIF(COUNT(DISTINCT s.order_id)-1,0) AS cadence "
-            "  FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
-            "  AND s.customer_id IS NOT NULL GROUP BY s.customer_id "
-            "  HAVING COUNT(DISTINCT s.order_id) >= 3) "
-            "SELECT c.customer_id, c.last_sale, c.cadence, "
+            "  (MAX(s.sale_date::date)-MIN(s.sale_date::date))/NULLIF(COUNT(DISTINCT (s.store_id,s.order_id))-1,0) AS cadence "
+            " FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            " WHERE s.sale_date " + _ISO + " AND " + _bf() + " GROUP BY ci.person_id "
+            " HAVING COUNT(DISTINCT (s.store_id,s.order_id)) >= 3) "
+            "SELECT ('person:'||c.person_id)::text customer_id,c.person_id,c.last_sale,c.cadence, "
             " (c.last_sale::date + (COALESCE(c.cadence,30)||' days')::interval)::date AS predicted, "
-            " COALESCE((SELECT NULLIF(TRIM(COALESCE(ac.first_name,'')||' '||"
-            "   COALESCE(ac.last_name,'')),'') FROM all_customers ac "
-            "   WHERE ac.customer_id=c.customer_id LIMIT 1),'Guest') AS customer_name "
-            "FROM c WHERE (c.last_sale::date + (COALESCE(c.cadence,30)||' days')::interval)::date "
+            "COALESCE(cp.name,'Guest') customer_name,string_agg(" + _identity_source_key_sql("ci") +
+            ",' | ' ORDER BY " + _identity_source_key_sql("ci") + ") provenance "
+            "FROM c JOIN customer_people cp USING(person_id) LEFT JOIN customer_identity ci USING(person_id) "
+            "WHERE (c.last_sale::date + (COALESCE(c.cadence,30)||' days')::interval)::date "
             "  BETWEEN CURRENT_DATE - 14 AND CURRENT_DATE + " + str(_clamp(window_days, 1, 120, 30)) +
+            " GROUP BY c.person_id,c.last_sale,c.cadence,cp.name "
             " ORDER BY predicted ASC LIMIT " + str(lim))
         return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"],
+            "provenance": r["provenance"], "customer_name": r["customer_name"],
             "last_purchase_date": r["last_sale"],
             "cadence_days": _int(r["cadence"]),
             "predicted_reorder_date": _dt(r["predicted"]),
@@ -2289,15 +2520,14 @@ def _reg_insights(app):
         _staff(request)
         lim = _clamp(limit, 1, 200, 20)
         rows = _q(
-            "WITH c AS (SELECT customer_id, "
-            " MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||COALESCE(last_name,'')),'')) AS nm, "
-            " SUM(total_orders) AS orders, SUM(total_spend_kes::numeric) AS spend "
-            " FROM all_customers GROUP BY customer_id) "
-            "SELECT customer_id, COALESCE(nm,'Guest') AS customer_name, "
-            " COALESCE(orders,0) AS orders, COALESCE(spend,0) AS spend "
-            "FROM c ORDER BY spend DESC NULLS LAST LIMIT " + str(lim))
+            "SELECT ('person:'||cp.person_id)::text customer_id,cp.person_id,COALESCE(cp.name,'Guest') customer_name,"
+            "COALESCE(cp.total_orders,0) orders,COALESCE(cp.total_spend_kes,0) spend,"
+            "string_agg(" + _identity_source_key_sql("ci") + ",' | ' ORDER BY " +
+            _identity_source_key_sql("ci") + ") provenance FROM customer_people cp "
+            "LEFT JOIN customer_identity ci USING(person_id) GROUP BY cp.person_id,cp.name,cp.total_orders,cp.total_spend_kes "
+            "ORDER BY spend DESC NULLS LAST LIMIT " + str(lim))
         return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"], "provenance": r["provenance"], "customer_name": r["customer_name"],
             "ltv": round(_num(r["spend"]), 2), "total_orders": _int(r["orders"]),
             "rfm_tier": _tier_label(_num(r["spend"])),
         } for r in rows]
@@ -2306,24 +2536,22 @@ def _reg_insights(app):
     def cl_ins_lookalikes(request: Request, cid: str, limit: int = Query(15)):
         _staff(request)
         lim = _clamp(limit, 1, 100, 15)
-        anchor = _one(
-            "SELECT MAX(city) AS city, SUM(total_spend_kes::numeric) AS spend "
-            "FROM all_customers WHERE customer_id=%s", (cid,)) or {}
+        ident = _person_ref(cid, required=True)
+        anchor = _one("SELECT total_spend_kes AS spend FROM customer_people WHERE person_id=%s",
+                      (ident["person_id"],)) or {}
         spend = _num(anchor.get("spend"))
         lo, hi = spend * 0.5, spend * 1.5 if spend else 0
         rows = _ex(
-            "WITH c AS (SELECT customer_id, "
-            " MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||COALESCE(last_name,'')),'')) AS nm, "
-            " MAX(city) AS city, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend FROM all_customers "
-            " GROUP BY customer_id) "
-            "SELECT customer_id, COALESCE(nm,'Guest') AS customer_name, city, "
-            " COALESCE(spend,0) AS spend, COALESCE(orders,0) AS orders FROM c "
-            "WHERE customer_id<>%s AND spend BETWEEN %s AND %s "
+            "SELECT ('person:'||cp.person_id)::text customer_id,cp.person_id,COALESCE(cp.name,'Guest') customer_name,"
+            "NULL::text city,COALESCE(cp.total_spend_kes,0) spend,COALESCE(cp.total_orders,0) orders,"
+            "string_agg(" + _identity_source_key_sql("ci") + ",' | ' ORDER BY " +
+            _identity_source_key_sql("ci") + ") provenance FROM customer_people cp "
+            "LEFT JOIN customer_identity ci USING(person_id) WHERE cp.person_id<>%s AND cp.total_spend_kes BETWEEN %s AND %s "
+            "GROUP BY cp.person_id,cp.name,cp.total_spend_kes,cp.total_orders "
             "ORDER BY ABS(spend-%s) ASC LIMIT %s",
-            (cid, lo, hi if hi else 1e12, spend, lim), fetch=True) or []
+            (ident["person_id"], lo, hi if hi else 1e12, spend, lim), fetch=True) or []
         return [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"], "provenance": r["provenance"], "customer_name": r["customer_name"],
             "city": r["city"], "ltv": round(_num(r["spend"]), 2),
             "total_orders": _int(r["orders"]),
             "rfm_tier": _tier_label(_num(r["spend"])),
@@ -2333,15 +2561,12 @@ def _reg_insights(app):
     def cl_ins_dropoff(request: Request, days: int = Query(30)):
         _staff(request)
         rows = _q(
-            "WITH c AS (SELECT customer_id, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS lod "
-            " FROM all_customers GROUP BY customer_id) "
             "SELECT CASE "
-            "  WHEN (CURRENT_DATE-lod::date) BETWEEN 90 AND 180 THEN 'cooling' "
-            "  WHEN (CURRENT_DATE-lod::date) BETWEEN 181 AND 365 THEN 'at_risk' "
-            "  WHEN (CURRENT_DATE-lod::date) > 365 THEN 'lapsed' END AS band, "
-            " COUNT(*) AS n, COALESCE(SUM(spend),0) AS spend "
-            "FROM c WHERE lod " + _ISO + " AND COALESCE(orders,0) >= 2 "
+            "  WHEN (CURRENT_DATE-last_purchase::date) BETWEEN 90 AND 180 THEN 'cooling' "
+            "  WHEN (CURRENT_DATE-last_purchase::date) BETWEEN 181 AND 365 THEN 'at_risk' "
+            "  WHEN (CURRENT_DATE-last_purchase::date) > 365 THEN 'lapsed' END AS band, "
+            " COUNT(*) AS n, COALESCE(SUM(total_spend_kes),0) AS spend "
+            "FROM customer_people WHERE last_purchase " + _ISO + " AND COALESCE(total_orders,0) >= 2 "
             "GROUP BY band HAVING CASE "
             "  WHEN (0=0) THEN true END")
         bands = {b["band"]: b for b in rows if b.get("band")}
@@ -2355,17 +2580,19 @@ def _reg_insights(app):
     # ---- Cohorts -------------------------------------------------------- #
     def _cohort_triangle():
         return _q(
-            "WITH firsts AS (SELECT s.customer_id, "
+            "WITH sales AS (SELECT s.*,ci.person_id FROM all_sales s JOIN customer_identity ci "
+            "ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id AND ci.source_system="
+            "CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END),"
+            "firsts AS (SELECT s.person_id, "
             "  to_char(MIN(s.sale_date)::date,'YYYY-MM') AS cohort "
-            "  FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
-            "  AND s.customer_id IS NOT NULL GROUP BY s.customer_id), "
-            "acts AS (SELECT DISTINCT s.customer_id, "
-            "  to_char(s.sale_date::date,'YYYY-MM') AS m FROM all_sales s "
+            "  FROM sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
+            "  GROUP BY s.person_id), "
+            "acts AS (SELECT DISTINCT s.person_id, "
+            "  to_char(s.sale_date::date,'YYYY-MM') AS m FROM sales s "
             "  WHERE s.sale_date " + _ISO +
             "  AND s.sale_date >= '" + _ago(560) + "' AND " + _bf() +
-            "  AND s.customer_id IS NOT NULL) "
-            "SELECT f.cohort, a.m, COUNT(DISTINCT a.customer_id) AS n "
-            "FROM firsts f JOIN acts a USING (customer_id) "
+            ") SELECT f.cohort, a.m, COUNT(DISTINCT a.person_id) AS n "
+            "FROM firsts f JOIN acts a USING (person_id) "
             "WHERE f.cohort >= to_char((CURRENT_DATE - interval '18 months'),'YYYY-MM') "
             "GROUP BY f.cohort, a.m ORDER BY f.cohort, a.m")
 
@@ -2412,11 +2639,13 @@ def _reg_insights(app):
     def cl_cohorts_by_channel(request: Request):
         _staff(request)
         rows = _q(
-            "WITH firsts AS (SELECT s.customer_id, "
+            "WITH firsts AS (SELECT ci.person_id, "
             "  to_char(MIN(s.sale_date)::date,'YYYY-MM') AS cohort, "
             "  (array_agg(s.pos_location_name ORDER BY s.sale_date))[1] AS channel "
-            "  FROM all_sales s WHERE s.sale_date >= '" + _ago(560) + "' AND " + _bf() +
-            "  AND s.customer_id IS NOT NULL GROUP BY s.customer_id) "
+            "  FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            " WHERE s.sale_date >= '" + _ago(560) + "' AND " + _bf() +
+            " GROUP BY ci.person_id) "
             "SELECT COALESCE(NULLIF(channel,''),'Unknown') AS channel, "
             " COUNT(*) AS customers FROM firsts GROUP BY 1 ORDER BY customers DESC LIMIT 30")
         return {"rows": [{"channel": r["channel"], "customers": _int(r["customers"])}
@@ -2438,19 +2667,19 @@ def _reg_insights(app):
             return {"customers": []}
         lim = _clamp(limit, 1, 500, 100)
         rows = _q(
-            "WITH firsts AS (SELECT s.customer_id, "
+            "WITH firsts AS (SELECT ci.person_id, "
             "  to_char(MIN(s.sale_date)::date,'YYYY-MM') AS cohort, "
             "  SUM(s.total_sales_kes) AS spend, COUNT(DISTINCT s.order_id) AS orders "
-            "  FROM all_sales s WHERE s.sale_date " + _ISO + " AND " + _bf() +
-            "  AND s.customer_id IS NOT NULL GROUP BY s.customer_id) "
-            "SELECT f.customer_id, COALESCE(f.spend,0) AS spend, COALESCE(f.orders,0) AS orders, "
-            " COALESCE((SELECT NULLIF(TRIM(COALESCE(ac.first_name,'')||' '||"
-            "   COALESCE(ac.last_name,'')),'') FROM all_customers ac "
-            "   WHERE ac.customer_id=f.customer_id LIMIT 1),'Guest') AS customer_name "
-            "FROM firsts f WHERE f.cohort = '" + cm + "' "
+            "  FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text "
+            " AND ci.store_id=s.store_id AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END "
+            " WHERE s.sale_date " + _ISO + " AND " + _bf() +
+            " GROUP BY ci.person_id) "
+            "SELECT ('person:'||f.person_id)::text customer_id,f.person_id,COALESCE(f.spend,0) spend,"
+            "COALESCE(f.orders,0) orders,COALESCE(cp.name,'Guest') customer_name FROM firsts f "
+            "JOIN customer_people cp USING(person_id) WHERE f.cohort = '" + cm + "' "
             "ORDER BY spend DESC LIMIT " + str(lim))
         return {"customers": [{
-            "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+            "customer_id": r["customer_id"], "person_id": r["person_id"], "customer_name": r["customer_name"],
             "total_sales": round(_num(r["spend"]), 2), "total_orders": _int(r["orders"]),
             "rfm_tier": _tier_label(_num(r["spend"])),
         } for r in rows]}
@@ -2467,11 +2696,12 @@ def _reg_insights(app):
         uid, name = u.get("user_id"), (u.get("name") or u.get("email"))
         created = 0
         for cid in ids:
+            ident = _person_ref(cid, required=True)
             _ex(
-                "INSERT INTO crm_tasks (customer_id,title,description,status,priority,"
+                "INSERT INTO crm_tasks (customer_id,person_id,source_key,title,description,status,priority,"
                 " assignee_user_id,assignee_name,created_by,created_by_name) "
-                "VALUES (%s,%s,%s,'open','normal',%s,%s,%s,%s)",
-                (cid, title, notes, uid, name, uid, name))
+                "VALUES (%s,%s,%s,%s,%s,'open','normal',%s,%s,%s,%s)",
+                (ident["ref"],ident["person_id"],ident["source_key"],title,notes,uid,name,uid,name))
             created += 1
         A._crm_audit("task", "bulk", "create", title + " ×" + str(created), request)
         return {"created": created}
@@ -2495,10 +2725,12 @@ def _reg_insights(app):
     @app.get("/api/insights/wishlists/{cid}")
     def cl_wishlist_for(request: Request, cid: str):
         _staff(request)
+        ident = _person_ref(cid, required=True)
+        clause, bound = _person_owned_clause("crm_wishlist", ident)
         rows = _ex(
             "SELECT id, product_title, note, fulfilled, created_at "
-            "FROM crm_wishlist WHERE customer_id=%s ORDER BY created_at DESC",
-            (cid,), fetch=True) or []
+            "FROM crm_wishlist WHERE " + clause + " ORDER BY created_at DESC",
+            tuple(bound), fetch=True) or []
         return [{
             "id": str(r["id"]), "wishlist_id": str(r["id"]), "sku": None,
             "product_name": r["product_title"], "note": r["note"],
@@ -2516,14 +2748,15 @@ def _reg_insights(app):
             raise HTTPException(status_code=400,
                                 detail="customer_id and product_title required")
         note = (p.get("note") or "").strip() or None
+        ident = _person_ref(cid, required=True)
         row = _one(
-            "INSERT INTO crm_wishlist (customer_id, product_title, note, created_by) "
-            "VALUES (%s,%s,%s,%s) RETURNING id, product_title, note, fulfilled, created_at",
-            (cid, product, note, name))
-        A._crm_audit("customer", cid, "wishlist.add", product, request)
+            "INSERT INTO crm_wishlist (customer_id,person_id,source_key,product_title,note,created_by) "
+            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id, product_title, note, fulfilled, created_at",
+            (ident["ref"],ident["person_id"],ident["source_key"], product, note, name))
+        A._crm_audit("customer", ident["ref"], "wishlist.add", product, request)
         return {
             "id": str(row["id"]), "wishlist_id": str(row["id"]),
-            "customer_id": cid, "sku": None, "product_name": row["product_title"],
+            "customer_id": ident["ref"], "sku": None, "product_name": row["product_title"],
             "note": row["note"], "fulfilled": bool(row["fulfilled"]),
             "added_at": _dt(row["created_at"]),
         }
@@ -3135,25 +3368,21 @@ def _reg_loyalty_mgr(app):
         }
 
     @app.get("/api/loyalty/customer/{cid}")
-    def cl_loy_customer(request: Request, cid: str):
+    def cl_loy_customer(request: Request, cid: str, source_key: str = Query(None)):
         _staff(request)
-        e = _one(
-            "SELECT e.tier, e.points_balance, e.points_lifetime, e.enrolment_date, "
-            " COALESCE(m.spend_kes,0) AS spend FROM crm_loyalty_enrolment e "
-            "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
-            "WHERE e.customer_id=%s", (cid,))
+        ident, selected, e, aliases = _loyalty_account_ref(cid, {"source_key": source_key})
         if not e:
-            sp = _num((_one(
-                "SELECT SUM(total_spend_kes::numeric) AS s FROM all_customers "
-                "WHERE customer_id=%s", (cid,)) or {}).get("s"))
+            sp = _num((_one("SELECT total_spend_kes s FROM customer_people WHERE person_id=%s",
+                            (ident["person_id"],)) or {}).get("s"))
             return {"enrolled": False, "tier": _tier_label(sp),
                     "spend_12mo_kes": round(sp, 2), "points_balance": 0,
-                    "progress": None, "voucher": None, "styling": {"remaining": 0}}
+                    "progress": None, "voucher": None, "styling": {"remaining": 0},
+                    "person_id": ident["person_id"], "source_accounts": aliases}
         cfg = A._crm_config_dict()
         silver = _num(cfg.get("loyalty.tier_silver_kes"), 50000)
         gold = _num(cfg.get("loyalty.tier_gold_kes"), 150000)
         vip = _num(cfg.get("loyalty.tier_vip_kes"), 300000)
-        spend = _num(e["spend"])
+        spend = _crm_spend12("person:" + str(ident["person_id"]))
         _nt = {"Bronze": ("Silver", silver), "Silver": ("Gold", gold),
                "Gold": ("VIP", vip)}
         nt = _nt.get(e["tier"])
@@ -3166,9 +3395,10 @@ def _reg_loyalty_mgr(app):
         v = _one(
             "SELECT discount_code, code_status, kes_value FROM crm_redemptions "
             "WHERE customer_id=%s AND code_status='issued' ORDER BY issued_at DESC LIMIT 1",
-            (cid,))
+            (e["customer_id"],))
         return {
-            "enrolled": True, "tier": e["tier"],
+            "enrolled": True, "person_id": ident["person_id"], "source_key": (selected or {}).get("source_key"),
+            "source_accounts": aliases, "tier": e["tier"],
             "points_balance": _int(e["points_balance"]),
             "points_lifetime": _int(e["points_lifetime"]),
             "spend_12mo_kes": round(spend, 2),
@@ -3180,24 +3410,16 @@ def _reg_loyalty_mgr(app):
         }
 
     @app.get("/api/loyalty/mobile/me/{cid}")
-    def cl_loy_mobile_me(request: Request, cid: str):
+    def cl_loy_mobile_me(request: Request, cid: str, source_key: str = Query(None)):
         # Staff-facing preview of the customer's mobile loyalty card. Gate is
         # bypassed for /api/loyalty/*, so enforce a staff session explicitly.
         _staff(request)
-        e = _one(
-            "SELECT e.tier, e.points_balance, e.points_lifetime, e.enrolment_date, "
-            " COALESCE(m.spend_kes,0) AS spend, m.name, m.membership_code "
-            "FROM crm_loyalty_enrolment e "
-            "LEFT JOIN crm_loyalty_member m ON m.member_id=e.customer_id "
-            "WHERE e.customer_id=%s", (cid,))
-        nm = _one(
-            "SELECT " + _name_sql("c") + " AS customer_name "
-            "FROM all_customers c WHERE c.customer_id=%s", (cid,))
-        name = (e or {}).get("name") or (nm or {}).get("customer_name") or "Member"
+        ident, selected, e, aliases = _loyalty_account_ref(cid, {"source_key": source_key})
+        name = (_customer_profile(ident["ref"]) or {}).get("customer_name") or "Member"
         if not e:
             sp = _num((_one(
-                "SELECT SUM(total_spend_kes::numeric) AS s FROM all_customers "
-                "WHERE customer_id=%s", (cid,)) or {}).get("s"))
+                "SELECT total_spend_kes AS s FROM customer_people WHERE person_id=%s",
+                (ident["person_id"],)) or {}).get("s"))
             return {"enrolled": False, "name": name, "tier": _tier_label(sp),
                     "points_balance": 0, "points_value_kes": 0.0,
                     "membership_code": None, "spend_kes": round(sp, 2),
@@ -3208,13 +3430,14 @@ def _reg_loyalty_mgr(app):
         ledger = _ex(
             "SELECT reason, points_change, created_at FROM crm_loyalty_ledger "
             "WHERE customer_id=%s ORDER BY created_at DESC LIMIT 10",
-            (cid,), fetch=True) or []
+            (e["customer_id"],), fetch=True) or []
         return {
-            "enrolled": True, "name": name, "tier": e["tier"],
+            "enrolled": True, "name": name, "person_id": ident["person_id"],
+            "source_key": (selected or {}).get("source_key"), "source_accounts": aliases, "tier": e["tier"],
             "membership_code": e.get("membership_code"),
             "points_balance": pts, "points_lifetime": _int(e["points_lifetime"]),
             "points_value_kes": round(pts * pt_val, 2),
-            "spend_kes": round(_num(e["spend"]), 2),
+            "spend_kes": round(_crm_spend12("person:" + str(ident["person_id"])), 2),
             "enrolment_date": _dt(e["enrolment_date"]),
             "recent_activity": [
                 {"reason": r["reason"], "points": _int(r["points_change"]),
@@ -3226,6 +3449,9 @@ def _reg_loyalty_mgr(app):
                              payload: dict = Body(default=None)):
         _staff(request, roles=("admin",))
         p = payload or {}
+        ident, selected, account, _aliases = _loyalty_account_ref(cid, p)
+        if not account:
+            raise HTTPException(status_code=409, detail="Select an enrolled source_key before issuing a voucher")
         kes = _num(p.get("amount_kes"), 0)
         pts = _int(p.get("points"), 0)
         if kes <= 0:
@@ -3234,8 +3460,8 @@ def _reg_loyalty_mgr(app):
         _ex(
             "INSERT INTO crm_redemptions (customer_id,points_redeemed,kes_value,"
             " discount_code,code_status,issued_by) VALUES (%s,%s,%s,%s,'issued',%s)",
-            (cid, pts, kes, code, _actor(request)[1]))
-        A._crm_audit("loyalty", cid, "voucher_issue", code + " " + str(kes), request)
+            (account["customer_id"], pts, kes, code, _actor(request)[1]))
+        A._crm_audit("loyalty", selected["source_key"], "voucher_issue", code + " " + str(kes), request)
         return {"code": code, "amount_kes": round(kes, 2), "status": "issued"}
 
     @app.post("/api/loyalty/customer/{cid}/styling/book")
@@ -3243,15 +3469,18 @@ def _reg_loyalty_mgr(app):
                             payload: dict = Body(default=None)):
         u = _staff(request)
         p = payload or {}
+        ident, selected, account, _aliases = _loyalty_account_ref(cid, p)
+        if not selected:
+            raise HTTPException(status_code=409, detail="Select a source_key for the styling appointment")
         when = (p.get("date") or "").strip()
         title = "Styling session" + ((" — " + when) if when else "")
         uid, name = u.get("user_id"), (u.get("name") or u.get("email"))
         _ex(
-            "INSERT INTO crm_tasks (customer_id,title,description,status,priority,"
+            "INSERT INTO crm_tasks (customer_id,person_id,source_key,title,description,status,priority,"
             " assignee_user_id,assignee_name,created_by,created_by_name) "
-            "VALUES (%s,%s,%s,'open','high',%s,%s,%s,%s)",
-            (cid, title, (p.get("notes") or ""), uid, name, uid, name))
-        A._crm_audit("loyalty", cid, "styling_book", title, request)
+            "VALUES (%s,%s,%s,%s,%s,'open','high',%s,%s,%s,%s)",
+            (ident["ref"],ident["person_id"],selected["source_key"], title, (p.get("notes") or ""), uid, name, uid, name))
+        A._crm_audit("loyalty", selected["source_key"], "styling_book", title, request)
         return {"ok": True, "title": title}
 
     @app.post("/api/loyalty/voucher/{vid}/redeem")
@@ -3319,7 +3548,7 @@ def _reg_segments(app):
             nd = _int(p.get("not_contacted_days"))
             where.append(
                 "NOT EXISTS (SELECT 1 FROM crm_interactions i "
-                "WHERE i.customer_id=c.customer_id "
+                "WHERE i.person_id=c.person_id "
                 "AND i.created_at >= now()-(" + str(nd) + "||' days')::interval)")
         if _int(p.get("recency_days_min")) > 0:
             where.append("c.lod " + _ISO + " AND " + rec + " >= " + str(_int(p.get("recency_days_min"))))
@@ -3336,20 +3565,17 @@ def _reg_segments(app):
         p = payload or {}
         where = _segment_sql(p)
         base = (
-            "WITH c AS (SELECT customer_id, "
-            " MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||COALESCE(last_name,'')),'')) AS nm, "
-            " MAX(city) AS city, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS lod "
-            " FROM all_customers GROUP BY customer_id) ")
+            "WITH c AS (SELECT person_id,name nm,NULL::text city,total_orders orders,"
+            "total_spend_kes spend,last_purchase lod FROM customer_people) ")
         total = _int((_q1(base + "SELECT COUNT(*) AS n FROM c WHERE " + where)).get("n"))
         rows = _q(
-            base + "SELECT customer_id, COALESCE(nm,'Guest') AS customer_name, city, "
+            base + "SELECT ('person:'||person_id)::text customer_id,person_id,COALESCE(nm,'Guest') AS customer_name, city, "
             " COALESCE(orders,0) AS orders, COALESCE(spend,0) AS spend "
             "FROM c WHERE " + where + " ORDER BY spend DESC NULLS LAST LIMIT 50")
         return {
             "total_matches": total,
             "customers": [{
-                "customer_id": r["customer_id"], "customer_name": r["customer_name"],
+                "customer_id": r["customer_id"], "person_id": r["person_id"], "customer_name": r["customer_name"],
                 "city": r["city"], "total_orders": _int(r["orders"]),
                 "total_sales": round(_num(r["spend"]), 2),
                 "rfm_tier": _tier_label(_num(r["spend"])),
@@ -3366,16 +3592,14 @@ def _reg_segments(app):
                     "Pop in and we'll have them ready for you.")
         if not ids:
             return {"messages": []}
-        rows = _ex(
-            "SELECT customer_id, "
-            " COALESCE(MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||"
-            "   COALESCE(last_name,'')),'')),'there') AS nm "
-            "FROM all_customers WHERE customer_id = ANY(%s) GROUP BY customer_id",
-            (ids,), fetch=True) or []
-        name_by = {r["customer_id"]: r["nm"] for r in rows}
+        resolved = [_person_ref(cid, required=True) for cid in ids]
+        rows = _ex("SELECT person_id,COALESCE(name,'there') nm FROM customer_people WHERE person_id=ANY(%s)",
+                   ([r["person_id"] for r in resolved],), fetch=True) or []
+        name_by = {str(r["person_id"]): r["nm"] for r in rows}
         msgs = []
-        for cid in ids:
-            nm = name_by.get(cid, "there")
+        for ident in resolved:
+            cid = ident["ref"]
+            nm = name_by.get(str(ident["person_id"]), "there")
             first = nm.split(" ")[0] if nm else "there"
             msgs.append({
                 "customer_id": cid, "customer_name": nm,
@@ -3513,9 +3737,10 @@ def _reg_social(app):
     @app.get("/api/social/handles/{cid}")
     def cl_soc_handles(request: Request, cid: str):
         _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
+        ident = _person_ref(cid, required=True); clause, bound = _person_owned_clause("crm_social_handle", ident)
         rows = _ex(
             "SELECT platform, handle, added_at FROM crm_social_handle "
-            "WHERE customer_id=%s ORDER BY platform", (cid,), fetch=True) or []
+            "WHERE " + clause + " ORDER BY platform", tuple(bound), fetch=True) or []
         return [{"platform": r["platform"], "handle": r["handle"],
                  "added_at": _dt(r["added_at"])} for r in rows]
 
@@ -3524,36 +3749,42 @@ def _reg_social(app):
                           payload: dict = Body(default=None)):
         _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         p = payload or {}
+        ident = _person_ref(cid, required=True)
         plat = (p.get("platform") or "").strip().lower()[:40]
         handle = (p.get("handle") or "").strip()[:120]
         if not plat or not handle:
             raise HTTPException(status_code=400, detail="platform and handle required")
         _ex(
-            "INSERT INTO crm_social_handle (customer_id,platform,handle) "
-            "VALUES (%s,%s,%s) ON CONFLICT (customer_id,platform) "
-            "DO UPDATE SET handle=EXCLUDED.handle", (cid, plat, handle))
-        _ex("UPDATE crm_social_feedback SET customer_id=%s "
+            "INSERT INTO crm_social_handle (customer_id,person_id,source_key,platform,handle) "
+            "VALUES (%s,%s,%s,%s,%s) ON CONFLICT (customer_id,platform) "
+            "DO UPDATE SET person_id=EXCLUDED.person_id,source_key=EXCLUDED.source_key,handle=EXCLUDED.handle",
+            (ident["ref"],ident["person_id"],ident["source_key"],plat,handle))
+        _ex("UPDATE crm_social_feedback SET customer_id=%s,person_id=%s,source_key=%s "
             "WHERE customer_id IS NULL AND lower(author_handle)=lower(%s)",
-            (cid, handle))
+            (ident["ref"],ident["person_id"],ident["source_key"], handle))
         return {"ok": True}
 
     @app.delete("/api/social/handles/{cid}/{platform}")
     def cl_soc_handle_del(request: Request, cid: str, platform: str):
         _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
-        _ex("DELETE FROM crm_social_handle WHERE customer_id=%s AND platform=%s",
-            (cid, platform.lower()))
+        ident = _person_ref(cid, required=True); clause, bound = _person_owned_clause("crm_social_handle", ident)
+        _ex("DELETE FROM crm_social_handle WHERE " + clause + " AND platform=%s",
+            tuple(bound + [platform.lower()]))
         return {"ok": True}
 
     @app.get("/api/social/timeline/{cid}")
     def cl_soc_timeline(request: Request, cid: str):
         _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
+        ident = _person_ref(cid, required=True)
+        hclause, hbound = _person_owned_clause("crm_social_handle", ident)
+        fclause, fbound = _person_owned_clause("crm_social_feedback", ident)
         handles = _ex(
             "SELECT platform, handle, added_at FROM crm_social_handle "
-            "WHERE customer_id=%s", (cid,), fetch=True) or []
+            "WHERE " + hclause, tuple(hbound), fetch=True) or []
         items = _ex(
             "SELECT id, platform, type, body, sentiment, themes, posted_at "
-            "FROM crm_social_feedback WHERE customer_id=%s "
-            "ORDER BY posted_at DESC LIMIT 100", (cid,), fetch=True) or []
+            "FROM crm_social_feedback WHERE " + fclause +
+            " ORDER BY posted_at DESC LIMIT 100", tuple(fbound), fetch=True) or []
         return {
             "handles": [{"platform": h["platform"], "handle": h["handle"],
                          "added_at": _dt(h["added_at"])} for h in handles],
@@ -3584,8 +3815,9 @@ def _reg_social(app):
             conds.append("sentiment=%s")
             params.append(sentiment)
         if customer_id:
-            conds.append("customer_id=%s")
-            params.append(customer_id)
+            ident = _person_ref(customer_id, required=True)
+            clause, bound = _person_owned_clause("crm_social_feedback", ident)
+            conds.append(clause); params.extend(bound)
         if unmatched:
             conds.append("customer_id IS NULL")
         if q:
@@ -3613,13 +3845,15 @@ def _reg_social(app):
     def cl_soc_feedback_add(request: Request, payload: dict = Body(default=None)):
         _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         p = payload or {}
+        ident = _person_ref(p.get("customer_id"), required=True) if p.get("customer_id") else None
         rid = _ex(
             "INSERT INTO crm_social_feedback (platform,type,author_name,author_handle,"
-            " body,sentiment,customer_id,posted_at) "
-            "VALUES (%s,%s,%s,%s,%s,%s,%s,now()) RETURNING id",
+            " body,sentiment,customer_id,person_id,source_key,posted_at) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,now()) RETURNING id",
             ((p.get("platform") or "other"), (p.get("type") or "mention"),
              p.get("author_name"), p.get("author_handle"), (p.get("body") or ""),
-             p.get("sentiment"), p.get("customer_id")), fetch=True)
+              p.get("sentiment"), ident["ref"] if ident else None, ident["person_id"] if ident else None,
+              ident["source_key"] if ident else None), fetch=True)
         return {"ok": True, "feedback_id": str(rid[0]["id"]) if rid else None}
 
     @app.post("/api/social/feedback/{fid}/link")
@@ -3627,8 +3861,9 @@ def _reg_social(app):
                              payload: dict = Body(default=None)):
         _staff(request, roles=("customer_service", "marketing", "leadership", "smt", "admin"))
         cid = (payload or {}).get("customer_id")
-        _ex("UPDATE crm_social_feedback SET customer_id=%s WHERE id=%s",
-            (cid, _int(fid)))
+        ident = _person_ref(cid, required=True)
+        _ex("UPDATE crm_social_feedback SET customer_id=%s,person_id=%s,source_key=%s WHERE id=%s",
+            (ident["ref"],ident["person_id"],ident["source_key"], _int(fid)))
         return {"ok": True}
 
     @app.post("/api/social/feedback/{fid}/reply")
@@ -7339,11 +7574,13 @@ def _reg_misc(app):
     def cl_lookbooks(request: Request, customer_id: str = Query(None)):
         _staff(request)
         if customer_id:
+            ident = _person_ref(customer_id, required=True)
+            clause, bound = _person_owned_clause("l", ident)
             rows = _ex(
                 "SELECT l.id, l.customer_id, l.title, l.description, l.items, "
                 " l.created_at, " + _name_sql("l") + " AS customer_name "
-                "FROM crm_lookbook l WHERE l.customer_id=%s ORDER BY l.created_at DESC",
-                (customer_id,), fetch=True) or []
+                "FROM crm_lookbook l WHERE " + clause + " ORDER BY l.created_at DESC",
+                tuple(bound), fetch=True) or []
         else:
             rows = _ex(
                 "SELECT l.id, l.customer_id, l.title, l.description, l.items, "
@@ -7370,13 +7607,14 @@ def _reg_misc(app):
     def cl_lookbook_create(request: Request, payload: dict = Body(default=None)):
         _staff(request)
         p = payload or {}
+        ident = _person_ref(p.get("customer_id"), required=True)
         items = p.get("items") or []
         token = secrets.token_urlsafe(10)
         rid = _ex(
             "INSERT INTO crm_lookbook "
-            "(customer_id,title,description,items,created_by,share_token) "
-            "VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-            (p.get("customer_id"), (p.get("title") or "Lookbook"),
+            "(customer_id,person_id,source_key,title,description,items,created_by,share_token) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (ident["ref"], ident["person_id"], ident["source_key"], (p.get("title") or "Lookbook"),
              (p.get("note") or ""), json.dumps(items), _actor(request)[1], token),
             fetch=True)
         return {"lookbook_id": str(rid[0]["id"]) if rid else None,
@@ -7404,15 +7642,15 @@ def _reg_misc(app):
     @app.post("/api/public/lookbooks/{token}/interest")
     def cl_public_lookbook_interest(token: str, payload: dict = Body(default=None)):
         row = _one(
-            "SELECT id, customer_id FROM crm_lookbook WHERE share_token=%s",
+            "SELECT id, customer_id,person_id,source_key FROM crm_lookbook WHERE share_token=%s",
             (token,))
         if not row:
             raise HTTPException(status_code=404, detail="Lookbook not found")
         p = payload or {}
         _ex(
             "INSERT INTO crm_lookbook_interest "
-            "(lookbook_id,customer_id,sku,product_title) VALUES (%s,%s,%s,%s)",
-            (row["id"], row["customer_id"],
+            "(lookbook_id,customer_id,person_id,source_key,sku,product_title) VALUES (%s,%s,%s,%s,%s,%s)",
+            (row["id"], row["customer_id"],row["person_id"],row["source_key"],
              (p.get("sku") or "")[:120], (p.get("product_title") or "")[:300]))
         return {"ok": True}
 
@@ -7420,9 +7658,11 @@ def _reg_misc(app):
     @app.get("/api/consent/{cid}")
     def cl_consent_get(request: Request, cid: str):
         _staff(request)
+        ident = _person_ref(cid, required=True)
+        clause, bound = _person_owned_clause("crm_consent", ident)
         rows = _ex(
             "SELECT id, channel, opted_in, method, created_at FROM crm_consent "
-            "WHERE customer_id=%s ORDER BY created_at DESC", (cid,), fetch=True) or []
+            "WHERE " + clause + " ORDER BY created_at DESC", tuple(bound), fetch=True) or []
         return [{
             "consent_id": str(r["id"]), "channel": r["channel"],
             "opted_in": bool(r["opted_in"]), "method": r["method"],
@@ -7436,10 +7676,11 @@ def _reg_misc(app):
         cid = p.get("customer_id")
         if not cid:
             raise HTTPException(status_code=400, detail="customer_id required")
+        ident = _person_ref(cid, required=True)
         rid = _ex(
-            "INSERT INTO crm_consent (customer_id,channel,opted_in,method,user_name) "
-            "VALUES (%s,%s,%s,%s,%s) RETURNING id",
-            (cid, (p.get("channel") or "whatsapp"), bool(p.get("opted_in")),
+            "INSERT INTO crm_consent (customer_id,person_id,source_key,channel,opted_in,method,user_name) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (ident["ref"],ident["person_id"],ident["source_key"], (p.get("channel") or "whatsapp"), bool(p.get("opted_in")),
              (p.get("method") or "manual"), _actor(request)[1]), fetch=True)
         return {"consent_id": str(rid[0]["id"]) if rid else None, "ok": True}
 
@@ -7453,7 +7694,9 @@ def _reg_misc(app):
     @app.get("/api/preferences/{cid}")
     def cl_prefs_get(request: Request, cid: str):
         _staff(request)
-        r = _one("SELECT data FROM crm_preferences WHERE customer_id=%s", (cid,))
+        ident = _person_ref(cid, required=True)
+        clause, bound = _person_owned_clause("crm_preferences", ident)
+        r = _one("SELECT data FROM crm_preferences WHERE " + clause + " ORDER BY (person_id IS NOT NULL) DESC LIMIT 1", tuple(bound))
         data = (r or {}).get("data") or {}
         if isinstance(data, str):
             try:
@@ -7466,25 +7709,23 @@ def _reg_misc(app):
     @app.put("/api/preferences/{cid}")
     def cl_prefs_set(request: Request, cid: str, payload: dict = Body(default=None)):
         _staff(request)
+        ident = _person_ref(cid, required=True)
         data = payload or {}
         _ex(
-            "INSERT INTO crm_preferences (customer_id,data,updated_at) "
-            "VALUES (%s,%s::jsonb,now()) ON CONFLICT (customer_id) "
-            "DO UPDATE SET data=EXCLUDED.data, updated_at=now()",
-            (cid, json.dumps(data)))
-        data.setdefault("customer_id", cid)
+            "INSERT INTO crm_preferences (customer_id,person_id,source_key,data,updated_at) "
+            "VALUES (%s,%s,%s,%s::jsonb,now()) ON CONFLICT (customer_id) "
+            "DO UPDATE SET person_id=EXCLUDED.person_id,source_key=EXCLUDED.source_key,data=EXCLUDED.data, updated_at=now()",
+            (ident["ref"],ident["person_id"],ident["source_key"],json.dumps(data)))
+        data.setdefault("customer_id", ident["ref"])
         return data
 
     # ---- Customer extras ------------------------------------------------ #
     @app.get("/api/customers/{cid}/brief")
     def cl_cust_brief(request: Request, cid: str):
         _staff(request)
-        c = _one(
-            "SELECT customer_id, "
-            " MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||COALESCE(last_name,'')),'')) AS nm, "
-            " MAX(city) AS city, MAX(phone) AS phone, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS lod "
-            "FROM all_customers WHERE customer_id=%s GROUP BY customer_id", (cid,)) or {}
+        ident = _person_ref(cid, required=True)
+        c = _one("SELECT person_id,name nm,phone,total_orders orders,total_spend_kes spend,last_purchase lod "
+                 "FROM customer_people WHERE person_id=%s", (ident["person_id"],)) or {}
         spend = _num(c.get("spend"))
         orders = _int(c.get("orders"))
         nba = []
@@ -7506,11 +7747,13 @@ def _reg_misc(app):
                         "reason": "Keep the relationship warm"})
         sentiment = _num((_one(
             "SELECT AVG(CASE sentiment WHEN 'positive' THEN 1 WHEN 'negative' "
-            "THEN -1 ELSE 0 END) AS s FROM crm_social_feedback WHERE customer_id=%s",
-            (cid,)) or {}).get("s"))
+            "THEN -1 ELSE 0 END) AS s FROM crm_social_feedback WHERE person_id=%s "
+            "OR (person_id IS NULL AND customer_id=ANY(%s))",
+            (ident["person_id"], ident["legacy_ids"])) or {}).get("s"))
         return {
-            "customer": {"customer_id": cid, "customer_name": c.get("nm") or "Guest",
-                         "city": c.get("city"), "phone": c.get("phone")},
+            "customer": {"customer_id": ident["ref"], "person_id": ident["person_id"],
+                         "source_aliases": _person_aliases(ident["person_id"]),
+                         "customer_name": c.get("nm") or "Guest", "city": None, "phone": c.get("phone")},
             "nba": nba,
             "metrics": {"ltv": round(spend, 2), "orders": orders,
                         "frequency": round(orders / max((rec or 365) / 365.0, 0.1), 2)
@@ -7522,10 +7765,12 @@ def _reg_misc(app):
     @app.get("/api/customers/{cid}/moments")
     def cl_moments_get(request: Request, cid: str):
         _staff(request)
+        ident = _person_ref(cid, required=True)
+        clause, bound = _person_owned_clause("crm_moment", ident)
         rows = _ex(
             "SELECT id, moment_type, label, moment_date, recurring_annual "
-            "FROM crm_moment WHERE customer_id=%s ORDER BY moment_date NULLS LAST",
-            (cid,), fetch=True) or []
+            "FROM crm_moment WHERE " + clause + " ORDER BY moment_date NULLS LAST",
+            tuple(bound), fetch=True) or []
         return [{
             "id": str(r["id"]), "type": r["moment_type"] or "event",
             "title": r["label"], "date": _dt(r["moment_date"]),
@@ -7535,12 +7780,13 @@ def _reg_misc(app):
     @app.post("/api/customers/{cid}/moments")
     def cl_moments_add(request: Request, cid: str, payload: dict = Body(default=None)):
         _staff(request)
+        ident = _person_ref(cid, required=True)
         p = payload or {}
         md = _safe_date(p.get("date"), None)
         rid = _ex(
-            "INSERT INTO crm_moment (customer_id,moment_type,label,moment_date,"
-            " recurring_annual,created_by) VALUES (%s,%s,%s,%s,%s,%s) RETURNING id",
-            (cid, (p.get("type") or "event"), (p.get("title") or ""),
+            "INSERT INTO crm_moment (customer_id,person_id,source_key,moment_type,label,moment_date,"
+            " recurring_annual,created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+            (ident["ref"],ident["person_id"],ident["source_key"], (p.get("type") or "event"), (p.get("title") or ""),
              md, bool(p.get("recurring_annual")), _actor(request)[1]), fetch=True)
         return {"id": str(rid[0]["id"]) if rid else None, "type": p.get("type"),
                 "title": p.get("title"), "date": md,
@@ -7549,7 +7795,9 @@ def _reg_misc(app):
     @app.delete("/api/customers/{cid}/moments/{mid}")
     def cl_moments_del(request: Request, cid: str, mid: str):
         _staff(request)
-        _ex("DELETE FROM crm_moment WHERE id=%s AND customer_id=%s", (_int(mid), cid))
+        ident = _person_ref(cid, required=True)
+        clause, bound = _person_owned_clause("crm_moment", ident)
+        _ex("DELETE FROM crm_moment WHERE id=%s AND " + clause, tuple([_int(mid)] + bound))
         return {"deleted": 1}
 
     @app.post("/api/customers/{cid}/draft-message")
@@ -7561,10 +7809,7 @@ def _reg_misc(app):
             r = _one("SELECT body FROM crm_template WHERE id=%s",
                      (_int(p.get("template_id")),))
             body = (r or {}).get("body")
-        nm = (_one(
-            "SELECT MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||"
-            "COALESCE(last_name,'')),'')) AS nm FROM all_customers WHERE customer_id=%s",
-            (cid,)) or {}).get("nm") or "there"
+        nm = (_customer_profile(cid) or {}).get("customer_name") or "there"
         first = nm.split(" ")[0]
         body = (body or "Hi {name}, just checking in — let me know if you'd like a "
                 "hand finding something new.").replace("{name}", first).replace(
@@ -7583,21 +7828,25 @@ def _reg_misc(app):
         _staff(request)
         lim = _clamp(limit, 1, 200, 50)
         rows = _q(
-            "WITH p AS (SELECT NULLIF(TRIM(phone),'') AS phone, customer_id, "
-            "  MAX(NULLIF(TRIM(COALESCE(first_name,'')||' '||COALESCE(last_name,'')),'')) AS nm "
-            "  FROM all_customers WHERE NULLIF(TRIM(phone),'') IS NOT NULL "
-            "  GROUP BY phone, customer_id), "
-            "d AS (SELECT phone FROM p GROUP BY phone HAVING COUNT(DISTINCT customer_id) > 1 "
-            "  LIMIT " + str(lim) + ") "
-            "SELECT p.phone, p.customer_id, COALESCE(p.nm,'Guest') AS nm "
-            "FROM p JOIN d USING (phone) ORDER BY p.phone")
+            "WITH d AS (SELECT phone9 FROM customer_identity WHERE match_method='ambiguous_phone' "
+            "AND phone9 IS NOT NULL GROUP BY phone9 LIMIT " + str(lim) + ") "
+            "SELECT ci.phone9,ci.person_id," + _identity_source_key_sql("ci") +
+            " source_key,ci.source_system,ci.store_id,"
+            "COALESCE(cp.name,ci.display_name,'Guest') nm,cp.total_orders,cp.total_spend_kes,cp.last_purchase "
+            "FROM customer_identity ci JOIN d ON d.phone9=ci.phone9 LEFT JOIN customer_people cp USING(person_id) "
+            "ORDER BY ci.phone9," + _identity_source_key_sql("ci"))
         groups = {}
         for r in rows:
-            groups.setdefault(r["phone"], []).append(
-                {"customer_id": r["customer_id"], "customer_name": r["nm"]})
-        return {"groups": [{"match_on": "phone", "value": k, "customers": v}
+            groups.setdefault(r["phone9"], []).append({
+                "customer_id": "person:" + str(r["person_id"]),
+                "person_id": r["person_id"], "source_key": r["source_key"],
+                "source_system": r["source_system"], "store_id": r["store_id"],
+                "customer_name": r["nm"], "total_orders": _int(r["total_orders"]),
+                "total_sales": _num(r["total_spend_kes"]), "last_purchase_date": r["last_purchase"]})
+        return {"groups": [{"match_on": "shared phone — review required", "value": k, "customers": v}
                            for k, v in groups.items()],
-                "total_groups": len(groups), "scanning": False}
+                "total_groups": len(groups), "potential_duplicates": sum(len(v) for v in groups.values()),
+                "scanning": False}
 
     @app.post("/api/dropoff/winback-bulk")
     def cl_winback_bulk(request: Request, payload: dict = Body(default=None)):
@@ -7608,20 +7857,19 @@ def _reg_misc(app):
         ranges = {"cooling": (90, 180), "at_risk": (181, 365), "lapsed": (366, 3650)}
         lo, hi = ranges.get(band, (181, 365))
         rows = _q(
-            "WITH c AS (SELECT customer_id, SUM(total_orders) AS orders, "
-            " SUM(total_spend_kes::numeric) AS spend, MAX(last_order_date) AS lod "
-            " FROM all_customers GROUP BY customer_id) "
-            "SELECT customer_id FROM c WHERE lod " + _ISO +
-            " AND (CURRENT_DATE-lod::date) BETWEEN " + str(lo) + " AND " + str(hi) +
-            " AND COALESCE(orders,0) >= 2 ORDER BY spend DESC LIMIT " + str(lim))
+            "SELECT ('person:'||person_id)::text customer_id,person_id FROM customer_people "
+            "WHERE last_purchase " + _ISO + " AND (CURRENT_DATE-last_purchase::date) BETWEEN " +
+            str(lo) + " AND " + str(hi) + " AND COALESCE(total_orders,0)>=2 "
+            "ORDER BY total_spend_kes DESC LIMIT " + str(lim))
         uid, name = u.get("user_id"), (u.get("name") or u.get("email"))
         tasks = []
         for r in rows:
+            ident = _person_ref(r["customer_id"], required=True)
             rid = _ex(
-                "INSERT INTO crm_tasks (customer_id,title,description,status,priority,"
+                "INSERT INTO crm_tasks (customer_id,person_id,source_key,title,description,status,priority,"
                 " assignee_user_id,assignee_name,created_by,created_by_name) "
-                "VALUES (%s,%s,%s,'open','high',%s,%s,%s,%s) RETURNING id",
-                (r["customer_id"], "Win-back outreach",
+                "VALUES (%s,%s,%s,%s,%s,'open','high',%s,%s,%s,%s) RETURNING id",
+                (ident["ref"],ident["person_id"],ident["source_key"],"Win-back outreach",
                  "Auto-generated from drop-off band: " + band, uid, name, uid, name),
                 fetch=True)
             tasks.append({"task_id": str(rid[0]["id"]) if rid else None,

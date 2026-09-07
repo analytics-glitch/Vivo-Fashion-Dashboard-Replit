@@ -316,7 +316,7 @@ export default function CustomerProfile() {
             {initials}
           </div>
           <div className="flex-1 min-w-0">
-            <div className="eyebrow">Customer · {profile.customer_id}</div>
+            <div className="eyebrow">Canonical customer · person:{profile.person_id || profile.customer_id}</div>
             <h1 className="font-display text-3xl md:text-4xl mt-1 tracking-tight" data-testid="profile-name">{profile.customer_name}</h1>
 
             {/* Status Row — clean hierarchy: Loyalty · RFM · Assignment */}
@@ -341,6 +341,12 @@ export default function CustomerProfile() {
               {prefs?.dob && <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5"/>DOB {formatDate(prefs.dob)}</span>}
               <span className="inline-flex items-center gap-1"><Calendar className="h-3.5 w-3.5"/>Customer since {formatDate(profile.first_purchase_date)}</span>
             </div>
+            {!!profile.source_aliases?.length && (
+              <div className="mt-3 text-xs text-[var(--vivo-muted)]" data-testid="profile-source-provenance">
+                <span className="uppercase tracking-wider font-semibold">Source records</span>
+                <span className="ml-2 font-mono-num">{profile.source_aliases.map((a) => a.source_key).join(" · ")}</span>
+              </div>
+            )}
           </div>
           <div className="flex gap-3">
             <Button onClick={() => openMessage()} data-testid="action-send-message" className="h-12 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm">
@@ -378,7 +384,7 @@ export default function CustomerProfile() {
 
       {/* Loyalty programme */}
       <div className="mt-6">
-        <LoyaltyCard customerId={id} customerName={profile.customer_name} />
+        <LoyaltyCard customerId={id} customerName={profile.customer_name} sourceAliases={profile.source_aliases || []} />
       </div>
 
       {/* AI Next-Best-Action */}

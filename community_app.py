@@ -869,6 +869,36 @@ def _ensure_tables():
             created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
             last_login_at TIMESTAMPTZ
         );
+        -- A Johari member is an authentication principal, not a customer
+        -- record.  This nullable link is deliberately separate from the
+        -- legacy source-customer columns: one real person may have several
+        -- Johari accounts, while carts, consent, points, posts and
+        -- redemptions always remain keyed by community_members.id.
+        CREATE TABLE IF NOT EXISTS customer_person_registry (
+            person_id BIGSERIAL PRIMARY KEY,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
+        ALTER TABLE community_members ADD COLUMN IF NOT EXISTS canonical_person_id BIGINT
+            REFERENCES customer_person_registry(person_id);
+        ALTER TABLE community_members ADD COLUMN IF NOT EXISTS canonical_link_status TEXT
+            NOT NULL DEFAULT 'pending';
+        ALTER TABLE community_members ADD COLUMN IF NOT EXISTS canonical_link_method TEXT;
+        ALTER TABLE community_members ADD COLUMN IF NOT EXISTS canonical_linked_at TIMESTAMPTZ;
+        ALTER TABLE community_members ADD COLUMN IF NOT EXISTS canonical_link_reviewed_at TIMESTAMPTZ;
+        CREATE INDEX IF NOT EXISTS community_members_canonical_person_idx
+            ON community_members(canonical_person_id) WHERE canonical_person_id IS NOT NULL;
+        CREATE TABLE IF NOT EXISTS community_member_person_link_audit (
+            audit_id BIGSERIAL PRIMARY KEY,
+            member_id INT NOT NULL REFERENCES community_members(id),
+            old_person_id BIGINT,
+            new_person_id BIGINT,
+            old_status TEXT,
+            new_status TEXT NOT NULL,
+            method TEXT,
+            reason TEXT NOT NULL,
+            actor TEXT NOT NULL DEFAULT 'system',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+        );
         ALTER TABLE community_members ADD COLUMN IF NOT EXISTS username TEXT;
         ALTER TABLE community_members ADD COLUMN IF NOT EXISTS show_tier BOOLEAN NOT NULL DEFAULT FALSE;
         ALTER TABLE community_members ADD COLUMN IF NOT EXISTS show_leaderboard BOOLEAN NOT NULL DEFAULT TRUE;
@@ -2359,19 +2389,53 @@ def _reconcile_referral_rewards():
     with _db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                """SELECT m.id, m.referred_by_member_id
-                   FROM community_members m
-                   JOIN all_customers c
-                     ON c.customer_id = m.customer_id
-                    AND c.store_id = m.customer_store_id
-                   LEFT JOIN community_referral_rewards rr
-                     ON rr.referred_member_id = m.id
-                  WHERE m.referred_by_member_id IS NOT NULL
-                    AND COALESCE(c.total_orders, 0) >= 1
-                    AND rr.referred_member_id IS NULL"""
+                """SELECT EXISTS (
+                       SELECT 1 FROM information_schema.columns
+                        WHERE table_schema=current_schema()
+                          AND table_name='community_members'
+                          AND column_name='canonical_person_id'
+                   ) AND to_regclass('customer_identity') IS NOT NULL AS canonical_ready"""
             )
+            canonical_ready = bool((cur.fetchone() or {}).get("canonical_ready"))
+            if canonical_ready:
+                cur.execute(
+                    """SELECT m.id, m.referred_by_member_id, m.canonical_person_id,
+                              m.customer_id, m.customer_store_id
+                       FROM community_members m
+                       LEFT JOIN community_referral_rewards rr
+                         ON rr.referred_member_id = m.id
+                      WHERE m.referred_by_member_id IS NOT NULL
+                         AND m.canonical_person_id IS NOT NULL
+                        AND rr.referred_member_id IS NULL"""
+                )
+            else:
+                # Compatibility for isolated/older schemas: retain the exact
+                # member-owned source account rather than guessing by phone.
+                cur.execute(
+                    """SELECT m.id, m.referred_by_member_id, NULL::bigint canonical_person_id,
+                              m.customer_id, m.customer_store_id
+                       FROM community_members m
+                       LEFT JOIN community_referral_rewards rr
+                         ON rr.referred_member_id = m.id
+                      WHERE m.referred_by_member_id IS NOT NULL
+                        AND m.customer_id IS NOT NULL
+                        AND m.customer_store_id IS NOT NULL
+                        AND rr.referred_member_id IS NULL"""
+                )
             for member in cur.fetchall():
-                _award_referral_after_first_purchase(cur, member, 1)
+                if member["canonical_person_id"] is not None:
+                    purchase = _person_purchase_stats(cur, member["canonical_person_id"])
+                else:
+                    cur.execute(
+                        """SELECT COALESCE(total_orders,0) total_orders
+                             FROM all_customers
+                            WHERE customer_id=%s AND store_id=%s""",
+                        (member["customer_id"], member["customer_store_id"]),
+                    )
+                    purchase = cur.fetchone() or {}
+                _award_referral_after_first_purchase(
+                    cur, member, int((purchase or {}).get("total_orders") or 0)
+                )
         conn.commit()
 
 
@@ -2540,6 +2604,107 @@ def _match_customer(cur, phone_digits):
     return cur.fetchone()
 
 
+def _canonical_identity_available(cur):
+    """Whether this schema has the nullable Johari-to-person link contract."""
+    cur.execute(
+        """SELECT (
+               to_regclass('customer_identity') IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM information_schema.columns
+                    WHERE table_schema=current_schema()
+                      AND table_name='community_members'
+                      AND column_name='canonical_person_id'
+               )
+           ) AS available"""
+    )
+    row = cur.fetchone() or {}
+    # Test doubles written before this probe return no named field; let them
+    # continue into the canonical query they explicitly model.
+    return row.get("available") is not False
+
+
+def _canonical_person_for_phone(cur, phone_digits):
+    """Return the one safe canonical person for a member phone, else None.
+
+    Phone is the only linking key.  A shared/ambiguous/pseudo alias is never
+    used as evidence, even if an arbitrary ORDER BY could pick one row.
+    """
+    if not _canonical_identity_available(cur):
+        return None, "unmatched_phone"
+    cur.execute(
+        """SELECT array_agg(DISTINCT ci.person_id) AS person_ids,
+                  bool_or(ci.match_method IN ('ambiguous_phone', 'pseudo')) AS unsafe
+             FROM customer_identity ci
+            WHERE ci.phone9 IS NOT NULL
+              AND RIGHT(ci.phone9, 9) = RIGHT(%s, 9)""",
+        (phone_digits,),
+    )
+    row = cur.fetchone() or {}
+    person_ids = [p for p in (row.get("person_ids") or []) if p is not None]
+    if len(person_ids) == 1 and not row.get("unsafe"):
+        return int(person_ids[0]), "normalized_phone"
+    return None, ("ambiguous_phone" if person_ids or row.get("unsafe") else "unmatched_phone")
+
+
+def _resolve_member_person_link(cur, member, actor="system"):
+    """Fail-closed linkage/backfill with an append-only transition audit."""
+    person_id, outcome = _canonical_person_for_phone(cur, member["phone"])
+    status = "linked" if person_id is not None else ("ambiguous" if outcome == "ambiguous_phone" else "unmatched")
+    old_id = member.get("canonical_person_id")
+    old_status = member.get("canonical_link_status") or "pending"
+    # A phone match changing from one real person to another is never an
+    # automatic relink.  Remove it from analytics until a reviewer decides;
+    # retaining either person's purchases would be cross-account leakage.
+    if old_id is not None and person_id is not None and int(old_id) != int(person_id):
+        person_id, status, outcome = None, "relink_review", "relink_requires_review"
+    if old_id == person_id and old_status == status:
+        return {**member, "canonical_person_id": person_id, "canonical_link_status": status}
+    cur.execute(
+        """UPDATE community_members
+              SET canonical_person_id=%s, canonical_link_status=%s,
+                  canonical_link_method=%s, canonical_linked_at=
+                    CASE WHEN %s = 'linked' THEN now() ELSE canonical_linked_at END,
+                  canonical_link_reviewed_at=now()
+            WHERE id=%s""",
+        (person_id, status, outcome, status, member["id"]),
+    )
+    cur.execute(
+        """INSERT INTO community_member_person_link_audit
+              (member_id,old_person_id,new_person_id,old_status,new_status,method,reason,actor)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s)""",
+        (member["id"], old_id, person_id, old_status, status, outcome, outcome, actor),
+    )
+    _me_cache.pop(member["id"], None)
+    return {**member, "canonical_person_id": person_id, "canonical_link_status": status,
+            "canonical_link_method": outcome}
+
+
+def _person_purchase_stats(cur, person_id):
+    """Canonical purchase profile, joined through fully-qualified aliases."""
+    if not person_id:
+        return None
+    cur.execute(
+        """WITH aliases AS (
+              SELECT source_customer_id, store_id, source_system
+                FROM customer_identity
+               WHERE person_id=%s
+            ), customers AS (
+              SELECT c.*
+                FROM all_customers c JOIN aliases a
+                  ON c.customer_id::text=a.source_customer_id AND c.store_id=a.store_id
+                 AND a.source_system=CASE WHEN c.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END
+            )
+           SELECT COALESCE(SUM(total_orders),0)::bigint AS total_orders,
+                  COALESCE(SUM(total_spend_kes),0)::float AS total_spend_kes,
+                  MIN(first_order_date) AS first_order_date, MAX(last_order_date) AS last_order_date,
+                  MAX(preferred_size) FILTER (WHERE preferred_size IS NOT NULL AND preferred_size<>'') AS preferred_size,
+                  MAX(city) FILTER (WHERE city IS NOT NULL AND city<>'') AS city
+             FROM customers""",
+        (person_id,),
+    )
+    return cur.fetchone()
+
+
 def _month_year(val):
     """'2021-04-17' / date / datetime -> 'April 2021'."""
     if not val:
@@ -2656,17 +2821,8 @@ def _member_payload(cur, m):
     stats = None
     recent = []
     joined_src = m["created_at"]
-    if m.get("customer_id"):
-        cur.execute(
-            """SELECT COALESCE(total_orders,0) AS total_orders,
-                      COALESCE(total_spend_kes,0)::float AS total_spend_kes,
-                      first_order_date, last_order_date, preferred_size, city
-               FROM all_customers
-               WHERE customer_id = %s AND store_id = %s
-               LIMIT 1""",
-            (m["customer_id"], m.get("customer_store_id")),
-        )
-        c = cur.fetchone()
+    if m.get("canonical_person_id"):
+        c = _person_purchase_stats(cur, m["canonical_person_id"])
         if c:
             stats = {
                 "orders": int(c["total_orders"]),
@@ -2690,7 +2846,11 @@ def _member_payload(cur, m):
                                   s.total_sales_kes, s.discounts_kes,
                                   s.returns_kes, s.ordered_item_quantity
                            FROM all_sales s
-                           WHERE s.customer_id = %s AND s.store_id = %s
+                            JOIN customer_identity ci
+                              ON ci.source_customer_id=s.customer_id::text
+                             AND ci.store_id=s.store_id
+                             AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END
+                            WHERE ci.person_id = %s
                              AND COALESCE(s.order_name,'') <> ''
                        ), p AS (
                            -- dedup by sku (twin rows exist) but only over the
@@ -2712,7 +2872,7 @@ def _member_payload(cur, m):
                        GROUP BY o.order_name
                        ORDER BY MIN(o.sale_date::date) DESC
                        LIMIT 3""",
-                    (m["customer_id"], m.get("customer_store_id")),
+                    (m["canonical_person_id"],),
                 )
                 for r in cur.fetchall():
                     total = max(float(r["total_kes"] or 0), 0.0)
@@ -2767,7 +2927,7 @@ def _member_payload(cur, m):
         "points": available,
         "lifetime_points": points,
         "next_tier": next_tier,
-        "linked": bool(m.get("customer_id")),
+        "linked": bool(m.get("canonical_person_id")),
         "username": m.get("username"),
         "show_tier": bool(m.get("show_tier")),
         "show_leaderboard": m.get("show_leaderboard") is not False,
@@ -3006,14 +3166,9 @@ def _lifetime_points(cur, m):
     Used for event tier gates; tier is lifetime-based so redeeming rewards
     never locks a member out of a Tanzanite evening."""
     spend = 0.0
-    if m.get("customer_id"):
-        cur.execute(
-            """SELECT COALESCE(total_spend_kes,0)::float AS s FROM all_customers
-               WHERE customer_id = %s AND store_id = %s LIMIT 1""",
-            (m["customer_id"], m.get("customer_store_id")),
-        )
-        row = cur.fetchone()
-        spend = float((row or {}).get("s") or 0.0)
+    if m.get("canonical_person_id"):
+        row = _person_purchase_stats(cur, m["canonical_person_id"])
+        spend = float((row or {}).get("total_spend_kes") or 0.0)
     return int(WELCOME_BONUS_PTS + spend // KES_PER_POINT) + _earned_bonus_points(cur, m["id"])
 
 
@@ -3492,6 +3647,10 @@ def register_community_routes(app, api_pg_module):
                 cur.execute("SELECT * FROM community_members WHERE phone = %s", (phone,))
                 m = cur.fetchone()
                 if m:
+                    # Opportunistic, audited backfill; failure to find exactly
+                    # one canonical person leaves this account fully usable but
+                    # unlinked/reviewable.
+                    m = _resolve_member_person_link(cur, m, actor="login_backfill")
                     token = _new_session(cur, phone, member_id=m["id"], purpose="member")
                     cur.execute(
                         "UPDATE community_members SET last_login_at = now() WHERE id = %s",
@@ -3562,13 +3721,19 @@ def register_community_routes(app, api_pg_module):
                         "message": "That username is taken — try one of these",
                         "suggestions": _suggest_usernames(cur, username),
                     })
-                match = _match_customer(cur, phone)
+                canonical_ready = _canonical_identity_available(cur)
+                if canonical_ready:
+                    canonical_person_id, canonical_outcome = _canonical_person_for_phone(cur, phone)
+                    purchase = _person_purchase_stats(cur, canonical_person_id)
+                else:
+                    canonical_person_id, canonical_outcome = None, "unmatched_phone"
+                    purchase = _match_customer(cur, phone) or {}
                 referral_code = _clean_referral_code(payload.get("referral_code"))
                 referrer_id = None
                 # A referral only applies to someone who has not already
                 # purchased. Existing customers may join Johari, but cannot
                 # turn historical spend into a referral reward.
-                if referral_code and int((match or {}).get("total_orders") or 0) == 0:
+                if referral_code and int((purchase or {}).get("total_orders") or 0) == 0:
                     cur.execute(
                         """SELECT id, phone FROM community_members
                            WHERE referral_code = %s LIMIT 1""",
@@ -3579,24 +3744,44 @@ def register_community_routes(app, api_pg_module):
                         referrer_id = referrer["id"]
                 member_referral_code = _new_referral_code(cur)
                 try:
-                    cur.execute(
+                    if canonical_ready:
+                        cur.execute(
                         """INSERT INTO community_members
                                (phone, full_name, email, dob, consent_at,
-                                customer_id, customer_store_id, last_login_at, username,
-                                 consent_terms_version, referral_code, referred_by_member_id)
-                           VALUES (%s, %s, %s, %s, now(), %s, %s, now(), %s, %s, %s, %s)
+                                last_login_at, username, consent_terms_version,
+                                referral_code, referred_by_member_id, canonical_person_id,
+                                canonical_link_status, canonical_link_method, canonical_linked_at,
+                                canonical_link_reviewed_at)
+                           VALUES (%s, %s, %s, %s, now(), now(), %s, %s, %s, %s, %s, %s, %s,
+                                   CASE WHEN %s = 'linked' THEN now() ELSE NULL END, now())
                            ON CONFLICT (phone) DO NOTHING
                            RETURNING *""",
                         (
                             phone, full_name, email, dob,
-                            (match or {}).get("customer_id"),
-                            (match or {}).get("store_id"),
                             username,
                             terms_version,
                             member_referral_code,
                             referrer_id,
+                            canonical_person_id,
+                            "linked" if canonical_person_id is not None else
+                            ("ambiguous" if canonical_outcome == "ambiguous_phone" else "unmatched"),
+                            canonical_outcome,
+                            "linked" if canonical_person_id is not None else
+                            ("ambiguous" if canonical_outcome == "ambiguous_phone" else "unmatched"),
                         ),
-                    )
+                        )
+                    else:
+                        cur.execute(
+                            """INSERT INTO community_members
+                                   (phone, full_name, email, dob, consent_at,
+                                    last_login_at, username, consent_terms_version,
+                                    referral_code, referred_by_member_id)
+                               VALUES (%s,%s,%s,%s,now(),now(),%s,%s,%s,%s)
+                               ON CONFLICT (phone) DO NOTHING
+                               RETURNING *""",
+                            (phone, full_name, email, dob, username, terms_version,
+                             member_referral_code, referrer_id),
+                        )
                 except psycopg2.IntegrityError:
                     # Raced another signup to the same username between the
                     # availability check and the insert.
@@ -3607,9 +3792,24 @@ def register_community_routes(app, api_pg_module):
                         "suggestions": _suggest_usernames(cur, username),
                     })
                 m = cur.fetchone()
+                created_member = bool(m)
                 if not m:  # raced: member already exists for this phone
                     cur.execute("SELECT * FROM community_members WHERE phone = %s", (phone,))
                     m = cur.fetchone()
+                # Signup has a durable review record even when no person can
+                # safely be linked.  A raced existing account is re-evaluated
+                # rather than inheriting this request's candidate.
+                if created_member and canonical_ready:
+                    cur.execute(
+                        """INSERT INTO community_member_person_link_audit
+                              (member_id,new_person_id,old_status,new_status,method,reason,actor)
+                           VALUES (%s,%s,'pending',%s,%s,%s,'signup')""",
+                        (m["id"], m.get("canonical_person_id"),
+                         m.get("canonical_link_status") or "unmatched",
+                         m.get("canonical_link_method"), m.get("canonical_link_method") or "unmatched_phone"),
+                    )
+                if canonical_ready:
+                    m = _resolve_member_person_link(cur, m, actor="signup")
                 # Atomically claim the single-use signup token: a concurrent
                 # duplicate submit blocks on this DELETE, then sees 0 rows
                 # and bails instead of minting a second session.
@@ -4237,16 +4437,20 @@ def register_community_routes(app, api_pg_module):
                 pool = [dict(r) for r in cur.fetchall()]
 
                 fav_cats = []
-                if prefs["use_activity"] and m.get("customer_id"):
+                if prefs["use_activity"] and m.get("canonical_person_id"):
                     try:
                         cur.execute(
                             """SELECT COALESCE(NULLIF(TRIM(p.category),''),'') AS category,
                                       SUM(COALESCE(s.ordered_item_quantity,0)) AS units
                                FROM all_sales s
                                JOIN all_products_clean p ON p.sku = s.variant_sku
-                               WHERE s.customer_id = %s AND s.store_id = %s
+                                JOIN customer_identity ci
+                                  ON ci.source_customer_id=s.customer_id::text
+                                 AND ci.store_id=s.store_id
+                                 AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END
+                                WHERE ci.person_id = %s
                                GROUP BY 1 ORDER BY units DESC LIMIT 3""",
-                            (m["customer_id"], m.get("customer_store_id")))
+                             (m["canonical_person_id"],))
                         fav_cats = [r["category"] for r in cur.fetchall() if r["category"]]
                     except Exception as e:
                         log.warning("styled-for-you favourites failed: %s", e)
@@ -5335,16 +5539,6 @@ def register_community_routes(app, api_pg_module):
                 # Points check under the member row lock so parallel redeems
                 # serialize; all redemption inserts happen inside this lock.
                 cur.execute("SELECT id FROM community_members WHERE id = %s FOR UPDATE", (m["id"],))
-                spend = 0.0
-                if m.get("customer_id"):
-                    cur.execute(
-                        """SELECT COALESCE(total_spend_kes,0)::float AS s
-                           FROM all_customers
-                           WHERE customer_id = %s AND store_id = %s LIMIT 1""",
-                        (m["customer_id"], m.get("customer_store_id")),
-                    )
-                    row = cur.fetchone()
-                    spend = float(row["s"]) if row else 0.0
                 lifetime = _lifetime_points(cur, m)  # same helper as /me — bonus points must count toward redemption affordability
                 cur.execute(
                     """SELECT COALESCE(SUM(points_cost), 0) AS spent

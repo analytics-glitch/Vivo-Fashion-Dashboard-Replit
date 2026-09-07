@@ -8,23 +8,41 @@ import { Award, Gift, Scissors, Sparkles, AlertTriangle, Calendar as CalIcon } f
 
 const fmtKES = (n) => `KES ${Number(n || 0).toLocaleString(undefined, { maximumFractionDigits: 0 })}`;
 
-export function LoyaltyCard({ customerId, customerName }) {
+export function LoyaltyCard({ customerId, customerName, sourceAliases = [] }) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [sourceKey, setSourceKey] = useState("");
 
   const load = async () => {
     setLoading(true);
     try {
-      const r = await api.get(`/loyalty/customer/${customerId}`);
+      const r = await api.get(`/loyalty/customer/${customerId}`, { params: sourceKey ? { source_key: sourceKey } : {} });
       setData(r.data);
     } catch (e) { /* ignore */ }
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(); }, [customerId]);
+  useEffect(() => {
+    setSourceKey(sourceAliases.length === 1 ? sourceAliases[0].source_key : "");
+  }, [customerId, sourceAliases]);
+  useEffect(() => { if (sourceKey || sourceAliases.length <= 1) load(); }, [customerId, sourceKey]);
 
   if (loading) {
+    if (sourceAliases.length > 1 && !sourceKey) {
+      return (
+        <div className="vivo-card p-5 rounded-sm">
+          <div className="eyebrow">Loyalty programme</div>
+          <p className="text-xs text-[var(--vivo-muted)] mt-2">Select the exact source account. Balances are never combined.</p>
+          <select value="" onChange={(e) => setSourceKey(e.target.value)}
+            className="mt-3 h-9 max-w-full rounded-sm border border-[var(--vivo-border)] bg-white px-2 font-mono-num"
+            data-testid="loyalty-source-account">
+            <option value="">Select exact source…</option>
+            {sourceAliases.map((a) => <option key={a.source_key} value={a.source_key}>{a.source_key}</option>)}
+          </select>
+        </div>
+      );
+    }
     return (
       <div className="vivo-card p-5 rounded-sm" data-testid="loyalty-card-loading">
         <div className="text-xs uppercase tracking-wider text-[var(--vivo-muted)]">Loyalty</div>
@@ -40,7 +58,7 @@ export function LoyaltyCard({ customerId, customerName }) {
   const issueVoucher = async () => {
     setBusy(true);
     try {
-      await api.post(`/loyalty/customer/${customerId}/voucher/issue`);
+      await api.post(`/loyalty/customer/${customerId}/voucher/issue`, { source_key: sourceKey });
       toast.success("Voucher issued");
       await load();
     } catch { toast.error("Could not issue voucher"); }
@@ -61,7 +79,7 @@ export function LoyaltyCard({ customerId, customerName }) {
     if (!dt) return;
     setBusy(true);
     try {
-      await api.post(`/loyalty/customer/${customerId}/styling/book`, { scheduled_for: dt });
+      await api.post(`/loyalty/customer/${customerId}/styling/book`, { scheduled_for: dt, source_key: sourceKey });
       toast.success("Styling session booked");
       await load();
     } catch (e) { toast.error(e?.response?.data?.detail || "Could not book"); }
@@ -71,6 +89,17 @@ export function LoyaltyCard({ customerId, customerName }) {
   return (
     <div className="vivo-card p-5 rounded-sm space-y-5" data-testid="loyalty-card">
       {/* Header */}
+      {sourceAliases.length > 0 && (
+        <label className="block text-xs text-[var(--vivo-muted)]">
+          Loyalty source account
+          <select value={sourceKey} onChange={(e) => setSourceKey(e.target.value)}
+            className="ml-2 h-8 max-w-full rounded-sm border border-[var(--vivo-border)] bg-white px-2 font-mono-num"
+            data-testid="loyalty-source-account">
+            <option value="">Select exact source…</option>
+            {sourceAliases.map((a) => <option key={a.source_key} value={a.source_key}>{a.source_key}</option>)}
+          </select>
+        </label>
+      )}
       <div className="flex items-start justify-between gap-3">
         <div>
           <div className="eyebrow inline-flex items-center gap-1.5"><Award className="h-3.5 w-3.5"/>Loyalty programme</div>

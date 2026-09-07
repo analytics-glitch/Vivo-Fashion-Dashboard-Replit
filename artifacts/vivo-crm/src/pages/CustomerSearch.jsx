@@ -117,7 +117,7 @@ export default function CustomerSearch() {
       <form onSubmit={search} className="mt-8 flex gap-3 max-w-2xl" data-testid="search-form">
         <div className="relative flex-1">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 h-4 w-4 text-[var(--vivo-muted)]" />
-          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Phone, name or email" className="h-12 pl-11 rounded-sm border-[var(--vivo-border)] bg-white text-base" data-testid="customer-search-input" autoFocus />
+          <Input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Phone, name, email, or canonical person ID" className="h-12 pl-11 rounded-sm border-[var(--vivo-border)] bg-white text-base" data-testid="customer-search-input" autoFocus />
         </div>
         <Button type="submit" className="h-12 px-6 bg-[var(--vivo-navy)] hover:bg-[var(--vivo-navy-700)] text-white rounded-sm" data-testid="customer-search-submit">Search</Button>
       </form>
@@ -180,6 +180,7 @@ export default function CustomerSearch() {
                         {c.customer_name}
                         <RfmBadge tier={c.rfm_tier} />
                       </div>
+                      {c.person_id && <div className="text-[10px] text-[var(--vivo-muted)] font-mono-num mt-1">person:{c.person_id}{c.provenance ? ` · ${c.provenance}` : ""}</div>}
                       <div className="text-xs text-[var(--vivo-muted)] mt-1 flex flex-wrap gap-3">
                         {c.phone && (<span className="inline-flex items-center gap-1"><Phone className="h-3 w-3" />{c.phone}</span>)}
                         {c.email && (<span className="inline-flex items-center gap-1"><Mail className="h-3 w-3" />{c.email}</span>)}

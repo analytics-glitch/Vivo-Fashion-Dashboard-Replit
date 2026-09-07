@@ -183,7 +183,7 @@ export default function CustomerDatabase() {
       <div className="vivo-card p-3 mb-3 flex items-center gap-3">
         <Search className="h-4 w-4 text-[var(--vivo-muted)] ml-1"/>
         <Input
-          placeholder="Search name, email, phone, or customer ID"
+          placeholder="Search name, email, phone, canonical person ID, or source alias"
           value={filters.q}
           onChange={(e) => { setFilters({ ...filters, q: e.target.value }); setOffset(0); }}
           className="h-9 rounded-sm border-0 focus-visible:ring-0 bg-transparent flex-1"
@@ -294,7 +294,8 @@ export default function CustomerDatabase() {
                   <tr key={r.customer_id} className="border-b border-[var(--vivo-border)] hover:bg-[var(--vivo-bg-soft)] press-effect" data-testid={`grid-row-${r.customer_id}`}>
                     <td className="px-4 py-3">
                       <Link to={`/customers/${r.customer_id}`} className="font-medium text-[var(--vivo-navy)] hover:underline">{r.customer_name || r.customer_id}</Link>
-                      <div className="text-[11px] text-[var(--vivo-muted)] mt-0.5">{r.customer_id}</div>
+                      <div className="text-[11px] text-[var(--vivo-muted)] mt-0.5 font-mono-num">person:{r.person_id || r.customer_id}</div>
+                      {r.provenance && <div className="text-[10px] text-[var(--vivo-muted)] truncate max-w-[250px]" title={r.provenance}>{r.provenance}</div>}
                     </td>
                     <td className="px-4 py-3">{r.loyalty_tier ? <LoyaltyBadge tier={r.loyalty_tier} size="sm"/> : <span className="text-[var(--vivo-muted)] text-xs">—</span>}</td>
                     <td className="px-4 py-3">{r.rfm_tier ? <RfmBadge tier={r.rfm_tier}/> : <span className="text-[var(--vivo-muted)] text-xs">—</span>}</td>
