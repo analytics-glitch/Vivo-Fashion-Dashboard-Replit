@@ -1,8 +1,9 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
 import './StyleDevelopmentTrackerPage.css';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users, ArrowLeft, SlidersHorizontal } from 'lucide-react';
+import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users, ArrowLeft, SlidersHorizontal, Copy, Check } from 'lucide-react';
 import { groupStyleDevelopmentItems, type StyleDevelopmentGroupBy } from '../lib/styleDevelopmentBoard';
+import StyleDevelopmentImageGallery, { type StyleDevelopmentImage } from '../components/StyleDevelopmentImageGallery';
 
 type TrackerStyle = {
   id: number;
@@ -102,7 +103,7 @@ type HistoryEntry = {
   reassignmentReasonCategory?: 'operational' | 'style' | null;
 };
 
-type TrackerDetailPayload = TrackerStyle & { history: HistoryEntry[] };
+type TrackerDetailPayload = TrackerStyle & { history: HistoryEntry[]; images: StyleDevelopmentImage[] };
 
 type CardFieldKey = 'targetOrderWeek' | 'stageDays' | 'patternMaker' | 'designer' | 'collection' | 'knitOrWoven' | 'printOrSolid' | 'type' | 'tier' | 'status';
 type CardFieldVisibility = Record<CardFieldKey, boolean>;
@@ -961,7 +962,12 @@ export default function StyleDevelopmentTrackerPage() {
                     <td className="tracker-select-cell" onClick={event => event.stopPropagation()}>
                       <input type="checkbox" aria-label={`Select ${s.styleName}`} checked={selectedIds.includes(s.id)} onChange={event => setSelectedIds(current => event.target.checked ? [...current, s.id] : current.filter(id => id !== s.id))} />
                     </td>
-                    <td>{s.styleNumber || <em style={{color: '#999'}}>Pending</em>}</td>
+                    <td>{s.styleNumber
+                      ? <div className="tracker-style-number-inline">
+                        <span className="tracker-style-number-selectable" onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>{s.styleNumber}</span>
+                        <StyleNumberCopy styleNumber={s.styleNumber} />
+                      </div>
+                      : <em style={{color: '#999'}}>Pending</em>}</td>
                     <td>
                       <div className="tracker-table-title">
                         {s.styleName}
@@ -1050,6 +1056,52 @@ function TrackerCardImage({ imageUrl }: { imageUrl: string | null }) {
   );
 }
 
+function StyleNumberCopy({ styleNumber }: { styleNumber: string }) {
+  const [copied, setCopied] = useState(false);
+  const copiedTimer = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (copiedTimer.current != null) window.clearTimeout(copiedTimer.current);
+  }, []);
+
+  const copyStyleNumber = async () => {
+    try {
+      await navigator.clipboard.writeText(styleNumber);
+    } catch {
+      const textarea = document.createElement('textarea');
+      textarea.value = styleNumber;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand('copy');
+      textarea.remove();
+    }
+    setCopied(true);
+    if (copiedTimer.current != null) window.clearTimeout(copiedTimer.current);
+    copiedTimer.current = window.setTimeout(() => setCopied(false), 1400);
+  };
+
+  return (
+    <button
+      type="button"
+      className={`tracker-style-number-copy${copied ? ' is-copied' : ''}`}
+      aria-label={copied ? `${styleNumber} copied` : `Copy style number ${styleNumber}`}
+      title={copied ? 'Copied' : 'Copy style number'}
+      draggable={false}
+      onPointerDown={event => event.stopPropagation()}
+      onMouseDown={event => event.stopPropagation()}
+      onDragStart={event => event.stopPropagation()}
+      onClick={event => {
+        event.stopPropagation();
+        void copyStyleNumber();
+      }}
+    >
+      {copied ? <><Check size={12} aria-hidden="true" /><span>Copied</span></> : <Copy size={12} aria-hidden="true" />}
+    </button>
+  );
+}
+
 function StyleDevelopmentBoardCard({
   item,
   cardFields,
@@ -1072,13 +1124,28 @@ function StyleDevelopmentBoardCard({
 
   return (
     <article className="tracker-card">
-      <button className="tracker-card-open" onClick={onOpen} aria-label={`Open ${item.styleName}`}>
+      <div
+        className="tracker-card-open"
+        role="button"
+        tabIndex={0}
+        onClick={onOpen}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onOpen();
+          }
+        }}
+        aria-label={`Open ${item.styleName}`}
+      >
         <TrackerCardImage imageUrl={item.imageUrl} />
         <div className="tracker-card-content">
           <div className="tracker-board-card-title" title={item.styleName}>{item.styleName}</div>
           <div className="tracker-card-number">
             <span>Style No.</span>
-            <strong>{item.styleNumber || 'Number pending'}</strong>
+            {item.styleNumber ? <div className="tracker-style-number-inline">
+              <strong className="tracker-style-number-selectable" onPointerDown={event => event.stopPropagation()} onClick={event => event.stopPropagation()}>{item.styleNumber}</strong>
+              <StyleNumberCopy styleNumber={item.styleNumber} />
+            </div> : <strong>Number pending</strong>}
           </div>
           {(cardFields.targetOrderWeek || cardFields.stageDays) && (
             <div className="tracker-card-meta-line">
@@ -1087,7 +1154,7 @@ function StyleDevelopmentBoardCard({
             </div>
           )}
         </div>
-      </button>
+      </div>
       <div className="tracker-card-supporting">
         <div className="tracker-card-fields">
           {cardFields.patternMaker && (
@@ -2139,18 +2206,12 @@ function TrackerDetailDrawer({ id, patternMakers, designers, reassignmentReasons
             {isLoading ? <div className="tracker-empty-state">Loading details...</div> : error ? <div className="tracker-empty-state">Failed to load details.</div> : data ? (
                <>
                  <div className="tracker-drawer-top-grid">
-                    <div className="tracker-drawer-image placeholder">
-                        <ImageIcon size={40}/>
-                        {data.imageUrl && (
-                          <img
-                            src={data.imageUrl}
-                            alt=""
-                            onError={(e) => {
-                              e.currentTarget.style.display = 'none';
-                            }}
-                          />
-                        )}
-                    </div>
+                     <StyleDevelopmentImageGallery
+                       styleId={data.id}
+                       styleName={data.styleName}
+                       imageUrl={data.imageUrl}
+                       images={data.images ?? []}
+                     />
                     <div className="tracker-drawer-facts">
                         <div className="fact-box">
                            <div className="fact-label">Current Stage</div>

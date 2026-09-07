@@ -1565,6 +1565,21 @@ async function ensureStyleDevelopmentTrackerData() {
          CHECK (fabric_consumption_override_m_per_unit IS NULL OR fabric_consumption_override_m_per_unit > 0),
       ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       ALTER COLUMN target_order_week DROP NOT NULL;
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_images (
+      id BIGSERIAL PRIMARY KEY,
+      tracker_style_id INTEGER NOT NULL REFERENCES ${schema}.style_development_tracker(id) ON DELETE CASCADE,
+      object_path TEXT NOT NULL UNIQUE,
+      original_name TEXT NOT NULL,
+      content_type TEXT NOT NULL CHECK (content_type IN ('image/jpeg','image/png','image/webp')),
+      byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 8388608),
+      is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+      uploaded_by INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS style_development_images_style_idx
+      ON ${schema}.style_development_images (tracker_style_id, uploaded_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS style_development_images_one_primary_idx
+      ON ${schema}.style_development_images (tracker_style_id) WHERE is_primary;
     CREATE TABLE IF NOT EXISTS ${schema}.subcategory_fabric_consumption_rates (
       subcategory TEXT PRIMARY KEY,
       expected_metres_per_unit NUMERIC(8,2)
@@ -2730,6 +2745,26 @@ async function essentialWorkspaceCompatibility() {
   return Boolean(result.rows[0]?.users && result.rows[0]?.sessions);
 }
 
+async function ensureStyleDevelopmentImageSchema() {
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_images (
+      id BIGSERIAL PRIMARY KEY,
+      tracker_style_id INTEGER NOT NULL REFERENCES ${schema}.style_development_tracker(id) ON DELETE CASCADE,
+      object_path TEXT NOT NULL UNIQUE,
+      original_name TEXT NOT NULL,
+      content_type TEXT NOT NULL CHECK (content_type IN ('image/jpeg','image/png','image/webp')),
+      byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 8388608),
+      is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+      uploaded_by INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS style_development_images_style_idx
+      ON ${schema}.style_development_images (tracker_style_id, uploaded_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS style_development_images_one_primary_idx
+      ON ${schema}.style_development_images (tracker_style_id) WHERE is_primary;
+  `);
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -3853,6 +3888,21 @@ async function ensureSchema() {
     );
     CREATE INDEX IF NOT EXISTS style_development_tracker_week_idx
       ON ${schema}.style_development_tracker (target_order_week, status);
+    CREATE TABLE IF NOT EXISTS ${schema}.style_development_images (
+      id BIGSERIAL PRIMARY KEY,
+      tracker_style_id INTEGER NOT NULL REFERENCES ${schema}.style_development_tracker(id) ON DELETE CASCADE,
+      object_path TEXT NOT NULL UNIQUE,
+      original_name TEXT NOT NULL,
+      content_type TEXT NOT NULL CHECK (content_type IN ('image/jpeg','image/png','image/webp')),
+      byte_size INTEGER NOT NULL CHECK (byte_size > 0 AND byte_size <= 8388608),
+      is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+      uploaded_by INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
+      uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS style_development_images_style_idx
+      ON ${schema}.style_development_images (tracker_style_id, uploaded_at DESC, id DESC);
+    CREATE UNIQUE INDEX IF NOT EXISTS style_development_images_one_primary_idx
+      ON ${schema}.style_development_images (tracker_style_id) WHERE is_primary;
     CREATE TABLE IF NOT EXISTS ${schema}.l10_meetings (
       id SERIAL PRIMARY KEY,
       week_label TEXT NOT NULL UNIQUE,
@@ -4781,6 +4831,8 @@ const garmentImageSource = (value: unknown): GarmentImageSource | null =>
 const garmentImageKey = (value: unknown) => String(value ?? "").trim().toLowerCase();
 const garmentImageUrl = (source: GarmentImageSource, styleKey: string) =>
   `/api/workspace/garment-images/${source}/${encodeURIComponent(styleKey)}`;
+const styleDevelopmentImageUrl = (styleId: number, imageId: number) =>
+  `/api/workspace/style-development-tracker/${styleId}/images/${imageId}/file`;
 
 async function applyGarmentImageOverrides<T extends Record<string, unknown>>(
   rows: T[],
@@ -6246,11 +6298,22 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
     "plm",
     (row) => row.styleNumber,
   );
-  const [historyResult, consumption, selectedFabrics, rowsWithImages] = await Promise.all([
+  const manualImagesPromise = pool.query(
+    `SELECT i.id,i.tracker_style_id AS "trackerStyleId",i.original_name AS "originalName",
+      i.content_type AS "contentType",i.byte_size AS "byteSize",i.is_primary AS "isPrimary",
+      i.uploaded_at AS "uploadedAt",COALESCE(wu.name,'Former workspace user') AS "uploadedBy"
+     FROM ${schema}.style_development_images i
+     LEFT JOIN ${schema}.workspace_users wu ON wu.id=i.uploaded_by
+     WHERE i.tracker_style_id=ANY($1::int[])
+     ORDER BY i.tracker_style_id,i.uploaded_at DESC,i.id DESC`,
+    [ids],
+  );
+  const [historyResult, consumption, selectedFabrics, rowsWithImages, manualImagesResult] = await Promise.all([
     historyPromise,
     consumptionPromise,
     selectedFabricsPromise,
     rowsWithImagesPromise,
+    manualImagesPromise,
   ]);
   const byStyle = new Map<number, Array<Record<string, unknown>>>();
   for (const entry of historyResult.rows) {
@@ -6259,6 +6322,17 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
   }
   const metresByCategory = new Map(consumption.rows.map((item) => [String(item.category).toLowerCase(), Number(item.metres_per_garment)]));
   const fabricById = new Map(selectedFabrics.rows.map((item) => [Number(item.id), item]));
+  const manualImagesByStyle = new Map<number, Array<Record<string, unknown>>>();
+  for (const image of manualImagesResult.rows) {
+    const trackerStyleId = Number(image.trackerStyleId);
+    const item = {
+      ...image,
+      id: Number(image.id),
+      byteSize: Number(image.byteSize),
+      imageUrl: styleDevelopmentImageUrl(trackerStyleId, Number(image.id)),
+    };
+    manualImagesByStyle.set(trackerStyleId, [...(manualImagesByStyle.get(trackerStyleId) ?? []), item]);
+  }
   return rowsWithImages.map((row) => {
     const styleHistory = (byStyle.get(Number(row.id)) ?? []).map((entry) =>
       entry.eventType === "imported_stage"
@@ -6275,8 +6349,13 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
     row.categoryMetresPerGarment = mpg ?? null;
     row.fabricMetres = selected?.metres ?? 0;
     row.indicativeCogsKes = cost !== null && mpg && mpg > 0 ? cost * mpg : row.indicativeCogsKes;
+    const manualImages = manualImagesByStyle.get(Number(row.id)) ?? [];
+    const displayImage = manualImages.find((image) => image.isPrimary) ?? manualImages[0];
+    const payload = styleDevelopmentPayload(row, styleHistory);
     return {
-    ...styleDevelopmentPayload(row, styleHistory),
+    ...payload,
+    imageUrl: displayImage?.imageUrl ?? payload.imageUrl,
+    images: styleId ? manualImages : undefined,
     history: styleId ? styleHistory.slice().reverse() : undefined,
     };
   });
@@ -10561,6 +10640,175 @@ router.get("/garment-images/:source/:styleKey", requireUser, async (req, res, ne
   }
 });
 
+router.post("/style-development-tracker/:id/images/upload-url", requireUser, async (req, res, next) => {
+  try {
+    const styleId = Number(req.params.id);
+    const validation = validateGarmentImageMeta(req.body?.name, req.body?.size, req.body?.contentType);
+    if (!Number.isInteger(styleId) || styleId < 1) {
+      res.status(400).json({ error: "A valid Style Development record is required" });
+      return;
+    }
+    if ("error" in validation) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const exists = await pool.query(`SELECT 1 FROM ${schema}.style_development_tracker WHERE id=$1`, [styleId]);
+    if (!exists.rowCount) {
+      res.status(404).json({ error: "Style Development record not found" });
+      return;
+    }
+    const extension = validation.originalName.split(".").pop()!.toLowerCase();
+    const objectPath = `/objects/style-development/${styleId}/${crypto.randomUUID()}.${extension}`;
+    res.json({ uploadUrl: await signedStorageUrl(objectPath, "PUT", 900), objectPath, expiresInSeconds: 900 });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post("/style-development-tracker/:id/images/finalize", requireUser, async (req: AuthRequest, res, next) => {
+  let objectPath = "";
+  try {
+    const styleId = Number(req.params.id);
+    const validation = validateGarmentImageMeta(req.body?.name, req.body?.size, req.body?.contentType);
+    objectPath = String(req.body?.objectPath ?? "");
+    const expectedPrefix = `/objects/style-development/${styleId}/`;
+    if (!Number.isInteger(styleId) || styleId < 1 || !objectPath.startsWith(expectedPrefix) || objectPath.includes("..")) {
+      res.status(400).json({ error: "Invalid Style Development image upload" });
+      return;
+    }
+    if ("error" in validation) {
+      res.status(400).json({ error: validation.error });
+      return;
+    }
+    const stored = await fetch(await signedStorageUrl(objectPath, "GET", 120), { signal: AbortSignal.timeout(30_000) });
+    const bytes = new Uint8Array(await stored.arrayBuffer());
+    const config = GARMENT_IMAGE_TYPES[validation.contentType];
+    if (!stored.ok || bytes.length !== validation.byteSize || !config.magic(bytes)) {
+      await deleteGarmentObject(objectPath);
+      objectPath = "";
+      res.status(400).json({ error: "The uploaded file does not match the selected image type" });
+      return;
+    }
+    const client = await pool.connect();
+    let imageId = 0;
+    try {
+      await client.query("BEGIN");
+      const style = await client.query(`SELECT id FROM ${schema}.style_development_tracker WHERE id=$1 FOR UPDATE`, [styleId]);
+      if (!style.rowCount) throw Object.assign(new Error("Style Development record not found"), { status: 404 });
+      const existing = await client.query(`SELECT 1 FROM ${schema}.style_development_images WHERE tracker_style_id=$1 LIMIT 1`, [styleId]);
+      const inserted = await client.query<{ id: number }>(
+        `INSERT INTO ${schema}.style_development_images
+          (tracker_style_id,object_path,original_name,content_type,byte_size,is_primary,uploaded_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7) RETURNING id`,
+        [styleId, objectPath, validation.originalName, validation.contentType, validation.byteSize, !existing.rowCount, req.workspaceUser?.id ?? null],
+      );
+      imageId = Number(inserted.rows[0].id);
+      await client.query("COMMIT");
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+    objectPath = "";
+    res.status(201).json({ imageId, imageUrl: styleDevelopmentImageUrl(styleId, imageId) });
+  } catch (error) {
+    if (objectPath) void deleteGarmentObject(objectPath);
+    next(error);
+  }
+});
+
+router.get("/style-development-tracker/:id/images/:imageId/file", requireUser, async (req, res, next) => {
+  try {
+    const styleId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+    const result = await pool.query<{ objectPath: string; contentType: string }>(
+      `SELECT object_path AS "objectPath",content_type AS "contentType"
+       FROM ${schema}.style_development_images WHERE id=$1 AND tracker_style_id=$2`,
+      [imageId, styleId],
+    );
+    const image = result.rows[0];
+    if (!image) {
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    const object = await fetch(await signedStorageUrl(image.objectPath, "GET", 300));
+    if (!object.ok || !object.body) {
+      res.status(404).json({ error: "Stored image not found" });
+      return;
+    }
+    res.setHeader("Content-Type", image.contentType);
+    res.setHeader("Cache-Control", "private, max-age=300");
+    Readable.fromWeb(object.body as ReadableStream<Uint8Array>).pipe(res);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/style-development-tracker/:id/images/:imageId/primary", requireUser, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const styleId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+    await client.query("BEGIN");
+    await client.query(`SELECT id FROM ${schema}.style_development_tracker WHERE id=$1 FOR UPDATE`, [styleId]);
+    const selected = await client.query(
+      `SELECT id FROM ${schema}.style_development_images WHERE id=$1 AND tracker_style_id=$2`,
+      [imageId, styleId],
+    );
+    if (!selected.rowCount) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    await client.query(`UPDATE ${schema}.style_development_images SET is_primary=FALSE WHERE tracker_style_id=$1 AND is_primary`, [styleId]);
+    await client.query(`UPDATE ${schema}.style_development_images SET is_primary=TRUE WHERE id=$1`, [imageId]);
+    await client.query("COMMIT");
+    res.json({ imageUrl: styleDevelopmentImageUrl(styleId, imageId) });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+router.delete("/style-development-tracker/:id/images/:imageId", requireUser, async (req, res, next) => {
+  const client = await pool.connect();
+  try {
+    const styleId = Number(req.params.id);
+    const imageId = Number(req.params.imageId);
+    await client.query("BEGIN");
+    await client.query(`SELECT id FROM ${schema}.style_development_tracker WHERE id=$1 FOR UPDATE`, [styleId]);
+    const removed = await client.query<{ objectPath: string; isPrimary: boolean }>(
+      `DELETE FROM ${schema}.style_development_images
+       WHERE id=$1 AND tracker_style_id=$2 RETURNING object_path AS "objectPath",is_primary AS "isPrimary"`,
+      [imageId, styleId],
+    );
+    if (!removed.rowCount) {
+      await client.query("ROLLBACK");
+      res.status(404).json({ error: "Image not found" });
+      return;
+    }
+    if (removed.rows[0].isPrimary) {
+      await client.query(
+        `UPDATE ${schema}.style_development_images SET is_primary=TRUE
+         WHERE id=(SELECT id FROM ${schema}.style_development_images
+          WHERE tracker_style_id=$1 ORDER BY uploaded_at DESC,id DESC LIMIT 1)`,
+        [styleId],
+      );
+    }
+    await client.query("COMMIT");
+    void deleteGarmentObject(removed.rows[0].objectPath);
+    res.status(204).end();
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
 router.post("/team-directory", requireAdmin, async (req, res, next) => {
   try {
     const name = String(req.body?.name ?? "").trim();
@@ -14096,6 +14344,7 @@ httpServer.listen(port, "0.0.0.0", () => {
         await withTimeout(ensureSchema(), 15000, "workspace schema bootstrap");
       }
       if (!await essentialWorkspaceCompatibility()) throw new Error("workspace essential tables are unavailable");
+      await withTimeout(ensureStyleDevelopmentImageSchema(), 8000, "Style Development image schema");
       serviceReady = true;
       schemaReady = true;
       lastDbProbeResult = true;

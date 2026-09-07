@@ -79,6 +79,11 @@
 .tracker-card-number { display: grid; gap: 2px; margin-top: 12px; color: #756e65; text-align: left; }
 .tracker-card-number span { font: 500 9px var(--app-font-mono); letter-spacing: .08em; text-transform: uppercase; }
 .tracker-card-number strong { color: #5c574f; font: 600 12px var(--app-font-sans); }
+.tracker-style-number-inline { display: inline-flex; min-width: 0; align-items: center; gap: 5px; }
+.tracker-style-number-selectable { cursor: text; user-select: text; -webkit-user-select: text; }
+.tracker-style-number-copy { display: inline-flex; min-width: 24px; min-height: 24px; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; padding: 3px 5px; border: 1px solid transparent; border-radius: 4px; background: transparent; color: #8a806f; cursor: pointer; font: 600 9px var(--app-font-sans); }
+.tracker-style-number-copy:hover, .tracker-style-number-copy:focus-visible { border-color: #d8d0c2; background: #f7f3eb; color: #6f562b; outline: none; }
+.tracker-style-number-copy.is-copied { color: #3f7550; }
 .tracker-card-meta-line { display: flex; align-items: center; gap: 10px; margin-top: 12px; padding-top: 10px; border-top: 1px solid #eee9e1; color: #716b62; font: 500 10px var(--app-font-mono); white-space: nowrap; }
 .tracker-card-meta-line span + span { padding-left: 10px; border-left: 1px solid #d8d0c2; }
 .tracker-card-meta-line b { color: #9a9287; font-weight: 500; text-transform: uppercase; }
@@ -158,6 +163,23 @@
 .tracker-drawer-image img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; z-index: 2; }
 .tracker-drawer-image.placeholder { display: grid; place-items: center; color: #a19a90; }
 .tracker-drawer-image.placeholder svg { z-index: 1; }
+.tracker-style-images { width: 180px; flex: 0 0 180px; display: flex; flex-direction: column; gap: 10px; }
+.tracker-image-dropzone { cursor: pointer; outline: 2px solid transparent; outline-offset: 2px; }
+.tracker-image-dropzone:hover, .tracker-image-dropzone:focus-visible, .tracker-image-dropzone.is-dragging { outline-color: var(--gold); }
+.tracker-image-dropzone.is-dragging { background: #f8f1e3; }
+.tracker-image-dropzone input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+.tracker-image-upload-prompt { position: absolute; z-index: 4; right: 8px; bottom: 8px; left: 8px; display: inline-flex; align-items: center; justify-content: center; gap: 5px; padding: 7px; border-radius: 5px; background: rgba(255,255,255,.94); color: var(--navy); font-size: 10px; font-weight: 700; box-shadow: 0 1px 5px rgba(0,0,0,.12); }
+.tracker-image-gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.tracker-image-thumb { position: relative; min-width: 0; overflow: hidden; border: 1px solid #d8d0c2; border-radius: 6px; background: #eee9df; }
+.tracker-image-thumb.is-primary { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold); }
+.tracker-image-thumb > img { display: block; width: 100%; aspect-ratio: 4 / 5; object-fit: cover; }
+.tracker-image-attribution { position: absolute; right: 0; bottom: 28px; left: 0; display: flex; flex-direction: column; gap: 1px; padding: 12px 5px 4px; overflow: hidden; background: linear-gradient(transparent,rgba(26,26,46,.8)); color: #fff; font-size: 8px; }
+.tracker-image-attribution strong, .tracker-image-attribution span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tracker-image-actions { display: flex; min-height: 28px; background: #fff; }
+.tracker-image-actions button { display: inline-flex; min-width: 0; align-items: center; justify-content: center; gap: 3px; flex: 1; border: 0; background: transparent; color: #6d6458; padding: 5px 3px; font-size: 8px; cursor: pointer; }
+.tracker-image-actions button:last-child { flex: 0 0 27px; border-left: 1px solid #e4ded4; color: #a14e45; }
+.tracker-image-actions button:disabled { color: #9d927f; cursor: default; }
+.tracker-image-error { padding: 8px; border: 1px solid #e6b8b2; border-radius: 5px; background: #fbeae8; color: #9e3932; font-size: 10px; line-height: 1.35; }
 .tracker-drawer-facts { flex: 1; min-width: 250px; display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); align-content: start; }
 .fact-box { background: #fff; border: 1px solid #d8d0c2; border-radius: 6px; padding: 16px; }
 .fact-label { font-size: 10px; font-weight: 600; text-transform: uppercase; color: #8c8375; font-family: var(--app-font-mono); margin-bottom: 6px; letter-spacing: 0.05em; }
