@@ -16,6 +16,7 @@
 .weekly-kpi-grid article.positive { border-top-color: #648c6b; background: #f8fbf8; }
 .weekly-kpi-grid article.shortfall { border-top-color: #c66b49; background: #fff9f6; }
 .weekly-kpi-grid article.unavailable { border-top-color: #9a8d79; background: #f7f4ee; }
+.weekly-kpi-grid article.standalone { align-content: start; border-top-color: #9a8d79; background: #fff; }
 .weekly-kpi-grid span { color: var(--muted); font-size: 10px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; }
 .weekly-kpi-grid strong { color: #1a1a2e; font: 600 25px var(--font-sans); }
 .weekly-kpi-grid article.unavailable strong { font-size: 16px; line-height: 1.25; }

@@ -39,7 +39,7 @@ type PlanPayload = {
     targetUnits: number; source: 'derived' | 'entered'; derivedTargetUnits: number; updatedAt: string | null;
   };
   kpis: Array<{
-    metricKey: string; actual: number | null; target: number; variance: number | null;
+    metricKey: string; actual: number | null; target: number | null; variance: number | null;
     unit: 'units' | 'percent' | 'count'; available: boolean;
   }>;
   kpiTargets: Array<{ metricKey: string; label: string; targetValue: number; unit: string }>;
@@ -285,10 +285,12 @@ export default function WeeklyOrderPlanPage() {
   const newnessTargetDetail = data?.summary?.newnessTargetComponents
     ?.map((component) => `${component.sharePct.toFixed(0)}% share of ${component.monthLabel}'s ${component.monthlyTargetUnits.toLocaleString()} units`)
     .join(' + ') || (data?.weeklyTarget.source === 'entered'
-      ? `${data.kpis.find((item) => item.metricKey === 'new_pct')?.target.toFixed(0) ?? 35}% of the entered weekly unit target`
+      ? `${data.kpis.find((item) => item.metricKey === 'new_pct')?.target?.toFixed(0) ?? 35}% of the entered weekly unit target`
       : '');
   const kpiLabel = (metricKey: string) =>
-    data?.kpiTargets.find((item) => item.metricKey === metricKey)?.label ?? metricKey;
+    metricKey === 'total_styles'
+      ? 'Total Styles'
+      : data?.kpiTargets.find((item) => item.metricKey === metricKey)?.label ?? metricKey;
   const formatKpi = (value: number, unit: string) => unit === 'percent'
     ? `${value.toFixed(1)}%`
     : Math.round(value).toLocaleString();
@@ -320,20 +322,20 @@ export default function WeeklyOrderPlanPage() {
         {targetPrompt && <span className="form-error weekly-target-prompt">{targetPrompt}</span>}
       </div>
       <div className="weekly-kpi-grid">
-        {data?.kpis.map((item) => <article key={item.metricKey} className={!item.available ? 'unavailable' : (item.variance ?? 0) >= 0 ? 'positive' : 'shortfall'}>
+        {data?.kpis.map((item) => <article key={item.metricKey} className={item.target == null ? 'standalone' : !item.available ? 'unavailable' : (item.variance ?? 0) >= 0 ? 'positive' : 'shortfall'}>
           <span>{kpiLabel(item.metricKey)}</span>
-          {item.available && item.actual != null ? <>
+          {item.target == null && item.actual != null ? <strong>{formatKpi(item.actual, item.unit)}</strong> : item.available && item.actual != null ? <>
             <strong>{formatKpi(item.actual, item.unit)}</strong>
-            <small>Target {formatKpi(item.target, item.unit)}</small>
+            <small>Target {formatKpi(item.target!, item.unit)}</small>
             <em>{formatVariance(item.variance ?? 0, item.unit)} vs target</em>
           </> : <>
             <strong>Attribute not available</strong>
-            <small>Target {formatKpi(item.target, item.unit)}</small>
+            <small>Target {formatKpi(item.target!, item.unit)}</small>
             <em>No actual or variance shown</em>
           </>}
         </article>)}
       </div>
-      {underNewness && <div className="weekly-alert warning"><AlertTriangle size={18} /><div><strong>Weekly newness is short by {(data?.summary?.newnessShortfallUnits || 0).toLocaleString()} units</strong><span>Add {(data?.summary?.newnessShortfallStyles || 0).toLocaleString()} new style{data?.summary?.newnessShortfallStyles === 1 ? '' : 's'} at the default {(data?.summary?.newStyleOrderSizeUnits || 300).toLocaleString()}-unit order size to meet this week’s share of the monthly commitment.</span></div></div>}
+      {underNewness && <div className="weekly-alert warning"><AlertTriangle size={18} /><div><strong>Weekly newness is short by {(data?.summary?.newnessShortfallUnits || 0).toLocaleString()} units</strong><span>Add {(data?.summary?.newnessShortfallStyles || 0).toLocaleString()} new style{data?.summary?.newnessShortfallStyles === 1 ? '' : 's'} at the default {(data?.summary?.newStyleOrderSizeUnits || 300).toLocaleString()}-unit order size to meet {newnessTargetDetail || 'this week’s newness target'}.</span></div></div>}
       <div className={`weekly-actions ${locked ? 'is-locked' : ''}`}><div>{locked ? <div className="weekly-locked-summary"><span className="weekly-confirmed"><CheckCircle2 size={17} /> Weekly target confirmed and locked</span><strong>{Number(data?.plan?.lockedTargetUnits ?? 0).toLocaleString()} target units · {Number(data?.plan?.lockedTargetStyles ?? 0).toLocaleString()} target styles</strong><small>Confirmed by {data?.plan?.confirmedBy || 'Workspace user'} on {data?.plan?.confirmedAt ? new Date(data.plan.confirmedAt).toLocaleString('en-GB') : '—'} · Planned when locked: {Number(data?.plan?.lockedPlannedUnits ?? 0).toLocaleString()} units across {Number(data?.plan?.lockedPlannedStyles ?? 0).toLocaleString()} styles</small></div> : <span>Confirming locks the target. It never creates or dates an actual order.</span>}</div>{locked ? data?.viewer.canUnlockTarget && <button className="button button-outline" disabled={unlock.isPending} onClick={() => { if (window.confirm(`Unlock Week ${week} target for editing? Existing style lines will not be changed.`)) unlock.mutate(); }}>{unlock.isPending ? 'Unlocking…' : 'Unlock target'}</button> : <><button className="button button-outline" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add style</button><button className="button button-dark" disabled={!data?.lines.length || confirm.isPending} onClick={requestConfirmation}>{confirm.isPending ? 'Confirming…' : 'Confirm target'}</button></>}</div>
       {unlock.isError && <span className="form-error">{unlock.error.message}</span>}
       <div className="weekly-section-heading"><div><span className="range-eyebrow">Target</span><h2>Styles intended for Week {week}</h2></div><p>Order status follows the first real dated order, even when it is raised in a later week.</p></div>

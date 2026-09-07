@@ -13417,7 +13417,7 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
       .filter((line) => !line.firstOrderDate && isNewnessOrderType(line.orderType))
       .reduce((sum, line) => sum + Number(line.estimatedQuantity ?? 0), 0);
     const committedNewUnits = actualNewUnits + pendingNewUnits;
-    const newnessShortfallUnits = Math.max(0, effectiveNewnessTargetUnits - committedNewUnits);
+    const newnessShortfallUnits = Math.max(0, effectiveNewnessTargetUnits - summary.newUnits);
     const totalPlannedUnits = summary.units;
     const percentOfUnits = (units: number) => totalPlannedUnits ? 100 * units / totalPlannedUnits : 0;
     const patternComplete = lines.rows.every((line) =>
@@ -13434,19 +13434,20 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
       .filter((line) => String(line.subCategory ?? "").trim().toLowerCase().includes("dress"))
       .reduce((sum, line) => sum + Number(line.estimatedQuantity), 0);
     const newStyleLines = lines.rows.filter((line) => isNewnessOrderType(line.orderType)).length;
-    const kpi = (metricKey: string, actual: number | null, target: number, unit: string, available = true) => ({
+    const kpi = (metricKey: string, actual: number | null, target: number | null, unit: string, available = true) => ({
       metricKey,
       actual: available ? actual : null,
       target,
-      variance: available && actual != null ? actual - target : null,
+      variance: available && actual != null && target != null ? actual - target : null,
       unit,
       available,
     });
     const weeklyKpis = [
+      kpi("total_styles", lines.rows.length, null, "count"),
       kpi("total_units", totalPlannedUnits, weeklyTargetUnits, "units"),
       kpi("print_pct", percentOfUnits(printUnits), Number(kpiTargets.get("print_pct") ?? 30), "percent", patternComplete),
       kpi("knit_pct", percentOfUnits(knitUnits), Number(kpiTargets.get("knit_pct") ?? 35), "percent", constructionComplete),
-      kpi("new_pct", percentOfUnits(summary.newUnits), newPctTarget, "percent"),
+      kpi("new_pct", weeklyTargetUnits ? 100 * summary.newUnits / weeklyTargetUnits : 0, newPctTarget, "percent"),
       kpi("dresses_pct", percentOfUnits(dressesUnits), Number(kpiTargets.get("dresses_pct") ?? 35), "percent"),
       kpi("average_order_size", lines.rows.length ? totalPlannedUnits / lines.rows.length : 0, Number(kpiTargets.get("average_order_size") ?? 400), "units"),
       kpi("new_styles", newStyleLines, Number(kpiTargets.get("new_styles") ?? 7), "count"),
