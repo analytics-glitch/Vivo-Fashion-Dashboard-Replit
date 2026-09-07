@@ -6788,26 +6788,28 @@ def register_merch_routes(app, api_pg_module):
         date_to: Optional[str] = Query(None),
     ):
         """Single internal canonical source for the BI Product Workspace."""
-        canonical_styles = await _styles_async(
-            from_date=date_from, to_date=date_to, ttl=_TTL)
-        # Use the same stock-tree implementation as Merch, not a second stock
-        # formula.  It is synchronous/database-bound, so run it off-loop.
         from starlette.concurrency import run_in_threadpool
         stock_mix_key = (
             f"merch_stock_mix_v8|None|None|None|{date_from}|{date_to}|"
             "None|None|False"
         )
-        stock_mix = await run_in_threadpool(
-            _cached, stock_mix_key, _TTL,
-            lambda: _fetch_stock_mix(
-                brand=None, subcategory=None, tier=None,
-                from_date=date_from, to_date=date_to,
-                country=None, pos_location=None, include_retired=False))
+        # These reads share no intermediate state. Run them together so a cold
+        # Product Workspace snapshot pays the slowest source cost, not the sum
+        # of all three source costs.
+        canonical_styles, stock_mix, orders = await asyncio.gather(
+            _styles_async(from_date=date_from, to_date=date_to, ttl=_TTL),
+            run_in_threadpool(
+                _cached, stock_mix_key, _TTL,
+                lambda: _fetch_stock_mix(
+                    brand=None, subcategory=None, tier=None,
+                    from_date=date_from, to_date=date_to,
+                    country=None, pos_location=None, include_retired=False)),
+            run_in_threadpool(_product_workspace_orders, date_from, date_to),
+        )
         styles = await run_in_threadpool(
             _apply_product_workspace_range_refresh,
             _product_workspace_styles(canonical_styles, stock_mix))
         summary = _compute_summary(canonical_styles)
-        orders = await run_in_threadpool(_product_workspace_orders, date_from, date_to)
         return JSONResponse({
             "styles": styles,
             "summary": summary,

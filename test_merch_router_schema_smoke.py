@@ -152,7 +152,12 @@ class FullPriceSellThroughTests(unittest.TestCase):
         """Equivalent selected-country sets share one full-price cache entry."""
         merch_router._cache_store.clear()
         calls = []
-        with _patch_db([]) as db:
+        # Cache-key behavior must not depend on whether the live rollup happens
+        # to be fresh; a fresh rollup adds a separate watermark lookup.
+        rollup_owner = merch_router.A or mock.MagicMock()
+        with mock.patch.object(merch_router, "A", rollup_owner), \
+             mock.patch.object(rollup_owner, "_rollup_fresh", return_value=False), \
+             _patch_db([]) as db:
             merch_router._fetch_full_price_period_by_style(
                 "2026-08-01", "2026-08-31", country="Uganda, Kenya")
             merch_router._fetch_full_price_period_by_style(

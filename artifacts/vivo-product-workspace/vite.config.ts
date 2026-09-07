@@ -78,6 +78,8 @@ export default defineConfig({
   build: {
     outDir: path.resolve(import.meta.dirname, 'dist/public'),
     emptyOutDir: true,
+    // Keep bundle growth visible in CI; route chunks are created by React.lazy.
+    chunkSizeWarningLimit: 450,
   },
   server: {
     port,

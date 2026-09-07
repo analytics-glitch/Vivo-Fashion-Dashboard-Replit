@@ -12,13 +12,18 @@
     "serve": "vite preview --config vite.config.ts --host 0.0.0.0",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test:assortment": "tsx --test src/lib/assortmentPlanFilters.test.ts server/assortment-signal.test.ts server/production-pipeline.test.ts server/bi-workspace-snapshot.test.ts",
+    "test:bi-snapshot": "tsx --test server/bi-workspace-snapshot.test.ts server/bi-workspace-snapshot.pg.test.ts",
     "check:assortment-load": "tsx server/assortment-load-check.ts",
     "test:catalogue-sort": "tsx --test src/lib/catalogueSort.test.ts",
     "test:plm-grouping": "tsx --test src/lib/plmGrouping.test.ts",
     "test:product-taxonomy": "tsx --test src/lib/productTaxonomy.test.ts",
     "test:feedback": "tsx --test server/feedback-policy.test.ts",
     "test:style-assignment": "tsx --test server/style-development-assignments.test.ts server/style-development-reassignment.test.ts",
-    "test:range-plan": "tsx --test server/range-plan-defaults.test.ts server/range-plan-defaults.pg.test.ts"
+    "test:range-plan": "tsx --test server/range-plan-defaults.test.ts server/range-plan-defaults.pg.test.ts",
+    "perf:bundle": "node --test scripts/performance-budget.test.mjs scripts/performance-live-config.test.mjs",
+    "perf:report": "node scripts/performance-static-report.mjs",
+    "perf:live": "node scripts/performance-live.mjs",
+    "test:performance": "pnpm perf:bundle"
   },
   "devDependencies": {
     "@hookform/resolvers": "^3.10.0",

@@ -7951,7 +7951,11 @@ def register_clienteling_routes(app):
     global A
     import api_pg as _api
     A = _api
-    _ensure_cl_tables()
+    # Registration happens while api_pg is imported, before Uvicorn binds its
+    # port. Clienteling compatibility work includes DDL and historical identity
+    # backfills, so it must join the existing post-bind startup queue rather than
+    # holding the entire shared API in startup mode.
+    A._deferred_startup(_ensure_cl_tables)
     _reg_dashboard(app)
     _reg_customers(app)
     _reg_tasks_notes(app)

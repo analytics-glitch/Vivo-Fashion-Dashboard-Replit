@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { attachKnownGarmentImageUrls, buildOrderCountIndex, validateWorkspaceBiSource } from "./bi-workspace-snapshot.js";
+import { attachKnownGarmentImageUrls, buildFirstSequenceLookup, buildOrderCountIndex, buildOrderLookupIndex, validateWorkspaceBiSource } from "./bi-workspace-snapshot.js";
 
 test("snapshot validation preserves the complete source contract", () => {
   const source = { styles: [{ styleNumber: "A1", custom: 7 }], orders: [], definitions: [{ name: "x" }], stockMix: { total: 2 } };
@@ -18,6 +18,22 @@ test("order index deduplicates order refs and joins by number or name", () => {
   ]);
   assert.equal(count("a1", "Alpha"), 2);
   assert.equal(count("none", "alpha"), 2);
+});
+
+test("order lookup index joins number and name once without scanning all orders", () => {
+  const alpha = { styleNumber: "A1", styleName: "Alpha", quantity: 10 };
+  const byName = { styleNumber: "", styleName: "Alpha", quantity: 5 };
+  const lookup = buildOrderLookupIndex([alpha, byName]);
+  assert.deepEqual(lookup.find(" a1 ", "alpha"), [alpha, byName]);
+  assert.deepEqual(lookup.find("none", "ALPHA"), [alpha, byName]);
+  assert.deepEqual(lookup.find("", ""), []);
+});
+
+test("planned-line lookup retains the first sequence match across number and name", () => {
+  const firstByName = { id: 11, styleNumber: "OTHER", styleName: "Alpha" };
+  const laterByNumber = { id: 12, styleNumber: "A1", styleName: "Different" };
+  const lookup = buildFirstSequenceLookup([firstByName, laterByNumber], (line) => line.styleNumber, (line) => line.styleName);
+  assert.equal(lookup.find("A1", "Alpha")?.id, 11);
 });
 
 test("saved catalogue images receive authoritative URLs without probing unknown styles", () => {

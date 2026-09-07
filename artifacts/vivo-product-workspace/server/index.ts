@@ -61,7 +61,7 @@ import {
   weeklyNewnessTarget,
 } from "./range-plan-newness.js";
 import { loadProductionPipelineByStyle } from "./production-pipeline.js";
-import { BI_SNAPSHOT_VERSION, attachKnownGarmentImageUrls, buildOrderCountIndex, validateWorkspaceBiSource, type WorkspaceBiSource } from "./bi-workspace-snapshot.js";
+import { BI_SNAPSHOT_VERSION, attachKnownGarmentImageUrls, buildFirstSequenceLookup, buildOrderCountIndex, buildOrderLookupIndex, claimBiWorkspaceSnapshot, validateWorkspaceBiSource, type WorkspaceBiSource } from "./bi-workspace-snapshot.js";
 
 const { Pool } = pg;
 const databaseUrl = process.env.VIVO_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -88,6 +88,42 @@ app.use(cookieParser());
 
 const router = express.Router();
 const schema = "product_workspace";
+router.use((req, res, next) => {
+  const startedAt = process.hrtime.bigint();
+  res.locals.workspaceTimings = new Map<string, number>();
+  res.locals.workspaceQueryCount = 0;
+  const originalEnd = res.end;
+  res.end = function (this: Response, chunk?: any, encoding?: any, callback?: any) {
+    const elapsedMs = Number(process.hrtime.bigint() - startedAt) / 1_000_000;
+    const payloadBytes = Number(this.getHeader("content-length") ?? (chunk ? Buffer.byteLength(chunk, encoding) : 0));
+    const freshnessMs = biWorkspaceCache?.meta.refreshedAt
+      ? Math.max(0, Date.now() - Date.parse(biWorkspaceCache.meta.refreshedAt))
+      : -1;
+    if (!this.headersSent) {
+      const phases = [...(this.locals.workspaceTimings as Map<string, number>).entries()]
+        .map(([name, duration]) => `${name};dur=${duration.toFixed(1)}`);
+      this.setHeader("Server-Timing", [`workspace;dur=${elapsedMs.toFixed(1)}`, ...phases].join(", "));
+      const max = Number((pool as any).options?.max ?? 24);
+      const pressure = max ? Math.round(100 * (pool.totalCount - pool.idleCount) / max) : 0;
+      this.setHeader("X-Workspace-Pool", `total=${pool.totalCount};idle=${pool.idleCount};waiting=${pool.waitingCount};pressure=${pressure}%`);
+      this.setHeader("X-Workspace-Payload-Bytes", String(payloadBytes));
+      this.setHeader("X-Workspace-BI-Cache-Age-Ms", String(freshnessMs));
+      this.setHeader("X-Workspace-Query-Count", String(this.locals.workspaceQueryCount));
+      this.setHeader("X-Workspace-BI-Cache", biWorkspaceCache?.meta.refreshError ? "stale-error" : biWorkspaceCache ? "fresh" : "empty");
+    }
+    return originalEnd.call(this, chunk, encoding, callback);
+  } as Response["end"];
+  next();
+});
+async function timedEndpointPhase<T>(res: Response, name: string, work: () => Promise<T>) {
+  const startedAt = process.hrtime.bigint();
+  try {
+    return await work();
+  } finally {
+    const timings = res.locals.workspaceTimings as Map<string, number>;
+    timings.set(name, (timings.get(name) ?? 0) + Number(process.hrtime.bigint() - startedAt) / 1_000_000);
+  }
+}
 const newnessSql = (expression: string) =>
   `LOWER(REGEXP_REPLACE(BTRIM(COALESCE(${expression},'')),'[_-]+',' ','g')) IN ('new','range refreshed','rr')`;
 /**
@@ -99,8 +135,18 @@ const newnessSql = (expression: string) =>
 type BiWorkspaceSource = WorkspaceBiSource & { definitions?: unknown; reconciliations?: unknown };
 type BiSnapshotMeta = { generatedAt: string | null; refreshedAt: string | null; refreshFailedAt: string | null; refreshError: string | null; version: number };
 let biWorkspaceCache: { value: BiWorkspaceSource; meta: BiSnapshotMeta } | null = null;
+type BiWorkspaceProjection = {
+  cacheKey: string;
+  styles: ReturnType<typeof biStyle>[];
+  stylesByNumber: Map<string, ReturnType<typeof biStyle>>;
+  activeOrders: ReturnType<typeof biOrder>[];
+  orders: ReturnType<typeof buildOrderLookupIndex<ReturnType<typeof biOrder>>>;
+};
+let biProjectionCache: BiWorkspaceProjection | null = null;
 let biWorkspaceFlight: Promise<void> | null = null;
+let biWorkspaceRetryAfter = 0;
 const BI_WORKSPACE_REFRESH_MS = 12 * 60 * 60 * 1000;
+const BI_WORKSPACE_RETRY_DELAY_MS = 5 * 60 * 1000;
 const biWorkspaceUrl = () => `http://127.0.0.1:${process.env.BI_API_PORT ?? "8080"}/api/internal/product-workspace-source`;
 class BiSourceUnavailable extends Error {
   status = 503;
@@ -167,18 +213,17 @@ async function loadBiWorkspaceSnapshot() {
     refreshFailedAt: row.refreshFailedAt?.toISOString?.() ?? row.refreshFailedAt ?? null,
     refreshError: row.refreshError ?? null };
   biWorkspaceCache = { value, meta };
+  biProjectionCache = null;
   return biWorkspaceCache;
 }
 async function refreshBiWorkspaceSnapshot() {
   if (biWorkspaceFlight) return biWorkspaceFlight;
+  if (!biWorkspaceCache && Date.now() < biWorkspaceRetryAfter) return;
   biWorkspaceFlight = (async () => {
     await ensureBiWorkspaceSnapshotTable();
     const claimToken = crypto.randomUUID();
-    const claim = await pool.query(`UPDATE ${schema}.bi_workspace_snapshot
-      SET refresh_claimed_until=NOW()+INTERVAL '2 minutes',refresh_claim_token=$1
-      WHERE singleton=TRUE AND (refresh_claimed_until IS NULL OR refresh_claimed_until<NOW())
-      RETURNING singleton`, [claimToken]);
-    if (!claim.rowCount) return;
+    const claimed = await claimBiWorkspaceSnapshot(pool, schema, claimToken);
+    if (!claimed) return;
     try {
       const value = validateWorkspaceBiSource(await biRequest<BiWorkspaceSource>(biWorkspaceUrl(), "GET")) as BiWorkspaceSource;
       const generatedAt = value.generatedAt && !Number.isNaN(Date.parse(value.generatedAt)) ? value.generatedAt : new Date().toISOString();
@@ -188,8 +233,10 @@ async function refreshBiWorkspaceSnapshot() {
         WHERE singleton=TRUE AND refresh_claim_token=$4`,
       [BI_SNAPSHOT_VERSION, JSON.stringify(value), generatedAt, claimToken]);
       await loadBiWorkspaceSnapshot();
+      biWorkspaceRetryAfter = 0;
     } catch (error) {
       const message = error instanceof Error ? error.message.slice(0, 500) : "Unknown refresh failure";
+      biWorkspaceRetryAfter = Date.now() + BI_WORKSPACE_RETRY_DELAY_MS;
       await pool.query(`UPDATE ${schema}.bi_workspace_snapshot SET refresh_claimed_until=NULL,refresh_claim_token=NULL,
         refresh_failed_at=NOW(),refresh_error=$1
         WHERE singleton=TRUE AND refresh_claim_token=$2`, [message, claimToken]).catch(() => undefined);
@@ -203,7 +250,7 @@ async function biWorkspaceSource() {
   if (biWorkspaceCache) return biWorkspaceCache.value;
   const snapshot = await loadBiWorkspaceSnapshot();
   if (snapshot) return snapshot.value;
-  void refreshBiWorkspaceSnapshot();
+  if (Date.now() >= biWorkspaceRetryAfter) void refreshBiWorkspaceSnapshot();
   throw new BiSourceUnavailable("BI snapshot is warming; no verified snapshot is available yet");
 }
 // Named export point for Workspace facts.  Do not bypass this adapter.
@@ -295,6 +342,25 @@ function biOrder(order: Record<string, any>) {
 }
 const activeBiOrders = (orders: Array<Record<string, any>>) => orders.map(biOrder)
   .filter((order) => order.orderDate && !["cancel", "cancelled", "canceled"].includes(order.orderState.toLowerCase()));
+const biLookupKey = (value: unknown) => String(value ?? "").trim().toLowerCase();
+function biWorkspaceProjection(source: BiWorkspaceSource): BiWorkspaceProjection {
+  // Projection lifetime is tied to both the snapshot contract and generated
+  // document. A new durable snapshot always clears this cache as well.
+  const cacheKey = `${BI_SNAPSHOT_VERSION}:${source.generatedAt ?? ""}`;
+  if (biProjectionCache?.cacheKey === cacheKey) return biProjectionCache;
+  const styles = source.styles.map(biStyle);
+  const stylesByNumber = new Map<string, ReturnType<typeof biStyle>>();
+  for (const style of styles) {
+    const key = biLookupKey(style.styleNumber);
+    if (key && !stylesByNumber.has(key)) stylesByNumber.set(key, style);
+  }
+  const activeOrders = activeBiOrders(source.orders);
+  biProjectionCache = { cacheKey, styles, stylesByNumber, activeOrders, orders: buildOrderLookupIndex(activeOrders) };
+  return biProjectionCache;
+}
+function projectedOrdersForStyle(projection: BiWorkspaceProjection, styleNumber: unknown, styleName: unknown) {
+  return projection.orders.find(styleNumber, styleName);
+}
 const sessionCookie = "vivo_workspace_session";
 const sessionDays = 7;
 let schemaReady = false;
@@ -2641,6 +2707,16 @@ async function isDatabaseReachable() {
   return lastDbProbeResult;
 }
 
+async function essentialWorkspaceCompatibility() {
+  // Do not make readiness wait for broad DDL, seeders, image cleanup, or BI.
+  // These two relations are the minimum needed for the authenticated shell.
+  const result = await withTimeout(pool.query<{ users: string | null; sessions: string | null }>(
+    `SELECT to_regclass($1) AS users,to_regclass($2) AS sessions`,
+    [`${schema}.users`, `${schema}.sessions`],
+  ), 2000, "workspace essential compatibility check");
+  return Boolean(result.rows[0]?.users && result.rows[0]?.sessions);
+}
+
 async function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string) {
   let timer: NodeJS.Timeout | undefined;
   try {
@@ -4863,7 +4939,7 @@ async function planPayload(planId: number) {
 
 router.get("/healthz", (_req, res) => res.json({ status: "ok" }));
 router.get("/readyz", async (_req, res) => {
-  if (serviceReady || schemaReady || await isDatabaseReachable()) {
+  if (serviceReady) {
     res.json({ status: "ok" });
     return;
   }
@@ -4878,7 +4954,7 @@ router.use(async (req, res, next) => {
     next();
     return;
   }
-  if (schemaReady || await isDatabaseReachable()) {
+  if (serviceReady) {
     next();
     return;
   }
@@ -6052,7 +6128,7 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
   );
   if (!result.rows.length) return [];
   const ids = result.rows.map((row) => Number(row.id));
-  const historyResult = await pool.query(
+  const historyPromise = pool.query(
     `SELECT h.id,h.tracker_style_id AS "trackerStyleId",h.entry_type AS "entryType",
       h.event_type AS "eventType",h.outcome,h.note,h.reason,h.old_value AS "oldValue",
       h.new_value AS "newValue",h.reassignment_batch_id AS "reassignmentBatchId",
@@ -6067,16 +6143,11 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
      ORDER BY h.occurred_at ASC,h.id ASC`,
     [ids],
   );
-  const byStyle = new Map<number, Array<Record<string, unknown>>>();
-  for (const entry of historyResult.rows) {
-    const id = Number(entry.trackerStyleId);
-    byStyle.set(id, [...(byStyle.get(id) ?? []), entry]);
-  }
   // This is the Fabric BI source of truth: completed MOs, joined through the
   // finished SKU product master (not a style-name match), with kg converted by
   // the live component kg/metre value.  Keep it local so tracker COGS cannot
   // drift behind a separately deployed BI endpoint.
-  const consumption = await pool.query(
+  const consumptionPromise = pool.query(
     `WITH product_category AS (
        SELECT DISTINCT ON (sku) sku,category FROM public.all_products_clean
         WHERE category IS NOT NULL AND BTRIM(category)<>'' ORDER BY sku,category
@@ -6098,9 +6169,8 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
      SELECT category,SUM(metres)/NULLIF(SUM(produced_qty),0) AS metres_per_garment
      FROM per_mo WHERE produced_qty>0 GROUP BY category`,
   );
-  const metresByCategory = new Map(consumption.rows.map((item) => [String(item.category).toLowerCase(), Number(item.metres_per_garment)]));
   const fabricIds = result.rows.map((item) => item.sampleFabricProductId).filter(Boolean);
-  const selectedFabrics = fabricIds.length ? await pool.query(
+  const selectedFabricsPromise = fabricIds.length ? pool.query(
     `SELECT p.id,p.name,p.fabric_color,COALESCE(SUM(i.available / NULLIF(p.kg_per_mtr_eff,0)),0) AS metres,
        COALESCE(SUM(i.total_value)/NULLIF(SUM(i.quantity),0)*p.kg_per_mtr_eff,p.standard_price*p.kg_per_mtr_eff,0) AS cost_per_metre
       FROM public.raw_fabric_products p
@@ -6108,12 +6178,24 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
        WHERE p.id=ANY($1::int[]) GROUP BY p.id,p.name,p.fabric_color,p.kg_per_mtr_eff,p.standard_price`,
     [fabricIds],
   ) : { rows: [] as Array<Record<string, unknown>> };
-  const fabricById = new Map(selectedFabrics.rows.map((item) => [Number(item.id), item]));
-  const rowsWithImages = await applyGarmentImageOverrides(
+  const rowsWithImagesPromise = applyGarmentImageOverrides(
     result.rows,
     "plm",
     (row) => row.styleNumber,
   );
+  const [historyResult, consumption, selectedFabrics, rowsWithImages] = await Promise.all([
+    historyPromise,
+    consumptionPromise,
+    selectedFabricsPromise,
+    rowsWithImagesPromise,
+  ]);
+  const byStyle = new Map<number, Array<Record<string, unknown>>>();
+  for (const entry of historyResult.rows) {
+    const id = Number(entry.trackerStyleId);
+    byStyle.set(id, [...(byStyle.get(id) ?? []), entry]);
+  }
+  const metresByCategory = new Map(consumption.rows.map((item) => [String(item.category).toLowerCase(), Number(item.metres_per_garment)]));
+  const fabricById = new Map(selectedFabrics.rows.map((item) => [Number(item.id), item]));
   return rowsWithImages.map((row) => {
     const styleHistory = (byStyle.get(Number(row.id)) ?? []).map((entry) =>
       entry.eventType === "imported_stage"
@@ -12590,7 +12672,9 @@ router.get("/catalogue-products", async (req, res, next) => {
     const rawPage = Number(req.query.page);
     const page = Number.isInteger(rawPage) && rawPage >= 1 ? Math.min(rawPage, 10000) : 1;
     const pageSize = 50;
-    const biItems = (await biWorkspaceSource()).styles.map(biStyle).filter((style) => {
+    const source = await timedEndpointPhase(res, "bi", () => biWorkspaceSource());
+    const projection = await timedEndpointPhase(res, "project", async () => biWorkspaceProjection(source));
+    const biItems = projection.styles.filter((style) => {
       const matches = (value: unknown, selected: string[]) => !selected.length || selected.includes(String(value ?? ""));
       const haystack = `${style.styleNumber} ${style.name} ${style.brand}`.toLowerCase();
       return ["active", "retired"].includes(style.status.toLowerCase()) &&
@@ -12834,7 +12918,8 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
     const source = String(req.query.source ?? "development");
     const pattern = `%${search.replace(/[%_]/g, "\\$&")}%`;
     if (source === "development") {
-      const result = await pool.query(
+      res.locals.workspaceQueryCount += 1;
+      const result = await timedEndpointPhase(res, "db", () => pool.query(
         `SELECT t.id::text AS "sourceId",'development'::text AS source,t.style_number AS "styleNumber",
           t.style_name AS "styleName",t.style_type AS "styleType",t.tier,t.category,
           t.sub_category AS "subCategory",t.brand,
@@ -12854,11 +12939,13 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
          ORDER BY CASE WHEN t.target_order_week ILIKE 'WK 36' OR t.target_order_week ILIKE 'WK36' THEN 0 ELSE 1 END,t.style_name
          LIMIT 30`,
         [search, pattern],
-      );
+      ));
       res.json({ items: result.rows });
       return;
     }
-    const items = (await biWorkspaceSource()).styles.map(biStyle)
+    const biSource = await timedEndpointPhase(res, "bi", () => biWorkspaceSource());
+    const projection = await timedEndpointPhase(res, "project", async () => biWorkspaceProjection(biSource));
+    const items = projection.styles
       .filter((style) => {
         const text = `${style.styleNumber} ${style.name} ${style.fabric}`.toLowerCase();
         return !search || text.includes(search.toLowerCase());
@@ -12917,26 +13004,54 @@ router.get("/weekly-order-plan", async (req, res, next) => {
   try {
     const isoYear = Number(req.query.year ?? 2026);
     const isoWeek = Number(req.query.week ?? 36);
-    const datesResult = await pool.query(
+    // Calendar and saved-plan reads are independent. Start the BI lookup here
+    // too; a transient BI miss must not delay or hide the saved plan.
+    res.locals.workspaceQueryCount += 3;
+    const [[datesResult, fallbackStart, planResult], sourceResult] = await Promise.all([
+      timedEndpointPhase(res, "db", () => Promise.all([
+      pool.query(
       `SELECT start_date::text AS "startDate",end_date::text AS "endDate"
        FROM public.planning_calendar WHERE year=$1 AND week_no=$2`,
       [isoYear, isoWeek],
-    );
-    const fallbackStart = await pool.query(
+      ),
+      pool.query(
       `SELECT to_date($1::text || lpad($2::text,2,'0'),'IYYYIW')::text AS "startDate"`,
       [isoYear, isoWeek],
-    );
+      ),
+      pool.query(
+        `SELECT id,iso_year AS "isoYear",iso_week AS "isoWeek",status,confirmed_at AS "confirmedAt"
+         FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
+        [isoYear, isoWeek],
+      ),
+       ])),
+      timedEndpointPhase(res, "bi", () => getBiWorkspaceSource()).catch((error) => {
+        if (error instanceof BiSourceUnavailable) return null;
+        throw error;
+      }),
+    ]);
     const startDate = calendarDate(datesResult.rows[0]?.startDate ?? fallbackStart.rows[0].startDate)!;
     const endDate = calendarDate(datesResult.rows[0]?.endDate
-      ?? (await pool.query(`SELECT ($1::date + 6)::text AS "endDate"`, [startDate])).rows[0].endDate)!;
-    const planResult = await pool.query(
-      `SELECT id,iso_year AS "isoYear",iso_week AS "isoWeek",status,confirmed_at AS "confirmedAt"
-       FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
-      [isoYear, isoWeek],
-    );
+      ?? (await timedEndpointPhase(res, "db", () => pool.query(`SELECT ($1::date + 6)::text AS "endDate"`, [startDate]))).rows[0].endDate)!;
+    if (!datesResult.rows[0]?.endDate) res.locals.workspaceQueryCount += 1;
     const plan = planResult.rows[0] ?? null;
-    const lines: { rows: Array<Record<string, any>> } = plan ? await pool.query<Record<string, any>>(
-      `SELECT l.*,l.order_number AS "orderNumber",l.style_number AS "styleNumber",l.style_name AS "styleName",l.style_type AS "styleType",
+    if (plan) res.locals.workspaceQueryCount += 1;
+    const lines: { rows: Array<Record<string, any>> } = plan ? await timedEndpointPhase(res, "db", () => pool.query<Record<string, any>>(
+      `WITH move_history AS (
+         SELECT h.line_id,COUNT(*)::int AS move_count,
+           (ARRAY_AGG(h.from_iso_year ORDER BY h.moved_at,h.id))[1] AS original_iso_year,
+           (ARRAY_AGG(h.from_iso_week ORDER BY h.moved_at,h.id))[1] AS original_iso_week,
+           JSON_AGG(JSON_BUILD_OBJECT(
+             'fromIsoYear',h.from_iso_year,'fromIsoWeek',h.from_iso_week,
+             'toIsoYear',h.to_iso_year,'toIsoWeek',h.to_iso_week,
+             'movedAt',h.moved_at,'movedBy',COALESCE(NULLIF(BTRIM(u.name),''),'Workspace user')
+           ) ORDER BY h.moved_at,h.id) AS history
+         FROM ${schema}.weekly_order_plan_line_moves h
+         LEFT JOIN ${schema}.users u ON u.id=h.moved_by
+         JOIN ${schema}.weekly_order_plan_lines selected ON selected.id=h.line_id
+         WHERE selected.plan_id=$1
+         GROUP BY h.line_id
+       )
+       SELECT l.*,l.order_number AS "orderNumber",l.style_number AS "styleNumber",l.style_name AS "styleName",l.style_type AS "styleType",
         l.sub_category AS "subCategory",l.fabric_product_id AS "fabricProductId",
         l.target_order_week AS "targetOrderWeek",
         CASE WHEN gi.id IS NOT NULL THEN '/api/workspace/garment-images/' ||
@@ -12960,52 +13075,33 @@ router.get("/weekly-order-plan", async (req, res, next) => {
          LEFT JOIN LATERAL (
            SELECT NULL::date AS first_order_date,0::numeric AS actual_quantity,'[]'::json AS orders
          ) ao ON TRUE
-         LEFT JOIN LATERAL (
-           SELECT COUNT(*)::int AS move_count,
-             (ARRAY_AGG(h.from_iso_year ORDER BY h.moved_at,h.id))[1] AS original_iso_year,
-             (ARRAY_AGG(h.from_iso_week ORDER BY h.moved_at,h.id))[1] AS original_iso_week,
-             JSON_AGG(JSON_BUILD_OBJECT(
-               'fromIsoYear',h.from_iso_year,'fromIsoWeek',h.from_iso_week,
-               'toIsoYear',h.to_iso_year,'toIsoWeek',h.to_iso_week,
-               'movedAt',h.moved_at,'movedBy',COALESCE(NULLIF(BTRIM(u.name),''),'Workspace user')
-             ) ORDER BY h.moved_at,h.id) AS history
-           FROM ${schema}.weekly_order_plan_line_moves h
-           LEFT JOIN ${schema}.users u ON u.id=h.moved_by
-           WHERE h.line_id=l.id
-         ) mv ON TRUE
+         LEFT JOIN move_history mv ON mv.line_id=l.id
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
-    ) : { rows: [] };
-    let source: BiWorkspaceSource = { styles: [], orders: [] };
-    try {
-      source = await getBiWorkspaceSource();
-    } catch (error) {
-      if (!(error instanceof BiSourceUnavailable)) throw error;
-    }
+    )) : { rows: [] };
+    const projection = sourceResult ? await timedEndpointPhase(res, "project", async () => biWorkspaceProjection(sourceResult)) : null;
+    // Preserve the former Array.find semantics: when an order number and name
+    // happen to identify different lines, the earliest sequence line wins.
+    const plannedLineLookup = buildFirstSequenceLookup(
+      lines.rows,
+      (line) => line.styleNumber,
+      (line) => line.styleName,
+    );
+    const actualOrders = await timedEndpointPhase(res, "enrich", async () => {
     for (const line of lines.rows) {
-      const lineStyleNumber = String(line.styleNumber ?? "").trim().toLowerCase();
-      const lineStyleName = String(line.styleName ?? "").trim().toLowerCase();
-      const matched = activeBiOrders(source.orders).filter((order) =>
-        (lineStyleNumber !== "" && lineStyleNumber === order.styleNumber.trim().toLowerCase()) ||
-        (lineStyleName !== "" && lineStyleName === order.styleName.trim().toLowerCase()));
+      const matched = projection ? projectedOrdersForStyle(projection, line.styleNumber, line.styleName) : [];
       line.firstOrderDate = matched.map((order) => order.orderDate).sort()[0] ?? null;
       line.actualQuantity = matched.reduce((sum, order) => sum + order.quantity, 0);
       line.actualOrders = matched.map((order) => ({ orderRef: order.orderRef, orderDate: order.orderDate, quantity: order.quantity }));
     }
-    const actualOrders = { rows: activeBiOrders(source.orders)
+    return { rows: (projection?.activeOrders ?? [])
       .filter((order) => order.orderDate >= startDate && order.orderDate <= endDate)
       .map((order) => {
-        const style = source.styles.map(biStyle).find((candidate) => candidate.styleNumber.toLowerCase() === order.styleNumber.toLowerCase());
-        const orderStyleNumber = order.styleNumber.trim().toLowerCase();
-        const orderStyleName = order.styleName.trim().toLowerCase();
-        const plannedLineId = lines.rows.find((line) => {
-          const lineStyleNumber = String(line.styleNumber ?? "").trim().toLowerCase();
-          const lineStyleName = String(line.styleName ?? "").trim().toLowerCase();
-          return (lineStyleNumber !== "" && orderStyleNumber !== "" && lineStyleNumber === orderStyleNumber)
-            || (lineStyleName !== "" && orderStyleName !== "" && lineStyleName === orderStyleName);
-        })?.id ?? null;
+        const style = projection?.stylesByNumber.get(biLookupKey(order.styleNumber));
+        const plannedLineId = plannedLineLookup.find(order.styleNumber, order.styleName)?.id ?? null;
         return { ...order, styleName: order.styleName || style?.name || "Unknown style", subCategory: style?.subCategory ?? "Uncategorised", category: style?.category ?? null, brand: style?.brand ?? null, plannedLineId };
       }) };
+    });
     /*
     const actualOrders = await pool.query(
       `WITH style_dim AS (
@@ -13054,7 +13150,8 @@ router.get("/weekly-order-plan", async (req, res, next) => {
     const actualStyleKeys = new Set(actualOrders.rows.map(weeklyStyleIdentity));
     const unplannedOrders = actualOrders.rows.filter((order) => order.plannedLineId == null);
     const unplannedStyleKeys = new Set(unplannedOrders.map(weeklyStyleIdentity));
-    const monthlyNewnessResult = await pool.query<{
+    res.locals.workspaceQueryCount += 1;
+    const monthlyNewnessResult = await timedEndpointPhase(res, "db", () => pool.query<{
       monthStart: string; monthLabel: string; targetUnits: number;
     }>(
       `SELECT month_start::text AS "monthStart",TO_CHAR(month_start,'FMMonth YYYY') AS "monthLabel",
@@ -13066,7 +13163,7 @@ router.get("/weekly-order-plan", async (req, res, next) => {
          ON LOWER(s.season_name)=LOWER(TO_CHAR(month_start,'FMMonth YYYY'))
        ORDER BY month_start`,
       [startDate, endDate],
-    );
+    ));
     const weeklyNewness = weeklyNewnessTarget(startDate, endDate, monthlyNewnessResult.rows.map((row) => ({
       monthStart: calendarDate(row.monthStart)!,
       monthLabel: String(row.monthLabel),
@@ -13539,31 +13636,57 @@ function startBiSnapshotScheduler() {
   }, 60_000).unref();
 }
 
+let feedbackCleanupSchedulerStarted = false;
+async function runPostReadinessHousekeeping() {
+  // Compatibility has already been established before this queue starts.
+  // Do not rerun schema migrations or data backfills during normal API startup:
+  // even after readiness, their locks can make live page reads unavailable.
+  // Deployment/bootstrap owns those operations; startup only runs housekeeping
+  // that is safe alongside normal traffic.
+  const steps: Array<[string, () => Promise<unknown>]> = [
+    ["expired feedback image cleanup", cleanupExpiredFeedbackImageUploads],
+  ];
+  for (const [label, work] of steps) {
+    try {
+      await work();
+    } catch (error) {
+      console.warn(`Unable to complete optional ${label}`, error);
+    }
+  }
+  if (!feedbackCleanupSchedulerStarted) {
+    feedbackCleanupSchedulerStarted = true;
+    setInterval(() => {
+      void cleanupExpiredFeedbackImageUploads().catch((error) => console.warn("Unable to clean expired feedback images", error));
+    }, 5 * 60 * 1000).unref();
+  }
+}
+
 httpServer.listen(port, "0.0.0.0", () => {
-  serviceReady = true;
   console.log(`Vivo workspace API listening on ${port}`);
   startBiSnapshotScheduler();
-  void withTimeout(ensureSchema(), 15000, "workspace schema initialisation")
-    .then(() => {
+  void (async () => {
+    try {
+      if (!await essentialWorkspaceCompatibility()) {
+        // A brand-new workspace has no compatibility surface yet. Bootstrap it
+        // once, but never make normal restarts wait for this broad initializer.
+        await withTimeout(ensureSchema(), 15000, "workspace schema bootstrap");
+      }
+      if (!await essentialWorkspaceCompatibility()) throw new Error("workspace essential tables are unavailable");
+      serviceReady = true;
       schemaReady = true;
       lastDbProbeResult = true;
       console.log("Vivo workspace database ready");
-      void cleanupExpiredFeedbackImageUploads().catch((error) => console.warn("Unable to clean expired feedback images", error));
-      setInterval(() => {
-        void cleanupExpiredFeedbackImageUploads().catch((error) => console.warn("Unable to clean expired feedback images", error));
-      }, 5 * 60 * 1000).unref();
+      // This queue is fire-and-forget so optional DDL/seed work cannot delay
+      // readiness, while its internal ordering prevents DDL lock deadlocks.
+      void runPostReadinessHousekeeping();
       startBiSnapshotScheduler();
-    })
-    .catch(async (error) => {
+    } catch (error) {
       console.error("Unable to initialise workspace database", error);
-      await ensureFabricConsumptionRates();
-      await ensureRangePlanNewnessData();
-      await ensureRecentWorkspaceMigrations();
-      await ensureStyleDevelopmentTrackerData();
-      schemaReady = await isDatabaseReachable();
+      schemaReady = false;
       startBiSnapshotScheduler();
-      console.warn(`Vivo workspace starting in ${schemaReady ? "degraded" : "unavailable"} database mode`);
-    });
+      console.warn("Vivo workspace starting with essential compatibility unavailable");
+    }
+  })();
 });
 
 process.on("SIGTERM", () => {

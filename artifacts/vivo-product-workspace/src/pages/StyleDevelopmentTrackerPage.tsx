@@ -1,4 +1,5 @@
 import React, { useMemo, useState, useEffect, useRef } from 'react';
+import './StyleDevelopmentTrackerPage.css';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LayoutGrid, List, CheckSquare, Clock, AlertTriangle, Ban, Image as ImageIcon, Search, X, CheckCircle, BarChart2, Users, ArrowLeft, SlidersHorizontal } from 'lucide-react';
 import { groupStyleDevelopmentItems, type StyleDevelopmentGroupBy } from '../lib/styleDevelopmentBoard';
@@ -347,6 +348,32 @@ async function loadTracker(): Promise<TrackerPayload> {
   return response.json();
 }
 
+/**
+ * Keeps a large result set from monopolising the first paint. The complete set
+ * is still rendered in deterministic, bounded batches without requiring users
+ * to change how they browse or select styles.
+ */
+function useIncrementalRenderLimit(total: number, resetKey: string, batchSize: number, initialSize = batchSize) {
+  const [limit, setLimit] = useState(() => Math.min(total, initialSize));
+
+  useEffect(() => {
+    const initialLimit = Math.min(total, initialSize);
+    setLimit(initialLimit);
+    if (total <= initialLimit) return;
+
+    let frame = window.requestAnimationFrame(function renderNextBatch() {
+      setLimit(current => {
+        const next = Math.min(total, Math.max(current, initialLimit) + batchSize);
+        if (next < total) frame = window.requestAnimationFrame(renderNextBatch);
+        return next;
+      });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [total, resetKey, batchSize, initialSize]);
+
+  return limit;
+}
+
 function targetWeekNumber(value: string | null): number | null {
   const match = value?.match(/(?:^|-)W(?:K)?\s*(\d+)$/i);
   return match ? Number(match[1]) : null;
@@ -594,6 +621,17 @@ export default function StyleDevelopmentTrackerPage() {
       return sortDir === 'asc' ? res : -res;
     });
   }, [filtered, sortField, sortDir]);
+  const renderResetKey = `${view}:${groupBy}:${sortField}:${sortDir}:${filtered.map(style => style.id).join(',')}`;
+  const boardCardLimit = useIncrementalRenderLimit(view === 'board' ? filtered.length : 0, renderResetKey, 60);
+  const listRowLimit = useIncrementalRenderLimit(view === 'list' ? sortedForList.length : 0, renderResetKey, 100);
+  const visibleGrouped = useMemo(() => {
+    let remaining = boardCardLimit;
+    return grouped.map(([label, styles]) => {
+      const visibleStyles = styles.slice(0, Math.max(0, remaining));
+      remaining -= visibleStyles.length;
+      return [label, styles, visibleStyles] as const;
+    });
+  }, [grouped, boardCardLimit]);
 
   const handleSort = (field: keyof TrackerStyle) => {
     if (sortField === field) setSortDir(sortDir === 'asc' ? 'desc' : 'asc');
@@ -845,14 +883,14 @@ export default function StyleDevelopmentTrackerPage() {
       {view === 'board' && (
         <div className={`tracker-board ${groupBy === 'stage' ? 'is-stage-board' : ''}`}>
           {grouped.length === 0 && <div className="tracker-empty-state" style={{ width: '100%' }}>No styles match filters.</div>}
-          {grouped.map(([label, styles]) => (
+          {visibleGrouped.map(([label, styles, visibleStyles]) => (
             <div key={label} className={`tracker-col ${groupBy === 'status' && label === 'Blocked' ? 'is-waiting-fabric' : ''}`}>
               <div className="tracker-col-header">
                 <h3>{label}</h3>
                 <span className="tracker-col-count">{styles.length}</span>
               </div>
               <div className="tracker-col-cards">
-                {styles.map(s => (
+                {visibleStyles.map(s => (
                   <StyleDevelopmentBoardCard
                     key={s.id}
                     item={s}
@@ -918,7 +956,7 @@ export default function StyleDevelopmentTrackerPage() {
                 </tr>
               </thead>
               <tbody>
-                {sortedForList.map(s => (
+                {sortedForList.slice(0, listRowLimit).map(s => (
                   <tr key={s.id} onClick={() => setDetailId(s.id)}>
                     <td className="tracker-select-cell" onClick={event => event.stopPropagation()}>
                       <input type="checkbox" aria-label={`Select ${s.styleName}`} checked={selectedIds.includes(s.id)} onChange={event => setSelectedIds(current => event.target.checked ? [...current, s.id] : current.filter(id => id !== s.id))} />

@@ -1,33 +1,28 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import { QueryClient, QueryClientProvider, useQuery, useQueryClient } from '@tanstack/react-query';
-import { Link, Route, Switch, Router as WouterRouter, useLocation, useParams } from 'wouter';
+import { Link, Route, Switch, Router as WouterRouter, useLocation } from 'wouter';
 import { io } from 'socket.io-client';
-import { ArrowLeft, ArrowRight, BarChart3, CalendarCheck2, CalendarDays, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Columns3, FileText, GalleryHorizontalEnd, History, LayoutDashboard, Library, ListChecks, LogOut, Menu, MessageCircle, MoveRight, Package, Palette, Plus, Search, Settings2, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react';
+import { ArrowLeft, ArrowRight, BarChart3, CalendarCheck2, CalendarDays, Check, ChevronDown, ChevronRight, CircleAlert, Clock3, Columns3, FileText, GalleryHorizontalEnd, History, LayoutDashboard, Library, ListChecks, LogOut, Menu, MessageCircle, Package, Palette, Plus, Search, Settings2, ShieldCheck, Sparkles, UsersRound, X } from 'lucide-react';
 import {
   getGetWorkspaceBoardQueryKey, getGetWorkspaceDashboardQueryKey, getGetWorkspacePlanQueryKey, getGetWorkspaceSessionQueryKey,
-  getGetWorkspaceStyleQueryKey,
   getListWorkspaceBoardsQueryKey, getListWorkspacePlanHistoryQueryKey, getListWorkspacePlansQueryKey, getListWorkspaceStylesQueryKey,
   useCreateWorkspaceBoard, useCreateWorkspaceBoardCard, useCreateWorkspaceBoardComment, useGetWorkspaceBoard, useGetWorkspaceDashboard,
-  useAddWorkspacePlanStyle, useCreateWorkspacePlan, useGetWorkspacePlan, useGetWorkspaceSession, useGetWorkspaceStyle,
+  useAddWorkspacePlanStyle, useCreateWorkspacePlan, useGetWorkspacePlan, useGetWorkspaceSession,
   useListWorkspaceBoards, useListWorkspacePlanHistory, useListWorkspacePlans, useListWorkspaceStyles, useLoginWorkspace,
-  useLogoutWorkspace, useUpdateWorkspaceBoardCard, useUpdateWorkspacePlan, useUpdateWorkspaceStyle,
-  useCreateWorkspaceColorway, useUpdateWorkspaceColorway,
+  useLogoutWorkspace, useUpdateWorkspaceBoardCard, useUpdateWorkspacePlan,
   getListWorkspaceTeamQueryKey, useListWorkspaceTeam,
 } from '@workspace/api-client-react';
-import type { WorkspaceBoard, WorkspaceDashboardSnapshot, WorkspacePlan, WorkspacePlanIndexItem, WorkspaceStyle, WorkspaceColorway } from '@workspace/api-client-react';
+import type { WorkspaceBoard, WorkspaceDashboardSnapshot, WorkspacePlan, WorkspacePlanIndexItem, WorkspaceStyle } from '@workspace/api-client-react';
 import { ErrorBoundary } from '@/components/error-boundary';
 import NotFound from '@/pages/not-found';
-import FeedbackPage, { PublicFeedbackPage, StyleFeedbackPanel, useStyleFeedback } from '@/pages/FeedbackPage';
-import './index.css';
-import MultiSelectFilter from '@/components/MultiSelectFilter';
-import CatalogueSortControl, { type CatalogueSortKey } from '@/components/CatalogueSortControl';
 import GarmentImage from '@/components/GarmentImage';
 
 const StyleDevelopmentTrackerPage = lazy(() => import('@/pages/StyleDevelopmentTrackerPage'));
+const FeedbackPage = lazy(() => import('@/pages/FeedbackPage'));
+const PublicFeedbackPage = lazy(() => import('@/pages/FeedbackPage').then(({ PublicFeedbackPage: Page }) => ({ default: Page })));
 const SettingsPage = lazy(() => import('@/pages/SettingsPage'));
 const ShowcasePage = lazy(() => import('@/pages/ShowcasePage'));
-const FullCataloguePage = lazy(() => import('@/pages/FullCataloguePage'));
 const TeamDirectoryPage = lazy(() => import('@/pages/TeamDirectoryPage'));
 const L10Page = lazy(() => import('@/pages/L10Page'));
 const AssortmentPlanPage = lazy(() => import('@/pages/AssortmentPlanPage'));
@@ -84,81 +79,6 @@ function date(value: unknown) { if (!value) return 'No date'; const d = new Date
 function getPathValue(item: unknown, keys: string[]) { const record = item as Record<string, unknown>; return keys.map((key) => record?.[key]).find((value) => value !== undefined); }
 
 type WorkspaceIdentity = { id: string; name: string; role: string };
-type PlmCatalogueStyle = {
-  id: number;
-  code: string;
-  name: string;
-  brand?: string | null;
-  category?: string | null;
-  subCategory?: string | null;
-  status: string;
-  stage?: string | null;
-  currentStage?: string | null;
-  owner?: string | null;
-  designer?: string | null;
-  image?: string | null;
-  progress?: number | null;
-  tier?: string | null;
-  fabricCategory?: string | null;
-  primaryColour?: string | null;
-  edit?: string | null;
-  unitsSold?: number | null;
-  revenueKes?: number | null;
-  sorPct?: number | null;
-  launchDate?: string | null;
-  price?: number | null;
-  stockUnits?: number | null;
-};
-
-type PlmCatalogueFilters = {
-  tier: string[];
-  status: string[];
-  category: string[];
-  subCategory: string[];
-  fabricCategory: string[];
-  brand: string[];
-  primaryColour: string[];
-  edit: string[];
-};
-const PLM_CATALOGUE_FILTERS: Array<{ key: keyof PlmCatalogueFilters; label: string }> = [
-  { key: 'tier', label: 'Tier' },
-  { key: 'status', label: 'Status / stage' },
-  { key: 'category', label: 'Category' },
-  { key: 'subCategory', label: 'Sub-category' },
-  { key: 'fabricCategory', label: 'Fabric Category' },
-  { key: 'brand', label: 'Brand' },
-  { key: 'primaryColour', label: 'Primary Colour' },
-  { key: 'edit', label: 'Edit' },
-];
-const EMPTY_PLM_CATALOGUE_FILTERS: PlmCatalogueFilters = {
-  tier: [], status: [], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [],
-};
-type PlmCatalogueResponse = {
-  items: PlmCatalogueStyle[];
-  brands: string[];
-  filterOptions?: Partial<Record<keyof PlmCatalogueFilters, string[]>>;
-};
-
-function usePlmCatalogue(search: string, filters: PlmCatalogueFilters, sort: CatalogueSortKey, enabled: boolean) {
-  return useQuery<PlmCatalogueResponse>({
-    queryKey: ['workspace', 'plm-catalogue', search, filters, sort],
-    enabled,
-    queryFn: async () => {
-      const params = new URLSearchParams();
-      if (search) params.set('search', search);
-      params.set('sort', sort);
-       Object.entries(filters).forEach(([key, values]) => {
-         if (values.length) params.set(key, values.join(','));
-       });
-      const response = await fetch(`/api/workspace/plm-catalogue${params.toString() ? `?${params}` : ''}`, {
-        credentials: 'include',
-      });
-      if (!response.ok) throw new Error(`PLM catalogue request failed (${response.status})`);
-       return response.json() as Promise<PlmCatalogueResponse>;
-    },
-  });
-}
-
 function readIdentity(): WorkspaceIdentity | null {
   const id = localStorage.getItem('workspace_user_id');
   if (!id) return null;
@@ -788,47 +708,6 @@ function BoardDetail({ board, onBack }: { board: WorkspaceBoard; onBack: () => v
   return <section className="page board-detail-page"><button className="back-link" onClick={onBack} data-testid="button-back-rocks"><ArrowLeft size={15} /> All rocks</button><PageHeading eyebrow="Collaboration rock" title={board.title} description={board.description} action={<span className="collab-stack">{board.collaborators?.slice(0, 4).map((person) => <span key={person.id} className="avatar small" style={{ background: person.color }}>{person.initials}</span>)}<span className="presence-label" data-testid="text-rock-presence">{presence} connected</span></span>} /><div className="board-toolbar"><span className="eyebrow">Working view · drag cards between columns</span><div><button className="button button-quiet" onClick={() => queryClient.invalidateQueries({ queryKey: getGetWorkspaceBoardQueryKey(board.id) })} data-testid="button-rock-refresh"><Settings2 size={14} /> Refresh view</button><button className="button button-quiet" onClick={() => navigator.clipboard?.writeText(window.location.href)} data-testid="button-rock-share">Copy rock link</button></div></div><div className="kanban">{columns.map((column, i) => { const record = column as Record<string, unknown>; const id = String(record.id || record.key || i); const title = String(record.title || record.name || `Column ${i + 1}`); const cards = (board.cards || []).filter((card) => card.columnId === id); return <div className={`kanban-column ${draggedCard ? 'drop-ready' : ''}`} key={id} onDragOver={(event) => event.preventDefault()} onDrop={() => moveCard(id)} data-testid={`column-rock-${id}`}><div className="column-heading"><span>{title}</span><b>{cards.length}</b></div>{cards.map((card) => <div className="kanban-card" draggable onDragStart={() => setDraggedCard(card.id)} onDragEnd={() => setDraggedCard(null)} key={card.id} data-testid={`card-rock-item-${card.id}`}><span className="mono">{card.styleId ? `ST-${card.styleId}` : 'NOTE'}</span><h4>{card.title}</h4><p>{card.description || 'No description yet.'}</p><div className="tag-row">{(card.tags || ['Product']).map((tag) => <span key={tag}>{tag}</span>)}</div></div>)}{i === 0 && <div className="add-card"><input value={cardTitle} onChange={(e) => setCardTitle(e.target.value)} placeholder="Add a card…" data-testid="input-card-title" /><button onClick={addCard} aria-label="Add card" data-testid="button-add-card"><Plus size={15} /></button></div>}</div>})}</div><div className="comments-panel"><div className="panel-heading"><div><span className="eyebrow">The thread</span><h3>Comments <span className="count">{board.comments?.length || 0}</span></h3></div><MessageCircle size={18} /></div>{board.comments?.slice(0, 5).map((item) => <div className="comment-row" key={item.id} data-testid={`comment-rock-${item.id}`}><div className="avatar" style={{ background: item.author.color }}>{item.author.initials}</div><div><strong>{item.author.name}</strong><time>{date(item.createdAt)}</time><p>{item.body}</p></div></div>)}<div className="comment-input"><input value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Add to the conversation…" data-testid="input-comment" /><button onClick={addComment} data-testid="button-add-comment"><ArrowRight size={16} /></button></div></div></section>;
 }
 
-/*
-function PlmPage() {
-  const styles = useListWorkspaceStyles(undefined, { query: { queryKey: getListWorkspaceStylesQueryKey() } });
-  const [selected, setSelected] = useState<number | null>(null);
-  if (selected) return <PlmDetail id={selected} onBack={() => setSelected(null)} />;
-  return <section className="page"><PageHeading eyebrow="Product lifecycle management" title="Style development" description="The path from first thought to production-ready." action={<div className="view-switch"><button className="active" data-testid="button-plm-board"><Columns3 size={15} /> Board</button><button data-testid="button-plm-list"><FileText size={15} /> List</button></div>} />{styles.isLoading ? <LoadingState /> : <div className="plm-overview"><div className="plm-intro"><span className="eyebrow gold-eyebrow">Current motion</span><h2>From sketch to<br /><em>store floor.</em></h2><p>Every style has a next step. Keep the handoffs clean and the questions close.</p></div><div className="plm-stages">{['Brief', 'Development', 'Sample', 'Ready'].map((stage, i) => <div className="plm-stage" key={stage}><div className="stage-title"><span>{stage}</span><b>{styles.data?.filter((s) => i === 0 ? /brief/i.test(s.status) : i === 1 ? /develop|progress/i.test(s.status) : i === 2 ? /sample/i.test(s.status) : /ready|approved/i.test(s.status)).length || [4, 8, 3, 9][i]}</b></div><div className="stage-line"><span style={{ width: `${[28, 64, 43, 82][i]}%` }} /></div>{styles.data?.filter((s) => i === 0 ? /brief/i.test(s.status) : i === 1 ? /develop|progress/i.test(s.status) : i === 2 ? /sample/i.test(s.status) : /ready|approved/i.test(s.status)).slice(0, 3).map((style) => <button className="plm-style" key={style.id} onClick={() => setSelected(style.id)} data-testid={`card-plm-style-${style.id}`}><span className="mono">{style.code}</span><strong>{style.name}</strong><small>{style.owner} · {date(style.targetDate)}</small><Progress value={style.progress} /></button>)}</div>)}</div></div>}</section>;
-}
-function PlmDetail({ id, onBack }: { id: number; onBack: () => void }) { const style = useGetWorkspaceStyle(id, { query: { queryKey: getGetWorkspaceStyleQueryKey(id) } }); const plm = useGetWorkspaceStylePlm(id, { query: { queryKey: getGetWorkspaceStylePlmQueryKey(id) } }); return <section className="page"><button className="back-link" onClick={onBack} data-testid="button-back-plm"><ArrowLeft size={15} /> Development board</button>{style.isLoading ? <LoadingState /> : style.data ? <><PageHeading eyebrow={`PLM / ${style.data.code}`} title={style.data.name} description={`${style.data.brand} · ${style.data.category} · Owner ${style.data.owner}`} action={<StatusPill value={style.data.status} />} /><div className="detail-grid"><div className="detail-hero"><div className="detail-image" style={style.data.image ? { backgroundImage: `url(${style.data.image})` } : undefined}><Palette size={36} /></div><div><span className="eyebrow">Completion</span><h2>{style.data.progress || 0}%</h2><Progress value={style.data.progress} /><p>Target date {date(style.data.targetDate)}</p></div></div><div className="panel checklist-panel"><div className="panel-heading"><div><span className="eyebrow">Workflow</span><h3>Development checks</h3></div><Clock3 size={18} /></div>{['Tech pack', 'Fabric confirmed', 'Fit session', 'POM / QC', 'Cost estimate', 'Production order'].map((label, i) => <div className="check-row" key={label}><span className={i < (style.data.progress || 0) / 18 ? 'check done' : 'check'}>{i < (style.data.progress || 0) / 18 && <Check size={12} />}</span><span>{label}</span><small>{i < (style.data.progress || 0) / 18 ? 'Complete' : 'Upcoming'}</small></div>)}</div><div className="panel detail-data">{plm.isLoading ? <Skeleton className="skeleton-panel" /> : <><span className="eyebrow">PLM signal</span><h3>What needs attention</h3><p>{plm.data ? 'PLM data is synced. Review the open checks before the next handoff.' : 'No additional PLM notes yet.'}</p><button className="button button-quiet" data-testid="button-open-plm-data">Open full PLM record <ArrowRight size={15} /></button></>}</div></div></> : <ErrorState onRetry={() => style.refetch()} />}</section>; }
-
-*/
-
-function StylesPage() {
-  const params = useParams<{ id?: string }>();
-  const [, setLocation] = useLocation();
-  const [tab, setTabState] = useState<'plm' | 'full'>(() => new URLSearchParams(window.location.search).get('tab') === 'full' ? 'full' : 'plm');
-  const setTab = (next: 'plm' | 'full') => {
-    setTabState(next);
-    const url = new URL(window.location.href);
-    if (next === 'full') url.searchParams.set('tab', 'full'); else url.searchParams.delete('tab');
-    window.history.replaceState(null, '', url.toString());
-  };
-  const [search, setSearch] = useState('');
-  const [filters, setFilters] = useState<PlmCatalogueFilters>(EMPTY_PLM_CATALOGUE_FILTERS);
-  const [sort, setSort] = useState<CatalogueSortKey>('units_desc');
-  const plmCatalogue = usePlmCatalogue(search, filters, sort, tab === 'plm');
-  const [selected, setSelected] = useState<number | null>(() => params.id ? Number(params.id) : null);
-  const filterOptions = plmCatalogue.data?.filterOptions || {};
-  const clearFilters = () => { setSearch(''); setFilters(EMPTY_PLM_CATALOGUE_FILTERS); };
-  if (selected) return <CatalogueStyleDetail id={selected} onBack={() => setLocation('/product-workspace/styles')} />;
-  if (tab === 'plm' && plmCatalogue.isError) return <section className="page"><ErrorState onRetry={() => plmCatalogue.refetch()} /></section>;
-  const tabBar = (
-    <div className="cat-tabs" role="tablist" aria-label="Catalogue tabs">
-      <button role="tab" aria-selected={tab === 'plm'} className={`cat-tab ${tab === 'plm' ? 'active' : ''}`} onClick={() => setTab('plm')} data-testid="tab-plm-catalogue">PLM Catalogue <span className="cat-tab-label">In Development</span></button>
-       <button role="tab" aria-selected={tab === 'full'} className={`cat-tab ${tab === 'full' ? 'active' : ''}`} onClick={() => setTab('full')} data-testid="tab-full-catalogue">Full Catalogue <span className="cat-tab-label">BI mirror</span></button>
-    </div>
-  );
-  if (tab === 'full') return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="The full Vivo, Safari by Vivo and Zoya range — every active and retired style, mirrored for planning." />{tabBar}<FullCataloguePage /></section>;
-  return <section className="page"><PageHeading eyebrow="Product library" title="Style catalogue" description="Search the working language of the Vivo, Safari by Vivo and Zoya collection." />{tabBar}<div className="catalogue-tools plm-catalogue-tools"><label className="search-field"><Search size={17} /><input type="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search by style, number or designer…" data-testid="input-style-search" /></label>{PLM_CATALOGUE_FILTERS.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={filterOptions[key] || []} values={filters[key]} onChange={(next) => setFilters((current) => ({ ...current, [key]: next }))} testId={`select-style-filter-${key}`} alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-plm-cat-sort" /><button className="button button-quiet" onClick={clearFilters} data-testid="button-clear-style-filters">Clear filters</button></div>{plmCatalogue.isLoading ? <LoadingState /> : <div className="catalogue-list"><div className="catalogue-head"><span>{plmCatalogue.data?.items.length || 0} styles</span><span>Product Development · active styles</span></div>{plmCatalogue.data?.items.length ? plmCatalogue.data.items.map((style, i) => <div className="catalogue-row-shell" key={style.id}><button className="catalogue-row" onClick={() => setLocation(`/product-workspace/styles/${style.id}`)} data-testid={`row-catalogue-style-${style.id}`}><span className="row-index">{String(i + 1).padStart(2, '0')}</span><div className="catalogue-thumb" style={style.image ? { backgroundImage: `url(${style.image})` } : undefined}><Palette size={15} /></div><div className="catalogue-name"><strong>{style.name}</strong><span>{style.code} · {style.category || 'Uncategorised'}</span></div><div className="catalogue-stage"><span>Stage</span><strong>{style.currentStage || style.stage || style.status || 'Concept'}</strong></div><div className="catalogue-assignee"><span>Designer / assignee</span><strong>{style.designer || style.owner || 'Unassigned'}</strong></div><span className="catalogue-brand">{style.brand || '—'}</span><StatusPill value={style.status} /><div className="catalogue-progress"><Progress value={style.progress} /><span>{style.progress || 0}%</span></div><ChevronRight size={16} /></button><div className="catalogue-row-actions"><a href={`/merchandising?tab=merch-deepdive&style=${encodeURIComponent(style.code)}`} target="_blank" rel="noreferrer">View in BI <ArrowRight size={13} /></a><button type="button" onClick={() => setLocation(`/product-workspace/styles/${style.id}`)}>Add to Assortment Plan <ArrowRight size={13} /></button></div></div>) : <EmptyState title="No styles in the catalogue" text="Try a different search or clear your filters." action={<button className="button button-quiet" onClick={clearFilters} data-testid="button-empty-clear-filters">Clear filters</button>} />}</div>}</section>;
-}
-function StyleDetail({ id, onBack }: { id: number; onBack: () => void }) { const style = useGetWorkspaceStyle(id, { query: { queryKey: getGetWorkspaceStyleQueryKey(id) }, request: { credentials: 'include' } }); const update = useUpdateWorkspaceStyle(); const [editing, setEditing] = useState(false); const [owner, setOwner] = useState(''); const save = () => update.mutate({ id, data: { owner } }, { onSuccess: () => { setEditing(false); queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) }); queryClient.invalidateQueries({ queryKey: getListWorkspaceStylesQueryKey() }); } }); return <section className="page">{<button className="back-link" onClick={onBack} data-testid="button-back-catalogue"><ArrowLeft size={15} /> Style catalogue</button>}{style.isLoading ? <LoadingState /> : style.isError ? <ErrorState onRetry={() => style.refetch()} /> : style.data ? <><PageHeading eyebrow={`Style / ${style.data.code}`} title={style.data.name} description={`${style.data.brand} · ${style.data.category} · ${style.data.market || 'East Africa'}`} action={<button className="button button-dark" onClick={() => { setOwner(style.data?.owner || ''); setEditing(!editing); }} data-testid="button-edit-style"><Settings2 size={15} /> Edit style</button>} />{editing && <div className="edit-inline"><label>Owner<input value={owner} onChange={(e) => setOwner(e.target.value)} data-testid="input-style-owner" /></label><button className="button button-gold" onClick={save} disabled={update.isPending} data-testid="button-save-style">Save changes <Check size={15} /></button></div>}<div className="style-detail-layout"><div className="style-detail-art" style={style.data.image ? { backgroundImage: `url(${style.data.image})` } : undefined}><div className="style-art-label"><span className="mono">{style.data.code}</span><b>{style.data.name}</b></div></div><div className="style-detail-info"><div className="detail-status"><StatusPill value={style.data.status} /><span className="mono">Target {date(style.data.targetDate)}</span></div><h2>A shape worth<br /><em>keeping close.</em></h2><div className="detail-progress"><div><span>Development progress</span><b>{style.data.progress || 0}%</b></div><Progress value={style.data.progress} /></div><div className="fact-list"><div><span>Owner</span><b>{style.data.owner}</b></div><div><span>Designer / assignee</span><b>{style.data.designer || style.data.owner || 'Unassigned'}</b></div><div><span>Design stage</span><b>{style.data.currentStage || style.data.stage || style.data.status || 'Concept'}</b></div><div><span>Price</span><b>{style.data.price ? `KES ${style.data.price.toLocaleString()}` : 'To be set'}</b></div><div><span>Market</span><b>{style.data.market || 'East Africa'}</b></div></div></div></div><div className="style-tabs"><button className="active" data-testid="button-style-overview">Overview</button><button data-testid="button-style-colourways">Colourways <span>{style.data.colorways?.length || 0}</span></button><button data-testid="button-style-fabrics">Fabrics <span>{style.data.fabrics?.length || 0}</span></button><button data-testid="button-style-samples">Samples <span>{style.data.samples?.length || 0}</span></button><button data-testid="button-style-production">Production</button></div></> : <ErrorState onRetry={() => style.refetch()} />}</section>; }
-
 function PulseAwareFeedbackRoute() {
   const isPulse = new URLSearchParams(window.location.search).has('style') && ['investigate', 'champion'].includes(new URLSearchParams(window.location.search).get('mode') || '');
   return isPulse ? <PublicFeedbackPage /> : <FeedbackPage />;
@@ -839,201 +718,3 @@ function Router() { const [location] = useLocation(); return <ErrorBoundary rese
 function AppEntry() { const [location] = useLocation(); const publicFeedback = location === '/feedback' || location === '/feedback/'; const publicPulse = location === '/product-workspace/feedback' && new URLSearchParams(window.location.search).has('style') && ['investigate', 'champion'].includes(new URLSearchParams(window.location.search).get('mode') || ''); return publicFeedback || publicPulse ? <Router /> : <Shell><Router /></Shell>; }
 function App() { return <QueryClientProvider client={queryClient}><WouterRouter><AppEntry /></WouterRouter></QueryClientProvider>; }
 export default App;
-
-type CatalogueStyleForm = {
-  name: string;
-  creativeDescription: string;
-  price: string;
-  market: string;
-  stage: string;
-  targetDate: string;
-  sizeRange: string;
-  trimsSpecialFeatures: string[];
-  predictedCost: string;
-};
-type ColourwayDraft = { name: string; hex: string; code: string; status?: string };
-
-function formatKes(value: unknown) {
-  const amount = Number(value);
-  return Number.isFinite(amount) && amount > 0 ? `KES ${amount.toLocaleString('en-KE')}` : 'To be set';
-}
-
-function TagEditor({ tags, onChange }: { tags: string[]; onChange: (tags: string[]) => void }) {
-  const [draft, setDraft] = useState('');
-  const add = () => {
-    const value = draft.trim().replace(/,$/, '');
-    if (value && !tags.some((tag) => tag.toLowerCase() === value.toLowerCase())) onChange([...tags, value]);
-    setDraft('');
-  };
-  return <div className="style-tag-editor"><div className="style-tag-list">{tags.map((tag) => <span className="style-tag" key={tag}>{tag}<button type="button" onClick={() => onChange(tags.filter((item) => item !== tag))} aria-label={`Remove ${tag}`}><X size={11} /></button></span>)}<input value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); add(); } }} onBlur={add} placeholder="Add a feature…" aria-label="Add trims or special feature" /></div></div>;
-}
-
-function ColourwayCard({ colourway, editing, draft, onDraftChange, onSave, onDrop, pending }: { colourway: WorkspaceColorway; editing: boolean; draft: ColourwayDraft; onDraftChange: (draft: ColourwayDraft) => void; onSave: () => void; onDrop: () => void; pending: boolean }) {
-  const dropped = colourway.status.toLowerCase() === 'dropped';
-  return <article className={`style-colourway-card ${dropped ? 'dropped' : ''}`}>
-    <div className="style-colourway-swatch" style={{ background: draft.hex || '#C9A96E' }} aria-label={`${draft.name} colour swatch`} />
-    <div className="style-colourway-copy">
-      {editing ? <div className="style-colourway-edit-fields"><input value={draft.name} onChange={(event) => onDraftChange({ ...draft, name: event.target.value })} aria-label="Colourway name" placeholder="Colour name" /><input value={draft.code} onChange={(event) => onDraftChange({ ...draft, code: event.target.value })} aria-label="Colourway code" placeholder="Code (optional)" /><select value={draft.status || colourway.status} onChange={(event) => onDraftChange({ ...draft, status: event.target.value })} aria-label="Colourway status"><option>Active</option><option>Proposed</option><option>Dropped</option></select><label className="style-colour-input"><input type="color" value={draft.hex || '#C9A96E'} onChange={(event) => onDraftChange({ ...draft, hex: event.target.value })} aria-label="Colourway colour" /><span>{draft.hex || '#C9A96E'}</span></label></div> : <><h3>{draft.name}</h3><div className="style-colourway-meta">{draft.code && <span>{draft.code}</span>}<span className={`style-colourway-status ${dropped ? 'dropped' : ''}`}>{colourway.status}</span></div></>}
-    </div>
-    {editing && <div className="style-colourway-actions"><button type="button" className="button button-quiet" onClick={onSave} disabled={pending}><Check size={13} /> Save</button><button type="button" className="text-button style-drop-button" onClick={onDrop} disabled={pending || dropped}>{dropped ? 'Dropped' : 'Mark dropped'}</button></div>}
-  </article>;
-}
-
-function AddStyleToAssortment({ styleNumber, pdId, styleName }: { styleNumber: string; pdId: number; styleName: string }) {
-  const [season, setSeason] = useState<'Q3 2026' | 'Q4 2026'>('Q3 2026');
-  const [saving, setSaving] = useState(false);
-  const [notice, setNotice] = useState('');
-  const [error, setError] = useState('');
-  const save = async () => {
-    setSaving(true); setNotice(''); setError('');
-    try {
-      const response = await fetch('/api/workspace/assortment-plan/add-style', {
-        method: 'POST',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ season, source: 'pd_styles', styleNumber, pdId }),
-      });
-      const body = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(String(body.error || 'Could not add style'));
-      setNotice(body.added ? `Added ${styleName} to ${season}` : `${styleName} is already in ${season}`);
-    } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : 'Could not add style');
-    } finally {
-      setSaving(false);
-    }
-  };
-  return <div className="catalogue-assortment-panel">
-    <div className="catalogue-assortment-panel-head"><div><span className="range-eyebrow">Planning action</span><h3>Add to Assortment Plan</h3><p>{styleNumber}</p></div></div>
-    <label>Planning quarter<select value={season} onChange={(event) => setSeason(event.target.value as typeof season)}><option>Q3 2026</option><option>Q4 2026</option></select></label>
-    <button type="button" className="button button-gold" disabled={saving} onClick={save}><MoveRight size={14} /> {saving ? 'Adding…' : 'Add style'}</button>
-    {notice && <span className="style-save-notice"><Check size={14} /> {notice}</span>}
-    {error && <span className="form-error">{error}</span>}
-  </div>;
-}
-
-function CatalogueStyleDetail({ id, onBack }: { id: number; onBack: () => void }) {
-  const style = useGetWorkspaceStyle(id, { query: { queryKey: getGetWorkspaceStyleQueryKey(id) }, request: { credentials: 'include' } });
-  const styleFeedback = useStyleFeedback(id);
-  const update = useUpdateWorkspaceStyle();
-  const createColourway = useCreateWorkspaceColorway();
-  const updateColourway = useUpdateWorkspaceColorway();
-  const [editing, setEditing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'overview' | 'colourways' | 'fabrics' | 'samples' | 'production' | 'feedback'>('overview');
-  const [notice, setNotice] = useState('');
-  const [assortmentOpen, setAssortmentOpen] = useState(false);
-  const [form, setForm] = useState<CatalogueStyleForm>({ name: '', creativeDescription: '', price: '', market: '', stage: '', targetDate: '', sizeRange: '', trimsSpecialFeatures: [], predictedCost: '' });
-  const [newColourway, setNewColourway] = useState<ColourwayDraft>({ name: '', hex: '#C9A96E', code: '' });
-  const [colourwayDrafts, setColourwayDrafts] = useState<Record<number, ColourwayDraft>>({});
-  const hydrate = () => {
-    const current = style.data;
-    if (!current) return;
-    setForm({
-      name: current.name || '',
-      creativeDescription: current.creativeDescription || '',
-      price: current.price === undefined || current.price === null ? '' : String(current.price),
-      market: current.market || '',
-      stage: current.currentStage || current.stage || current.status || 'Concept',
-      targetDate: current.targetDate || '',
-      sizeRange: current.sizeRange || '',
-      trimsSpecialFeatures: current.trimsSpecialFeatures || [],
-      predictedCost: current.predictedCost === undefined || current.predictedCost === null ? '' : String(current.predictedCost),
-    });
-    setColourwayDrafts(Object.fromEntries((current.colorways || []).map((colourway) => [colourway.id, { name: colourway.name, hex: colourway.hex, code: colourway.code || '', status: colourway.status }])) as Record<number, ColourwayDraft>);
-  };
-  useEffect(() => {
-    if (style.data && !editing) hydrate();
-  }, [style.data?.id, style.data?.name, style.data?.creativeDescription, style.data?.sizeRange, style.data?.predictedCost, style.data?.targetDate, style.data?.colorways, editing]);
-  const save = () => {
-    if (!style.data || !form.name.trim()) return;
-    update.mutate({
-      id,
-      data: {
-        name: form.name.trim(),
-        creativeDescription: form.creativeDescription.trim(),
-        price: form.price === '' ? 0 : Number(form.price),
-        market: form.market.trim(),
-        stage: form.stage,
-        targetDate: form.targetDate,
-        sizeRange: form.sizeRange.trim(),
-        trimsSpecialFeatures: form.trimsSpecialFeatures,
-        predictedCost: form.predictedCost === '' ? null : Number(form.predictedCost),
-      },
-    }, {
-      onSuccess: () => {
-        setEditing(false);
-        setNotice('Style changes saved');
-        queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) });
-        queryClient.invalidateQueries({ queryKey: getListWorkspaceStylesQueryKey() });
-      },
-    });
-  };
-  const addColourway = () => {
-    if (!newColourway.name.trim()) return;
-    createColourway.mutate({ id, data: { ...newColourway, name: newColourway.name.trim(), status: 'Active' } }, {
-      onSuccess: () => {
-        setNewColourway({ name: '', hex: '#C9A96E', code: '' });
-        setNotice('Colourway added');
-        queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) });
-      },
-    });
-  };
-  const saveColourway = (colourway: WorkspaceColorway) => {
-    const draft = colourwayDrafts[colourway.id];
-    if (!draft?.name.trim()) return;
-    updateColourway.mutate({ id, colorwayId: colourway.id, data: draft }, {
-      onSuccess: () => {
-        setNotice('Colourway updated');
-        queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) });
-      },
-    });
-  };
-  const dropColourway = (colourway: WorkspaceColorway) => {
-    updateColourway.mutate({ id, colorwayId: colourway.id, data: { status: 'Dropped' } }, {
-      onSuccess: () => {
-        setNotice('Colourway marked as dropped');
-        queryClient.invalidateQueries({ queryKey: getGetWorkspaceStyleQueryKey(id) });
-      },
-    });
-  };
-  if (style.isLoading) return <section className="page"><button className="back-link" onClick={onBack}><ArrowLeft size={15} /> Style catalogue</button><LoadingState /></section>;
-  if (style.isError || !style.data) return <section className="page"><button className="back-link" onClick={onBack}><ArrowLeft size={15} /> Style catalogue</button><ErrorState onRetry={() => style.refetch()} /></section>;
-  const current = style.data;
-  const colourways = current.colorways || [];
-  const tabs: Array<[typeof activeTab, string, number?]> = [['overview', 'Overview'], ['colourways', 'Colourways', colourways.length], ['fabrics', 'Fabrics', current.fabrics?.length], ['samples', 'Samples', current.samples?.length], ['production', 'Production'], ['feedback', 'Feedback', styleFeedback.data?.length]];
-  const renderFact = (label: string, value: ReactNode, control: ReactNode) => <div className="style-fact"><span>{label}</span>{editing ? control : <b>{value}</b>}</div>;
-  return <section className="page">
-    <button className="back-link" onClick={onBack} data-testid="button-back-catalogue"><ArrowLeft size={15} /> Style catalogue</button>
-    <PageHeading eyebrow={`Style / ${current.code}`} title={editing ? <input className="style-name-editor" value={form.name} onChange={(event) => setForm((draft) => ({ ...draft, name: event.target.value }))} aria-label="Style name" data-testid="input-style-name" /> : current.name} description={`${current.brand} · ${current.category} · ${current.market || 'East Africa'}`} action={<button className="button button-dark" onClick={() => { if (editing) { setEditing(false); hydrate(); } else { hydrate(); setNotice(''); setEditing(true); } }} data-testid="button-edit-style">{editing ? <><X size={15} /> Cancel</> : <><Settings2 size={15} /> Edit style</>}</button>} />
-    {editing && <div className="edit-inline style-edit-toolbar"><span>Editing style details</span><button className="button button-gold" onClick={save} disabled={update.isPending} data-testid="button-save-style">{update.isPending ? 'Saving…' : 'Save changes'} <Check size={15} /></button></div>}
-    {notice && <div className="style-save-notice"><Check size={14} /> {notice}</div>}
-    {activeTab === 'overview' && <div className="style-detail-layout">
-      <div className="style-detail-art" style={current.image ? { backgroundImage: `url(${current.image})` } : undefined}><div className="style-art-label"><span className="mono">{current.code}</span><b>{editing ? form.name : current.name}</b></div></div>
-      <div className="style-detail-info">
-        <div className="detail-status"><StatusPill value={current.status} /><span className="mono">Target {date(editing ? form.targetDate : current.targetDate)}</span></div>
-        {editing ? <div className="style-editorial-headline" contentEditable suppressContentEditableWarning role="textbox" aria-label="Creative description" onInput={(event) => setForm((draft) => ({ ...draft, creativeDescription: event.currentTarget.textContent || '' }))}>{form.creativeDescription || 'A shape worth keeping close.'}</div> : <h2>{current.creativeDescription || 'A shape worth keeping close.'}</h2>}
-        <div className="detail-progress"><div><span>Development progress</span><b>{current.progress || 0}%</b></div><Progress value={current.progress} /></div>
-        <div className="fact-list">
-          {renderFact('Owner', current.owner || 'Unassigned', <input value={current.owner || ''} readOnly aria-label="Owner" />)}
-          {renderFact('Designer / assignee', current.designer || current.owner || 'Unassigned', <input value={current.designer || current.owner || ''} readOnly aria-label="Designer or assignee" />)}
-          {renderFact('Design stage', current.currentStage || current.stage || current.status || 'Concept', <select value={form.stage} onChange={(event) => setForm((draft) => ({ ...draft, stage: event.target.value }))} aria-label="Design stage"><option>Concept</option><option>Initial Design Tech Pack</option><option>Pattern</option><option>Initial Sample</option><option>Fit Session</option><option>Approved</option><option>Grading</option><option>Costing Sample</option><option>In Development</option><option>Production</option><option>Launched</option><option>On Hold</option><option>Dropped</option></select>)}
-          {renderFact('Price', formatKes(current.price), <input type="number" min="0" step="1" value={form.price} onChange={(event) => setForm((draft) => ({ ...draft, price: event.target.value }))} aria-label="Price" />)}
-          {renderFact('Market', current.market || 'East Africa', <input value={form.market} onChange={(event) => setForm((draft) => ({ ...draft, market: event.target.value }))} aria-label="Market" />)}
-          {renderFact('Target date', date(current.targetDate), <input type="date" value={form.targetDate} onChange={(event) => setForm((draft) => ({ ...draft, targetDate: event.target.value }))} aria-label="Target date" />)}
-          {renderFact('Size range', current.sizeRange || 'Not set', <input value={form.sizeRange} onChange={(event) => setForm((draft) => ({ ...draft, sizeRange: event.target.value }))} placeholder="XS – 3XL" aria-label="Size range" />)}
-          <div className="style-fact style-fact-tags"><span>Trims & special features</span>{editing ? <TagEditor tags={form.trimsSpecialFeatures} onChange={(tags) => setForm((draft) => ({ ...draft, trimsSpecialFeatures: tags }))} /> : <div className="style-tag-list">{(current.trimsSpecialFeatures || []).length ? current.trimsSpecialFeatures?.map((tag) => <span className="style-tag" key={tag}>{tag}</span>) : <b>Not set</b>}</div>}</div>
-          <div className="style-fact"><span>Predicted cost</span>{editing ? <input type="number" min="0" step="1" value={form.predictedCost} onChange={(event) => setForm((draft) => ({ ...draft, predictedCost: event.target.value }))} placeholder="KES estimate" aria-label="Predicted cost" /> : <b>{current.predictedCost ? <>{formatKes(current.predictedCost)} <small className="cost-label">est.</small>{current.confirmedCost !== null && current.confirmedCost !== undefined && <> · {formatKes(current.confirmedCost)} <small className="cost-label confirmed">confirmed</small></>}</> : 'Not set'}</b>}</div>
-           <div className="style-fact"><span>Brand</span><b>{current.brand || 'Vivo'}</b></div>
-        </div>
-         <div className="catalogue-detail-actions">
-           <button type="button" className="button button-outline" onClick={() => setAssortmentOpen((open) => !open)}><MoveRight size={14} /> Add to Assortment Plan</button>
-           <a className="button button-quiet" href={`/merchandising?tab=merch-deepdive&style=${encodeURIComponent(current.code)}`} target="_blank" rel="noreferrer">View in BI <ArrowRight size={13} /></a>
-         </div>
-         {assortmentOpen && <AddStyleToAssortment styleNumber={current.code} pdId={current.id} styleName={current.name} />}
-      </div>
-    </div>}
-    <div className="style-tabs" role="tablist" aria-label="Style detail sections">{tabs.map(([value, label, count]) => <button key={value} className={activeTab === value ? 'active' : ''} onClick={() => setActiveTab(value)} role="tab" aria-selected={activeTab === value} data-testid={`button-style-${value}`}>{label} {count !== undefined && <span>{count}</span>}</button>)}</div>
-    {activeTab === 'colourways' && <section className="style-colourways-panel"><div className="style-section-heading"><div><span className="eyebrow">Colour direction</span><h2>Make the palette intentional.</h2></div>{editing && <span className="mono">{colourways.length} colourways</span>}</div>{editing && <div className="style-new-colourway"><div className="style-colour-input"><input type="color" value={newColourway.hex} onChange={(event) => setNewColourway((draft) => ({ ...draft, hex: event.target.value }))} aria-label="New colourway colour" /><span>{newColourway.hex}</span></div><input value={newColourway.name} onChange={(event) => setNewColourway((draft) => ({ ...draft, name: event.target.value }))} placeholder="Colour name" aria-label="New colourway name" /><input value={newColourway.code} onChange={(event) => setNewColourway((draft) => ({ ...draft, code: event.target.value }))} placeholder="Code (optional)" aria-label="New colourway code" /><button className="button button-gold" type="button" onClick={addColourway} disabled={createColourway.isPending}><Plus size={14} /> Add colourway</button></div>}{colourways.length ? <div className="style-colourway-grid">{colourways.map((colourway) => <ColourwayCard key={colourway.id} colourway={colourway} editing={editing} draft={colourwayDrafts[colourway.id] || { name: colourway.name, hex: colourway.hex, code: colourway.code || '' }} onDraftChange={(draft) => setColourwayDrafts((currentDrafts) => ({ ...currentDrafts, [colourway.id]: draft }))} onSave={() => saveColourway(colourway)} onDrop={() => dropColourway(colourway)} pending={updateColourway.isPending} />)}</div> : <EmptyState title="No colourways yet" text="Add the first colour direction while editing this style." />}</section>}
-     {activeTab === 'feedback' && <StyleFeedbackPanel styleId={id} />}
-     {activeTab !== 'overview' && activeTab !== 'colourways' && activeTab !== 'feedback' && <div className="style-tab-placeholder"><span className="eyebrow">{tabs.find(([value]) => value === activeTab)?.[1]}</span><h2>This detail is already captured in the workspace record.</h2><p>Use the PLM workflow tabs for the full handoff history, while this catalogue view keeps the editorial summary and colour direction close at hand.</p></div>}
-  </section>;
-}

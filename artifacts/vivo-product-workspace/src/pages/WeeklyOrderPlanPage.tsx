@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import './WeeklyOrderPlanPage.css';
 import { AlertTriangle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3, History, Image as ImageIcon, Plus, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 

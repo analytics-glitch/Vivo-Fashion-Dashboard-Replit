@@ -1,0 +1,17 @@
+{
+  "source": "Checked-in dist/public evidence present when Task 1707 verification was added",
+  "capturedAt": "2026-01-01",
+  "limitations": [
+    "No authenticated live environment or cache-reset endpoint was supplied, so no API cold/warm timings are fabricated.",
+    "Browser requests are a static Vite import graph, not a DevTools network trace."
+  ],
+  "bundleBytes": {
+    "initialJavaScript": 1045762,
+    "initialCss": 335966,
+    "largestObservedLazyChunk": {
+      "name": "StyleDevelopmentTrackerPage-Bd89CXpq.js",
+      "bytes": 364295
+    },
+    "totalJavaScript": 2225996
+  }
+}
