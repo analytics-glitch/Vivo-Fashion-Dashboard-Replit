@@ -4,9 +4,9 @@ import { CheckSquare, ChevronDown, RefreshCw, Search, Target, X } from 'lucide-r
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
 import GarmentImage from '../components/GarmentImage';
-import { countAssortmentStyles, matchesAssortmentFilters, matchesStyleCatalogueSearch, sortAssortmentStylesByAction, type AssortmentFilterState } from '../lib/assortmentPlanFilters';
+import { countAssortmentStyles, matchesAssortmentFilters, matchesStyleCatalogueSearch, proposedActionForStyle, proposedActionOptions, sortAssortmentStylesByAction, type AssortmentFilterState } from '../lib/assortmentPlanFilters';
 
-type FilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit';
+type FilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit' | 'proposedAction';
 type Destination = { type: 'range'; seasonId: number } | { type: 'week'; isoYear: number; isoWeek: number };
 type Season = { id: number; seasonName: string; status: string };
 type Week = { isoYear: number; isoWeek: number; label: string; status: string; isCurrent?: boolean };
@@ -37,8 +37,8 @@ const actionGroups = [
   { key: 'NONE', label: 'Everything else', description: 'No lifecycle action currently proposed' },
 ] as const;
 
-const filterDefinitions: Array<{ key: FilterKey; label: string }> = [{ key: 'tier', label: 'Tier' }, { key: 'status', label: 'Status' }, { key: 'category', label: 'Category' }, { key: 'subCategory', label: 'Sub-category' }, { key: 'fabricCategory', label: 'Fabric Category' }, { key: 'brand', label: 'Brand' }, { key: 'primaryColour', label: 'Primary Colour' }, { key: 'edit', label: 'Edit' }];
-const emptyFilters: AssortmentFilterState = { tier: [], status: ['Active'], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [] };
+const filterDefinitions: Array<{ key: FilterKey; label: string }> = [{ key: 'tier', label: 'Tier' }, { key: 'status', label: 'Status' }, { key: 'proposedAction', label: 'Proposed Action' }, { key: 'category', label: 'Category' }, { key: 'subCategory', label: 'Sub-category' }, { key: 'fabricCategory', label: 'Fabric Category' }, { key: 'brand', label: 'Brand' }, { key: 'primaryColour', label: 'Primary Colour' }, { key: 'edit', label: 'Edit' }];
+const emptyFilters: AssortmentFilterState = { tier: [], status: ['Active'], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [], proposedAction: [] };
 const emptyStyles: Style[] = [];
 const n = (value: number | null | undefined, digits = 0) => value == null || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat('en-KE', { maximumFractionDigits: digits }).format(Number(value));
 const pct = (value: number | null | undefined) => value == null ? '—' : `${n(value, 1)}%`;
@@ -129,7 +129,27 @@ export default function AssortmentPlanPage() {
     sessionStorage.removeItem('workspace_focus_assortment_search');
     window.requestAnimationFrame(() => document.querySelector<HTMLInputElement>('[data-assortment-search]')?.focus());
   }, []);
-  const assortmentStyles = assortment.data?.assortmentStyles ?? emptyStyles;
+  const assortmentStyles = useMemo(
+    () => (assortment.data?.assortmentStyles ?? emptyStyles).map((style) => ({
+      ...style,
+      proposedAction: proposedActionForStyle(style),
+    })),
+    [assortment.data?.assortmentStyles],
+  );
+  const proposedActionCounts = useMemo(() => {
+    const filtersWithoutAction = { ...filters, proposedAction: [] };
+    const eligible = assortmentStyles.filter((style) => (
+      matchesAssortmentFilters(style, filtersWithoutAction)
+      && matchesStyleCatalogueSearch(style, search)
+    ));
+    return Object.fromEntries(proposedActionOptions.map((option) => [
+      option,
+      eligible.filter((style) => style.proposedAction === option).length,
+    ]));
+  }, [assortmentStyles, filters, search]);
+  const proposedActionLabels = useMemo(() => Object.fromEntries(
+    proposedActionOptions.map((option) => [option, `${option} ${proposedActionCounts[option]}`]),
+  ), [proposedActionCounts]);
   const styles = useMemo(() => {
     return sortAssortmentStylesByAction(
       assortmentStyles.filter((style) => matchesAssortmentFilters(style, filters) && matchesStyleCatalogueSearch(style, search)),
@@ -161,7 +181,7 @@ export default function AssortmentPlanPage() {
     <header className="assortment-plan-hero"><div><span className="range-eyebrow">Merchandising / Store edit</span><h1>Assortment Plan <span className="assortment-bi-badge hero">BI source</span></h1><p>Make range decisions with trading, stock and product context in one working view.</p></div><div className="assortment-plan-hero-mark">V</div></header>
     {(data.reconciliations ?? []).filter(reconciliationFailed).length > 0 && <div className="assortment-reconciliation-failure" role="alert" data-testid="status-assortment-reconciliation-failure"><Target size={18} /><div><strong>BI reconciliation failed — headline assortment figures are not trusted</strong><span>{(data.reconciliations ?? []).filter(reconciliationFailed).map((item) => item.name ?? item.metric ?? item.label ?? item.error ?? item.message).join(' · ')}</span></div></div>}
     <div className="assortment-current-count" data-testid="text-assortment-filtered-count"><strong>{n(styles.length)}</strong><span>styles matching filters</span><small>Grouped by proposed action: Reorder → Retire → Graduate → Watch → Everything else. Your selected sort applies within each group.</small></div>
-    <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter assortment</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div><label className="assortment-search-field"><Search size={16} aria-hidden="true" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search style, number or designer…" data-assortment-search data-testid="input-assortment-search" /></label>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={[...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><button type="button" className="assortment-clear-filters" onClick={() => { setSearch(''); setFilters(emptyFilters); }} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
+    <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter assortment</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div><label className="assortment-search-field"><Search size={16} aria-hidden="true" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search style, number or designer…" data-assortment-search data-testid="input-assortment-search" /></label>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={key === 'proposedAction' ? [...proposedActionOptions] : [...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} optionLabels={key === 'proposedAction' ? proposedActionLabels : undefined} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><button type="button" className="assortment-clear-filters" onClick={() => { setSearch(''); setFilters(emptyFilters); }} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
     <div className="assortment-summary-bar"><div className="assortment-summary-lead"><Target size={17} /><span>Styles shown</span><strong>{n(styles.length)}</strong></div>{Object.entries(assortmentCounts).slice(1).map(([key, value]) => <div className="assortment-summary-item" key={key}><span>{key}</span><strong>{n(value)}</strong></div>)}</div>
     <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter(isBiStyle).map((s) => s.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div>{groupedStyles.map((group) => <section className={`assortment-action-group action-${group.key.toLowerCase()}`} key={group.key} data-testid={`assortment-action-group-${group.key.toLowerCase()}`}><header><div><span>Proposed action</span><h2>{group.label}</h2><p>{group.description}</p></div><strong>{n(group.styles.length)}</strong></header><div className="assortment-card-grid">{group.styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} expanded={expandedStyleId === style.id} onToggle={() => setExpandedStyleId((current) => current === style.id ? null : style.id)} />)}</div></section>)}</> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>
     {selectedStyles.length > 0 && <aside className="assortment-bulk-bar"><CheckSquare size={18} /><strong>{selectedStyles.length} selected</strong><DestinationPicker seasons={data.seasons ?? []} weeks={data.weeklyDestinations ?? []} disabled={add.isPending} onPick={(destination) => add.mutate({ styles: selectedStyles, destination })} /><button type="button" onClick={() => setSelected([])} data-testid="button-clear-bulk-selection">Clear</button></aside>}

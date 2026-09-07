@@ -16,6 +16,7 @@ export default function MultiSelectFilter({
   testId,
   variant = 'catalogue',
   alwaysShowCount = false,
+  optionLabels,
 }: {
   label: string;
   options: string[];
@@ -24,6 +25,7 @@ export default function MultiSelectFilter({
   testId?: string;
   variant?: 'catalogue' | 'plm';
   alwaysShowCount?: boolean;
+  optionLabels?: Record<string, string>;
 }) {
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement | null>(null);
@@ -95,7 +97,7 @@ export default function MultiSelectFilter({
                   data-testid={testId ? `${testId}-option-${option}` : undefined}
                 >
                   <span className={`msf-box ${checked ? 'on' : ''}`}>{checked && <Check size={11} />}</span>
-                  <span className="msf-option-label" title={option}>{option}</span>
+                  <span className="msf-option-label" title={optionLabels?.[option] ?? option}>{optionLabels?.[option] ?? option}</span>
                 </button>
               );
             })}

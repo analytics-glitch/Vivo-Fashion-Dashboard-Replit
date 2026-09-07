@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { computeReorderSignal, weeksSinceFirstSale, type FabricAvailability, type LifecycleRules } from "./assortment-signal.js";
+import { actualOrderCountForStyle, computeReorderSignal, weeksSinceFirstSale, type FabricAvailability, type LifecycleRules } from "./assortment-signal.js";
 import { Readable } from "node:stream";
 import express, {
   type NextFunction,
@@ -8201,6 +8201,7 @@ router.get("/assortment-plan", async (_req, res, next) => {
     ]);
     const fabricRates = new Map(fabricRatesResult.rows.map((row) => [String(row.subcategory), Number(row.metresPerUnit)]));
     const selectedAssortment = await assortmentPlanData(CURRENT_ASSORTMENT_SCOPE, true, bi);
+    const actualOrders = activeBiOrders(bi.orders).filter((order) => order.quantity > 0);
     const assortmentStyles = selectedAssortment.styles.map((style) => {
       const sourceStockUnits = style.stockUnits == null ? null : Number(style.stockUnits);
       const sohStores = Number(style.sohStores ?? 0);
@@ -8216,13 +8217,14 @@ router.get("/assortment-plan", async (_req, res, next) => {
       const sellableCoverWeeks = coverAvailable && weeklyAvg > 0 ? sellableStockUnits / weeklyAvg : null;
       const planningCoverWeeks = coverAvailable && weeklyAvg > 0 ? stockPlusPipelineUnits / weeklyAvg : null;
       const fabricConsumptionMetresPerUnit = fabricRates.get(String(style.subCategory ?? "").trim().toLowerCase()) ?? null;
+      const orderCount = actualOrderCountForStyle(style.styleNumber, style.name, actualOrders);
       const reorderSignal = computeReorderSignal({
         tier: style.tier,
         sellThroughPct: style.lifetimeSellThroughPct == null ? null : Number(style.lifetimeSellThroughPct),
         fullPricePct: style.fullPricePct == null ? null : Number(style.fullPricePct),
         daysSinceLastSale: style.daysSinceLastSale == null ? null : Number(style.daysSinceLastSale),
         firstSaleDate: style.firstSaleDate,
-        orderCount: style.orderCount,
+        orderCount,
         sellableCoverWeeks,
         planningCoverWeeks,
         fabricAvailability: style.fabricByColour,
@@ -8240,6 +8242,7 @@ router.get("/assortment-plan", async (_req, res, next) => {
         planningCoverWeeks,
         weeksSinceFirstSale: weeksSinceFirstSale(style.firstSaleDate),
         weeksSinceLastOrder: weeksSinceFirstSale(style.lastOrderDate),
+        orderCount,
         fabricConsumptionMetresPerUnit,
         reorderSignal,
         image: style.styleNumber

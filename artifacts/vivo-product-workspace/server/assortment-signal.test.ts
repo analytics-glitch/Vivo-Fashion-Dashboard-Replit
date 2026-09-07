@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { computeReorderSignal } from "./assortment-signal.js";
+import { actualOrderCountForStyle, computeReorderSignal } from "./assortment-signal.js";
 
 const rules = {
   tier4: [
@@ -78,8 +78,65 @@ test("Tier 4 follows the editable lifecycle ladder", () => {
 });
 
 test("Tier 4 graduates on two total orders and Tier 3 on nine months plus four", () => {
-  assert.equal(computeReorderSignal({ ...base, tier: "Tier 4 · New", firstSaleDate: "2026-08-01", orderCount: 2 }).action, "GRADUATE");
-  assert.equal(computeReorderSignal({ ...base, tier: "Tier 3 · Recent", firstSaleDate: "2025-10-01", orderCount: 4 }).label, "Graduate to Tier 2");
+  assert.equal(computeReorderSignal({ ...base, tier: "Tier 4 · New", firstSaleDate: "2026-08-01", sellThroughPct: 10, orderCount: 2 }).action, "GRADUATE");
+  assert.equal(computeReorderSignal({ ...base, tier: "Tier 3 · Recent", firstSaleDate: "2025-10-01", orderCount: 4, planningCoverWeeks: 20 }).label, "Graduate to Tier 2");
+});
+
+test("reorder takes precedence over graduation", () => {
+  const tier4Early = computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-08-10",
+    sellThroughPct: 67,
+    orderCount: 3,
+    planningCoverWeeks: null,
+  });
+  assert.equal(tier4Early.action, "REORDER");
+  assert.equal(tier4Early.label, "Strong early candidate");
+
+  const tier4WeekSix = computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-07-20",
+    sellThroughPct: 70,
+    orderCount: 2,
+    planningCoverWeeks: 5,
+  });
+  assert.equal(tier4WeekSix.action, "REORDER");
+  assert.equal(tier4WeekSix.label, "Passed week 6 read — full rollout");
+
+  const tier3 = computeReorderSignal({
+    ...base,
+    tier: "Tier 3 · Recent",
+    firstSaleDate: "2025-10-01",
+    orderCount: 4,
+  });
+  assert.equal(tier3.action, "REORDER");
+});
+
+test("retire beats graduate and graduate beats watch", () => {
+  assert.equal(computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-06-01",
+    sellThroughPct: 65,
+    orderCount: 2,
+  }).action, "RETIRE");
+  assert.equal(computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-06-01",
+    sellThroughPct: 75,
+    orderCount: 2,
+  }).action, "GRADUATE");
+});
+
+test("actual order count ignores pipeline and zero-quantity drafts", () => {
+  assert.equal(actualOrderCountForStyle("V0426032", "Vivo Long Sleeve Wrap Dress in Satin", [
+    { orderRef: "BO00328", styleNumber: "V0426032", styleName: "Vivo Long Sleeve Wrap Dress in Satin", quantity: 307 },
+    { orderRef: "BO00330", styleNumber: "", styleName: "Vivo Long Sleeve Wrap Dress in Satin", quantity: 0 },
+    { orderRef: "BO00328", styleNumber: "V0426032", styleName: "Vivo Long Sleeve Wrap Dress in Satin", quantity: 307 },
+  ]), 1);
 });
 
 test("Tier 1-3 reorder gate does not depend on sell-through", () => {
@@ -100,7 +157,7 @@ test("unavailable cover blocks cover-based reorders without blocking other Tier 
     sellableCoverWeeks: null,
     sellThroughPct: 60,
   });
-  assert.equal(tier4WeekSix.label, "Strong early candidate");
+  assert.equal(tier4WeekSix.label, "No action");
   assert.notEqual(tier4WeekSix.label, "Passed week 6 read — full rollout");
   assert.equal(computeReorderSignal({
     ...base,
@@ -110,4 +167,39 @@ test("unavailable cover blocks cover-based reorders without blocking other Tier 
     sellableCoverWeeks: null,
     sellThroughPct: 40,
   }).action, "REORDER");
+});
+
+test("Tier 4 uses only the highest age band reached", () => {
+  const weekEightLowSellThrough = computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-07-10",
+    sellThroughPct: 31,
+    fullPricePct: 100,
+    daysSinceLastSale: 2,
+    planningCoverWeeks: 57,
+  });
+  assert.equal(weekEightLowSellThrough.action, null);
+  assert.equal(weekEightLowSellThrough.label, "No action");
+
+  const weekTenHighStock = computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-06-26",
+    sellThroughPct: 57,
+    fullPricePct: 98,
+    daysSinceLastSale: 1,
+    planningCoverWeeks: 43,
+  });
+  assert.equal(weekTenHighStock.action, null);
+
+  const weekFiveStrongEarlyCandidate = computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-07-30",
+    sellThroughPct: 68,
+    planningCoverWeeks: null,
+  });
+  assert.equal(weekFiveStrongEarlyCandidate.action, "REORDER");
+  assert.equal(weekFiveStrongEarlyCandidate.label, "Strong early candidate");
 });

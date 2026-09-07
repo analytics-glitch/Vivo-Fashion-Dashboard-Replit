@@ -7,6 +7,7 @@ export const assortmentFilterKeys = [
   'brand',
   'primaryColour',
   'edit',
+  'proposedAction',
 ] as const;
 
 export type AssortmentFilterKey = typeof assortmentFilterKeys[number];
@@ -26,6 +27,35 @@ export type AssortmentSortableStyle = AssortmentFilterableStyle & {
   daysSinceLastSale?: number | null;
   reorderSignal?: { actionPriority?: number | null } | null;
 };
+
+export const proposedActionOptions = [
+  'Reorder',
+  'Retire',
+  'Graduate',
+  'Watch',
+  'Too early / not enough history',
+  'No action',
+] as const;
+
+export function proposedActionForStyle(style: {
+  coverAvailable?: boolean | null;
+  coverUnavailableReason?: string | null;
+  reorderSignal?: { action?: string | null; label?: string | null } | null;
+}) {
+  const action = String(style.reorderSignal?.action ?? '').toUpperCase();
+  if (action === 'REORDER') return 'Reorder';
+  if (action === 'RETIRE') return 'Retire';
+  if (action === 'GRADUATE') return 'Graduate';
+  if (action === 'WATCH') return 'Watch';
+  const label = String(style.reorderSignal?.label ?? '').toLowerCase();
+  if (
+    label.startsWith('too early')
+    || label === 'not yet selling'
+    || style.coverAvailable === false
+    || Boolean(style.coverUnavailableReason)
+  ) return 'Too early / not enough history';
+  return 'No action';
+}
 
 export type AssortmentSearchableStyle = {
   styleNumber?: string | null;

@@ -7,6 +7,7 @@ import {
   matchesStyleCatalogueSearch,
   sortAssortmentStyles,
   sortAssortmentStylesByAction,
+  proposedActionForStyle,
   type AssortmentFilterState,
   type AssortmentFilterableStyle,
 } from './assortmentPlanFilters';
@@ -20,6 +21,7 @@ const emptyFilters = (): AssortmentFilterState => ({
   brand: [],
   primaryColour: [],
   edit: [],
+  proposedAction: [],
 });
 
 const activeStyle: AssortmentFilterableStyle = {
@@ -31,6 +33,7 @@ const activeStyle: AssortmentFilterableStyle = {
   brand: 'Vivo',
   primaryColour: 'Blue',
   edit: 'Essentials',
+  proposedAction: 'Reorder',
 };
 
 const retiredStyle: AssortmentFilterableStyle = {
@@ -42,15 +45,23 @@ const retiredStyle: AssortmentFilterableStyle = {
   brand: 'Safari',
   primaryColour: 'Red',
   edit: 'Archive',
+  proposedAction: 'Retire',
 };
 
-test('each of the eight filters matches its selected database value', () => {
+test('each assortment filter matches its selected value', () => {
   for (const key of assortmentFilterKeys) {
     const filters = emptyFilters();
     filters[key] = [String(activeStyle[key])];
     assert.equal(matchesAssortmentFilters(activeStyle, filters), true, key);
     assert.equal(matchesAssortmentFilters(retiredStyle, filters), false, key);
   }
+});
+
+test('proposed action categories account for actions, insufficient history, and no action', () => {
+  assert.equal(proposedActionForStyle({ reorderSignal: { action: 'REORDER', label: 'Strong early candidate' } }), 'Reorder');
+  assert.equal(proposedActionForStyle({ reorderSignal: { action: null, label: 'Too early · week 1' } }), 'Too early / not enough history');
+  assert.equal(proposedActionForStyle({ coverAvailable: false, coverUnavailableReason: 'Needs 6 completed selling weeks', reorderSignal: { action: null, label: 'No action' } }), 'Too early / not enough history');
+  assert.equal(proposedActionForStyle({ coverAvailable: true, reorderSignal: { action: null, label: 'No action' } }), 'No action');
 });
 
 test('multi-select is OR within a filter and AND across filters', () => {
