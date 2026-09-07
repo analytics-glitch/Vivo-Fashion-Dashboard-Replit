@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
 import { actualOrderHistoryForStyle, computeReorderSignal, weeksSinceFirstSale, type FabricAvailability, type LifecycleRules } from "./assortment-signal.js";
+import { orderAllowedByHistoryCutover } from "./order-history-cutover.js";
 import { Readable } from "node:stream";
 import express, {
   type NextFunction,
@@ -351,10 +352,28 @@ function biOrder(order: Record<string, any>) {
     quantity: Number(biValue(order, "quantity", "orderQty", "order_qty", "units") ?? 0),
     orderType: String(biValue(order, "orderType", "lifecycleType", "lifecycle_type") ?? ""),
     orderState: String(biValue(order, "orderState", "boState", "bo_state", "state") ?? ""),
+    source: String(biValue(order, "source") ?? "").trim().toLowerCase(),
   };
 }
+const DEFAULT_ODOO_ORDER_HISTORY_START_DATE = "2026-03-02";
+let odooOrderHistoryStartDate = DEFAULT_ODOO_ORDER_HISTORY_START_DATE;
+async function ensureOrderHistoryConfig() {
+  await pool.query(`CREATE TABLE IF NOT EXISTS ${schema}.order_history_config (
+    singleton boolean PRIMARY KEY DEFAULT TRUE CHECK (singleton),
+    odoo_start_date date NOT NULL,
+    updated_at timestamptz NOT NULL DEFAULT NOW(),
+    updated_by integer REFERENCES ${schema}.users(id) ON DELETE SET NULL
+  )`);
+  await pool.query(`INSERT INTO ${schema}.order_history_config(singleton,odoo_start_date)
+    VALUES(TRUE,$1::date) ON CONFLICT(singleton) DO NOTHING`, [DEFAULT_ODOO_ORDER_HISTORY_START_DATE]);
+  const result = await pool.query(`SELECT odoo_start_date::text AS "odooStartDate"
+    FROM ${schema}.order_history_config WHERE singleton=TRUE`);
+  odooOrderHistoryStartDate = result.rows[0]?.odooStartDate ?? DEFAULT_ODOO_ORDER_HISTORY_START_DATE;
+}
 const activeBiOrders = (orders: Array<Record<string, any>>) => orders.map(biOrder)
-  .filter((order) => order.orderDate && !["cancel", "cancelled", "canceled"].includes(order.orderState.toLowerCase()));
+  .filter((order) => order.orderDate
+    && !["cancel", "cancelled", "canceled"].includes(order.orderState.toLowerCase())
+    && orderAllowedByHistoryCutover(order, odooOrderHistoryStartDate));
 const biLookupKey = (value: unknown) => String(value ?? "").trim().toLowerCase();
 function biWorkspaceProjection(source: BiWorkspaceSource): BiWorkspaceProjection {
   // Projection lifetime is tied to both the snapshot contract and generated
@@ -1647,6 +1666,7 @@ async function ensureStyleDevelopmentTrackerData() {
       before_pattern_loads JSONB NOT NULL DEFAULT '{}'::jsonb,
       after_pattern_loads JSONB NOT NULL DEFAULT '{}'::jsonb,
       recorded_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      recorded_by_workspace_user_id INTEGER REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL,
       recorded_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS ${schema}.style_development_pattern_maker_unavailability (
@@ -2790,6 +2810,20 @@ async function runBestEffortMigration(label: string, text: string) {
 
 async function ensureRecentWorkspaceMigrations() {
   const migrations: Array<[string, string]> = [
+    ["weekly classifications colourways and note authors", `
+      ALTER TABLE ${schema}.style_development_history
+        ADD COLUMN IF NOT EXISTS recorded_by_workspace_user_id INTEGER
+          REFERENCES ${schema}.workspace_users(id) ON DELETE SET NULL;
+      ALTER TABLE ${schema}.weekly_order_plan_lines
+        ADD COLUMN IF NOT EXISTS fabric_consumption_metres_per_unit NUMERIC,
+        ADD COLUMN IF NOT EXISTS colourway_allocations JSONB NOT NULL DEFAULT '[]'::jsonb;
+      UPDATE ${schema}.style_development_tracker
+         SET print_or_solid='Plain'
+       WHERE LOWER(BTRIM(COALESCE(print_or_solid,'')))='solid';
+      UPDATE ${schema}.weekly_order_plan_lines
+         SET pattern_type='Plain'
+       WHERE LOWER(BTRIM(COALESCE(pattern_type,'')))='solid';
+    `],
     ["collapse reorder and replenishment into repeat", `
       ALTER TABLE ${schema}.weekly_order_plan_lines
         ADD COLUMN IF NOT EXISTS legacy_order_type TEXT;
@@ -3809,6 +3843,8 @@ async function ensureSchema() {
     );
     ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS pattern_type TEXT;
     ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS fabric_structure TEXT;
+    ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS fabric_consumption_metres_per_unit NUMERIC;
+    ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS colourway_allocations JSONB NOT NULL DEFAULT '[]'::jsonb;
     CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_week_targets (
       iso_year INTEGER NOT NULL,
       iso_week INTEGER NOT NULL CHECK (iso_week BETWEEN 1 AND 53),
@@ -6251,8 +6287,9 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
       h.reassignment_reason_label AS "reassignmentReasonLabel",
       h.reassignment_reason_category AS "reassignmentReasonCategory",
       h.occurred_at AS "occurredAt",h.recorded_at AS "recordedAt",
-      COALESCE(u.name,'System') AS "recordedBy"
+      COALESCE(wu.name,u.name,'System') AS "recordedBy"
      FROM ${schema}.style_development_history h
+      LEFT JOIN ${schema}.workspace_users wu ON wu.id=h.recorded_by_workspace_user_id
      LEFT JOIN ${schema}.users u ON u.id=h.recorded_by
      WHERE h.tracker_style_id=ANY($1::int[])
      ORDER BY h.occurred_at ASC,h.id ASC`,
@@ -7227,8 +7264,9 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
       if (key === "knitOrWoven" && value !== "" && !["Knit", "Woven"].includes(String(value))) {
         throw new Error("Knit or woven must be Knit or Woven");
       }
-      if (key === "printOrSolid" && value !== "" && !["Print", "Solid"].includes(String(value))) {
-        throw new Error("Print or solid must be Print or Solid");
+      if (key === "printOrSolid" && String(value).toLowerCase() === "solid") value = "Plain";
+      if (key === "printOrSolid" && value !== "" && !["Print", "Plain"].includes(String(value))) {
+        throw new Error("Print or Plain must be Print or Plain");
       }
       if (key === "patternEffortDays" && value !== null && value !== "" && (!Number.isFinite(Number(value)) || Number(value) < 0.5 || Number(value) > 20)) {
         throw new Error("Estimated pattern effort must be between 0.5 and 20 working days");
@@ -7368,8 +7406,8 @@ router.post("/style-development-tracker/:id/notes", async (req: AuthRequest, res
     }
     const result = await pool.query(
       `INSERT INTO ${schema}.style_development_history
-        (tracker_style_id,entry_type,note,recorded_by)
-       SELECT id,'note',$2,$3 FROM ${schema}.style_development_tracker WHERE id=$1
+        (tracker_style_id,entry_type,note,recorded_by,recorded_by_workspace_user_id)
+       SELECT id,'note',$2,$3,$3 FROM ${schema}.style_development_tracker WHERE id=$1
        RETURNING id`,
       [Number(req.params.id), note, req.workspaceUser?.id ?? null],
     );
@@ -13298,6 +13336,39 @@ router.get("/weekly-order-kpi-targets", async (_req, res, next) => {
   }
 });
 
+router.get("/order-history-config", async (_req, res, next) => {
+  try {
+    await ensureOrderHistoryConfig();
+    const result = await pool.query(
+      `SELECT c.odoo_start_date::text AS "odooStartDate",c.updated_at AS "updatedAt",
+         COALESCE(NULLIF(BTRIM(u.name),''),'Workspace default') AS "updatedBy"
+       FROM ${schema}.order_history_config c
+       LEFT JOIN ${schema}.users u ON u.id=c.updated_by
+       WHERE c.singleton=TRUE`,
+    );
+    res.json(result.rows[0]);
+  } catch (error) { next(error); }
+});
+
+router.patch("/order-history-config", async (req: AuthRequest, res, next) => {
+  try {
+    const value = String(req.body?.odooStartDate ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value) || Number.isNaN(Date.parse(`${value}T00:00:00Z`))) {
+      res.status(400).json({ error: "Enter a valid Odoo order history start date" }); return;
+    }
+    await ensureOrderHistoryConfig();
+    await pool.query(
+      `UPDATE ${schema}.order_history_config
+       SET odoo_start_date=$1::date,updated_at=NOW(),updated_by=$2
+       WHERE singleton=TRUE`,
+      [value, req.workspaceUser?.id ?? null],
+    );
+    odooOrderHistoryStartDate = value;
+    biProjectionCache = null;
+    res.json({ ok: true, odooStartDate: value });
+  } catch (error) { next(error); }
+});
+
 router.patch("/weekly-order-kpi-targets/:key", async (req: AuthRequest, res, next) => {
   try {
     const value = Number(req.body?.targetValue);
@@ -13363,12 +13434,19 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
           t.sub_category AS "subCategory",t.brand,
           COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
           t.sample_fabric_product_id AS "fabricProductId",t.target_order_week AS "targetOrderWeek",
+          CASE WHEN LOWER(BTRIM(COALESCE(t.print_or_solid,''))) IN ('plain','solid') THEN 'Plain'
+               WHEN LOWER(BTRIM(COALESCE(t.print_or_solid,'')))='print' THEN 'Print' END AS "patternType",
+          CASE WHEN LOWER(BTRIM(COALESCE(t.knit_or_woven,'')))='knit' THEN 'Knit'
+               WHEN LOWER(BTRIM(COALESCE(t.knit_or_woven,'')))='woven' THEN 'Woven' END AS "fabricStructure",
+          COALESCE(t.fabric_consumption_override_m_per_unit,rate.expected_metres_per_unit)::float AS "fabricConsumptionMetresPerUnit",
           ARRAY[]::text[] AS colourways,
           CASE WHEN gi.id IS NOT NULL THEN '/api/workspace/garment-images/plm/' || encode(LOWER(BTRIM(t.style_number))::bytea,'escape') END AS "imageUrl",
           COALESCE(SUM(fi.available / NULLIF(fp.kg_per_mtr_eff,0)) FILTER (WHERE fi.location_name='RMAT/Stock' AND fi.available>0),0)::float AS "availableMetres"
          FROM ${schema}.style_development_tracker t
          LEFT JOIN public.raw_fabric_products fp ON fp.id=t.sample_fabric_product_id
          LEFT JOIN public.raw_fabric_inventory fi ON fi.product_id=fp.id
+         LEFT JOIN ${schema}.subcategory_fabric_consumption_rates rate
+           ON LOWER(BTRIM(rate.subcategory))=LOWER(BTRIM(t.sub_category)) AND rate.is_non_garment=FALSE
          LEFT JOIN ${schema}.garment_images gi ON gi.source='plm' AND gi.style_key=LOWER(BTRIM(t.style_number))
          WHERE t.exit_status='active' AND t.style_number_status='confirmed' AND NULLIF(BTRIM(t.style_number),'') IS NOT NULL
            AND ($1='' OR t.style_number ILIKE $2 ESCAPE '\\' OR t.style_name ILIKE $2 ESCAPE '\\'
@@ -13394,7 +13472,9 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
         styleName: style.name, styleType: null, tier: style.rangeTier, category: style.category,
         subCategory: style.subCategory, brand: style.brand, fabric: style.fabric,
         fabricProductId: null, targetOrderWeek: null, colourways: style.colourways,
-        imageUrl: null, availableMetres: style.fabricMetres ?? 0,
+         imageUrl: null, availableMetres: style.fabricMetres ?? 0,
+         patternType: null, fabricStructure: null,
+         fabricConsumptionMetresPerUnit: null,
       }));
     res.json({ items, source: "bi" });
     return;
@@ -13515,9 +13595,13 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
         CASE WHEN gi.id IS NOT NULL THEN '/api/workspace/garment-images/' ||
           CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END || '/' ||
           encode(LOWER(BTRIM(l.style_number))::bytea,'escape') END AS "imageUrl",
-        l.available_colourways AS "availableColourways",l.selected_colourways AS "selectedColourways",
-         COALESCE(NULLIF(BTRIM(l.pattern_type),''),fa.pattern_type) AS "patternType",
-         COALESCE(NULLIF(BTRIM(l.fabric_structure),''),fa.fabric_structure) AS "fabricStructure",
+         l.available_colourways AS "availableColourways",l.selected_colourways AS "selectedColourways",
+         l.colourway_allocations AS "colourwayAllocations",
+          CASE WHEN LOWER(BTRIM(COALESCE(l.pattern_type,fa.pattern_type,''))) IN ('plain','solid') THEN 'Plain'
+               WHEN LOWER(BTRIM(COALESCE(l.pattern_type,fa.pattern_type,'')))='print' THEN 'Print' END AS "patternType",
+          CASE WHEN LOWER(BTRIM(COALESCE(l.fabric_structure,fa.fabric_structure,'')))='knit' THEN 'Knit'
+               WHEN LOWER(BTRIM(COALESCE(l.fabric_structure,fa.fabric_structure,'')))='woven' THEN 'Woven' END AS "fabricStructure",
+         COALESCE(l.fabric_consumption_metres_per_unit,rate.expected_metres_per_unit)::float AS "fabricConsumptionMetresPerUnit",
         l.data_quality_flags AS "dataQualityFlags",
         l.estimated_quantity AS "estimatedQuantity",l.order_type AS "orderType",l.order_stage AS "orderStage",
         COALESCE(fm.metres,0)::float AS "availableMetres",
@@ -13531,7 +13615,15 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
         JOIN ${schema}.weekly_order_plans p ON p.id=l.plan_id
        LEFT JOIN ${schema}.garment_images gi ON gi.source=CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END
          AND gi.style_key=LOWER(BTRIM(l.style_number))
-        LEFT JOIN LATERAL (SELECT 0::numeric AS metres) fm ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT COALESCE(SUM(fi.available / NULLIF(fp.kg_per_mtr_eff,0))
+            FILTER (WHERE fi.location_name='RMAT/Stock' AND fi.available>0),0) AS metres
+          FROM public.raw_fabric_products fp
+          LEFT JOIN public.raw_fabric_inventory fi ON fi.product_id=fp.id
+          WHERE fp.id=l.fabric_product_id
+        ) fm ON TRUE
+        LEFT JOIN ${schema}.subcategory_fabric_consumption_rates rate
+          ON LOWER(BTRIM(rate.subcategory))=LOWER(BTRIM(l.sub_category)) AND rate.is_non_garment=FALSE
          LEFT JOIN LATERAL (
            SELECT NULL::date AS first_order_date,0::numeric AS actual_quantity,'[]'::json AS orders
          ) ao ON TRUE
@@ -13693,8 +13785,28 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
     const weeklyKpis = [
       kpi("total_styles", lines.rows.length, null, "count"),
       kpi("total_units", totalPlannedUnits, weeklyTargetUnits, "units"),
-      kpi("print_pct", percentOfUnits(printUnits), Number(kpiTargets.get("print_pct") ?? 30), "percent", patternComplete),
-      kpi("knit_pct", percentOfUnits(knitUnits), Number(kpiTargets.get("knit_pct") ?? 35), "percent", constructionComplete),
+      {
+        ...kpi("print_pct",
+          lines.rows.filter((line) => ["print", "plain"].includes(String(line.patternType ?? "").trim().toLowerCase())).length
+            ? 100 * lines.rows.filter((line) => String(line.patternType ?? "").trim().toLowerCase() === "print").length
+              / lines.rows.filter((line) => ["print", "plain"].includes(String(line.patternType ?? "").trim().toLowerCase())).length
+            : null,
+          Number(kpiTargets.get("print_pct") ?? 30), "percent",
+          lines.rows.some((line) => ["print", "plain"].includes(String(line.patternType ?? "").trim().toLowerCase()))),
+        basisCount: lines.rows.filter((line) => ["print", "plain"].includes(String(line.patternType ?? "").trim().toLowerCase())).length,
+        totalCount: lines.rows.length,
+      },
+      {
+        ...kpi("knit_pct",
+          lines.rows.filter((line) => ["knit", "woven"].includes(String(line.fabricStructure ?? "").trim().toLowerCase())).length
+            ? 100 * lines.rows.filter((line) => String(line.fabricStructure ?? "").trim().toLowerCase() === "knit").length
+              / lines.rows.filter((line) => ["knit", "woven"].includes(String(line.fabricStructure ?? "").trim().toLowerCase())).length
+            : null,
+          Number(kpiTargets.get("knit_pct") ?? 35), "percent",
+          lines.rows.some((line) => ["knit", "woven"].includes(String(line.fabricStructure ?? "").trim().toLowerCase()))),
+        basisCount: lines.rows.filter((line) => ["knit", "woven"].includes(String(line.fabricStructure ?? "").trim().toLowerCase())).length,
+        totalCount: lines.rows.length,
+      },
       kpi("new_pct", weeklyTargetUnits ? 100 * summary.newUnits / weeklyTargetUnits : 0, newPctTarget, "percent"),
       kpi("dresses_pct", percentOfUnits(dressesUnits), Number(kpiTargets.get("dresses_pct") ?? 35), "percent"),
       kpi("average_order_size", lines.rows.length ? totalPlannedUnits / lines.rows.length : 0, Number(kpiTargets.get("average_order_size") ?? 400), "units"),
@@ -13802,6 +13914,10 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
         orderedUnits: actualOrders.rows.reduce((sum, order) => sum + Number(order.quantity ?? 0), 0),
         unplannedStyles: unplannedStyleKeys.size,
         unplannedUnits: unplannedOrders.reduce((sum, order) => sum + Number(order.quantity ?? 0), 0),
+        colourwaysComplete: lines.rows.filter((line) =>
+          Array.isArray(line.colourwayAllocations) && line.colourwayAllocations.length > 0).length,
+        colourwaysPending: lines.rows.filter((line) =>
+          !Array.isArray(line.colourwayAllocations) || line.colourwayAllocations.length === 0).length,
       },
       fabricSummary,
       subcategories: subcategories.rows,
@@ -13820,11 +13936,19 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const quantity = Number(body.estimatedQuantity);
     const validTypes = ["New", "Repeat", "Range Refreshed"];
     const validStages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample", "Set Sampling", "Set Sample Fitting", "Approved for Production"];
+    const patternType = String(body.patternType ?? "").trim();
+    const fabricStructure = String(body.fabricStructure ?? "").trim();
     if (!Number.isInteger(isoYear) || !Number.isInteger(isoWeek) || isoWeek < 1 || isoWeek > 53 || !Number.isInteger(quantity) || quantity <= 0) {
       res.status(400).json({ error: "A valid week and estimated quantity are required" }); return;
     }
     if (!validTypes.includes(body.orderType) || !validStages.includes(body.orderStage)) {
       res.status(400).json({ error: "A valid order type and stage are required" }); return;
+    }
+    if (!["Print", "Plain"].includes(patternType) || !["Knit", "Woven"].includes(fabricStructure)) {
+      res.status(400).json({
+        error: "Choose both Knit or Woven and Print or Plain. The weekly % Knit and % Print KPIs cannot be calculated without them.",
+        code: "CLASSIFICATION_REQUIRED",
+      }); return;
     }
     await client.query("BEGIN");
     const plan = await client.query(
@@ -13847,10 +13971,13 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
         `SELECT t.id::text AS source_id,t.style_number,t.style_name,t.style_type,t.tier,t.category,t.sub_category,t.brand,
           COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
            sample_fabric_product_id AS fabric_product_id,target_order_week,
-           NULLIF(BTRIM(fp.plain_print),'') AS pattern_type,
-           NULLIF(BTRIM(fp.fabric_structure),'') AS fabric_structure,
+            COALESCE(NULLIF(BTRIM(t.print_or_solid),''),NULLIF(BTRIM(fp.plain_print),'')) AS pattern_type,
+            COALESCE(NULLIF(BTRIM(t.knit_or_woven),''),NULLIF(BTRIM(fp.fabric_structure),'')) AS fabric_structure,
+            COALESCE(t.fabric_consumption_override_m_per_unit,rate.expected_metres_per_unit)::float AS fabric_consumption_metres_per_unit,
           ARRAY[]::text[] AS colourways
          FROM ${schema}.style_development_tracker t LEFT JOIN public.raw_fabric_products fp ON fp.id=t.sample_fabric_product_id
+          LEFT JOIN ${schema}.subcategory_fabric_consumption_rates rate
+            ON LOWER(BTRIM(rate.subcategory))=LOWER(BTRIM(t.sub_category)) AND rate.is_non_garment=FALSE
          WHERE t.id=$1 AND t.style_number_status='confirmed' AND NULLIF(BTRIM(t.style_number),'') IS NOT NULL`,
         [Number(body.sourceId)],
       )
@@ -13896,6 +14023,16 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
       );
       Object.assign(style, fabricAttributes.rows[0] ?? {});
     }
+    style.pattern_type = patternType;
+    style.fabric_structure = fabricStructure;
+    if (source === "development") {
+      await client.query(
+        `UPDATE ${schema}.style_development_tracker
+         SET print_or_solid=$1,knit_or_woven=$2,updated_at=NOW()
+         WHERE id=$3`,
+        [patternType, fabricStructure, Number(body.sourceId)],
+      );
+    }
     const seqResult = await client.query(`SELECT COALESCE(MAX(sequence_no),0)+1 AS seq FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$1`, [plan.rows[0].id]);
     const sequence = Number(seqResult.rows[0].seq);
     const selected = Array.isArray(body.selectedColourways)
@@ -13904,14 +14041,14 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const inserted = await client.query(
       `INSERT INTO ${schema}.weekly_order_plan_lines
        (plan_id,sequence_no,order_number,source,source_id,style_number,style_name,style_type,tier,category,sub_category,
-         brand,fabric,fabric_product_id,pattern_type,fabric_structure,target_order_week,image_url,available_colourways,
-         selected_colourways,estimated_quantity,order_type,order_stage,created_by)
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
+         brand,fabric,fabric_product_id,pattern_type,fabric_structure,fabric_consumption_metres_per_unit,target_order_week,image_url,available_colourways,
+          selected_colourways,colourway_allocations,estimated_quantity,order_type,order_stage,created_by)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING id`,
       [plan.rows[0].id, sequence, `W${isoWeek}${String(sequence).padStart(3, "0")}`, source, style.source_id,
         style.style_number, style.style_name, style.style_type, style.tier, style.category, style.sub_category, style.brand,
-        style.fabric, style.fabric_product_id, style.pattern_type, style.fabric_structure, style.target_order_week,
+        style.fabric, style.fabric_product_id, style.pattern_type, style.fabric_structure, style.fabric_consumption_metres_per_unit ?? null, style.target_order_week,
         `/api/workspace/garment-images/${source === "development" ? "workspace" : "catalogue"}/${encodeURIComponent(style.style_number)}`,
-        style.colourways ?? [], selected, quantity, body.orderType, body.orderStage, req.workspaceUser?.id ?? null],
+        style.colourways ?? [], selected, [], quantity, body.orderType, body.orderStage, req.workspaceUser?.id ?? null],
     );
     await client.query("COMMIT");
     res.status(201).json({ id: inserted.rows[0].id });
@@ -13937,17 +14074,43 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
     const quantity = Number(req.body?.estimatedQuantity);
     const stages = ["CAD Marker Making", "Buying Requisition", "Buying Production Order", "Production Sample", "Set Sampling", "Set Sample Fitting", "Approved for Production"];
     const types = ["New", "Repeat", "Range Refreshed"];
+    const patternType = String(req.body?.patternType ?? "").trim();
+    const fabricStructure = String(req.body?.fabricStructure ?? "").trim();
+    const allocations = Array.isArray(req.body?.colourwayAllocations)
+      ? req.body.colourwayAllocations.map((item: any) => ({
+        name: String(item?.name ?? "").trim(),
+        units: Number(item?.units),
+      })).filter((item: { name: string; units: number }) =>
+        item.name && Number.isInteger(item.units) && item.units > 0)
+      : [];
     if (!Number.isInteger(quantity) || quantity <= 0 || !stages.includes(req.body?.orderStage) || !types.includes(req.body?.orderType)) {
       res.status(400).json({ error: "Quantity, order type and stage are required" }); return;
     }
+    if (!["Print", "Plain"].includes(patternType) || !["Knit", "Woven"].includes(fabricStructure)) {
+      res.status(400).json({ error: "Choose both Knit or Woven and Print or Plain so the weekly KPIs remain accurate." }); return;
+    }
     const result = await pool.query(
-      `UPDATE ${schema}.weekly_order_plan_lines l SET estimated_quantity=$1,selected_colourways=$2,
-         order_type=$3,order_stage=$4,updated_at=NOW()
-       FROM ${schema}.weekly_order_plans p WHERE l.id=$5 AND p.id=l.plan_id AND p.status='draft' RETURNING l.id`,
-      [quantity, Array.isArray(req.body.selectedColourways) ? req.body.selectedColourways.map(String) : [],
-        req.body.orderType, req.body.orderStage, Number(req.params.id)],
+      `UPDATE ${schema}.weekly_order_plan_lines l
+       SET estimated_quantity=CASE WHEN p.status='draft' THEN $1 ELSE l.estimated_quantity END,
+         selected_colourways=$2,colourway_allocations=$3::jsonb,
+         order_type=CASE WHEN p.status='draft' THEN $4 ELSE l.order_type END,
+         order_stage=CASE WHEN p.status='draft' THEN $5 ELSE l.order_stage END,
+         pattern_type=$6,fabric_structure=$7,updated_at=NOW()
+       FROM ${schema}.weekly_order_plans p
+       WHERE l.id=$8 AND p.id=l.plan_id
+       RETURNING l.id,l.source,l.source_id`,
+      [quantity, allocations.map((item: { name: string }) => item.name), JSON.stringify(allocations),
+        req.body.orderType, req.body.orderStage, patternType, fabricStructure, Number(req.params.id)],
     );
-    if (!result.rows.length) { res.status(409).json({ error: "Confirmed weeks cannot be edited" }); return; }
+    if (!result.rows.length) { res.status(404).json({ error: "Planned style was not found" }); return; }
+    if (result.rows[0].source === "development") {
+      await pool.query(
+        `UPDATE ${schema}.style_development_tracker
+         SET print_or_solid=$1,knit_or_woven=$2,updated_at=NOW()
+         WHERE id=$3`,
+        [patternType, fabricStructure, Number(result.rows[0].source_id)],
+      );
+    }
     res.json({ ok: true });
   } catch (error) { next(error); }
 });
@@ -14344,6 +14507,7 @@ httpServer.listen(port, "0.0.0.0", () => {
         await withTimeout(ensureSchema(), 15000, "workspace schema bootstrap");
       }
       if (!await essentialWorkspaceCompatibility()) throw new Error("workspace essential tables are unavailable");
+      await withTimeout(ensureOrderHistoryConfig(), 4000, "order history cutover config");
       await withTimeout(ensureStyleDevelopmentImageSchema(), 8000, "Style Development image schema");
       serviceReady = true;
       schemaReady = true;

@@ -1,0 +1,305 @@
+style_number,style_name,tier,orders_before,orders_after,order_count_reduction,graduation_threshold_crossing
+S0925049,Safari by Vivo Tafari Highlow Top in Kitenge,Tier 3,5,2,3,Yes
+S1125044,Safari by Vivo Zehra Short Kimono in Kitenge,Tier 3,6,3,3,Yes
+V0126012,Vivo Maxi Kaftan in Satin,Tier 3,4,2,2,Yes
+V0126028,Vivo Knee Length Kaftan in Satin,Tier 3,4,2,2,Yes
+V0126031,Vivo Yumi Off Shoulder Jumpsuit In Crepe,Tier 3,4,2,2,Yes
+V0126042,Vivo Wide Leg Pants in Crepe,Tier 3,4,2,2,Yes
+V0126043,Vivo Drop Shoulder Top in Cotton,Tier 3,5,3,2,Yes
+V0226006,Vivo Sleeveless Vest in Ponte,Tier 3,4,2,2,Yes
+V0226009,Vivo Sweatshirt in Scuba,Tier 3,4,2,2,Yes
+V0226010,Vivo Straight Pants in Scuba,Tier 3,5,3,2,Yes
+V0226027,Vivo Wide Top in Satin,Tier 3,4,2,2,Yes
+V0226028,Vivo Niari Sleeveless Tent Dress in Crepe,Tier 3,5,3,2,Yes
+V0226043,Vivo Asymmetrical Dolman Dress in Satin,Tier 3,5,2,3,Yes
+V0226047,Vivo V-Neck Dress in Stretch Rib,Tier 3,6,3,3,Yes
+V0326030,Vivo Tie Dolman Kimono in Textured Crepe,Tier 3,4,2,2,Yes
+V0326045,Vivo Wide Leg Pants in Textured Crepe,Tier 3,4,2,2,Yes
+V0426006,Vivo Off Shoulder Jumpsuit in Crepe,Tier 3,4,2,2,Yes
+V0526015,Vivo Selah Dolman Sweatshirt in Rib Sweater,Tier 3,5,3,2,Yes
+V0526025,Vivo Amai Round Neck Maxi Kaftan in Satin,Tier 3,5,2,3,Yes
+V0625012,Vivo Selah Mock Neck Top in Stretch Rib,Tier 3,4,3,1,Yes
+V0625048,Vivo Iyana Bubble Mini Dress in Satin,Tier 3,6,2,4,Yes
+V0625049,Vivo Iyana Cape Top,Tier 3,5,3,2,Yes
+V0625050,Vivo Iyana Shirred Waist Jumpsuit in Crepe,Tier 3,5,2,3,Yes
+V0725022,Vivo Essi Wide Leg Pants in Satin,Tier 3,4,2,2,Yes
+V0925010,Vivo Basic Crepe Bishop Sleeve Top,Tier 3,4,2,2,Yes
+V1025009,Vivo Liora Wide Leg Pants in Crepe,Tier 3,4,3,1,Yes
+V1025037,Vivo Spaghetti Tank Top in Jersey,Tier 3,5,3,2,Yes
+V1025053,Vivo Lulu Drawstring Top in Cotton,Tier 3,5,3,2,Yes
+V1125014,Vivo Wrap Shawl in Sweater,Tier 3,4,2,2,Yes
+S0226032,Safari by Vivo Adinkra Tank in Rib,Tier 4,2,1,1,Yes
+S0326005,Safari by Vivo Godet Contrast Stitch Midi Skirt in Denim,Tier 4,2,1,1,Yes
+S0326006,Safari by Vivo Pintuck Shirt in Cotton,Tier 4,2,1,1,Yes
+S0326022,Safari by Vivo Pintuck Shirt Dress in Cotton,Tier 4,2,1,1,Yes
+S0326040,Safari by Vivo Pleated Dress in Cotton,Tier 4,2,1,1,Yes
+S0426039,Safari by Vivo Bubble Sleeve Tent Dress in Linen Blend,Tier 4,2,1,1,Yes
+S0526073,Safari by Vivo Zipped Jacket in Kitenge,Tier 4,2,1,1,Yes
+S0626041,Safari by Vivo Shirred Waist Midi Dress in Cotton,Tier 4,2,1,1,Yes
+S0626058,Safari by Vivo Wide Sleeve Top in Cotton,Tier 4,2,1,1,Yes
+S0626061,Safari by Vivo Sleeveless Crop Shacket in Linen Blend,Tier 4,2,1,1,Yes
+S0626085,Safari by Vivo Butterfly Top in Cotton,Tier 4,2,1,1,Yes
+S0726006,Safari by Vivo Back Pleat Loose Top in Linen Blend,Tier 4,2,1,1,Yes
+S0726011,Safari by Vivo Drawstring Neck Top in Linen Blend,Tier 4,2,1,1,Yes
+S0726014,Safari by Vivo Long Sleeve T-Shirt in Jersey Rib,Tier 4,2,1,1,Yes
+S0726039,Safari by Vivo Short Kimono in Sweater,Tier 4,2,1,1,Yes
+V0126030,Vivo Studio A-Line Mini Dress in Ponte,Tier 4,2,1,1,Yes
+V0226031,Vivo Jamila Slit Sleeve Dress in Crepe,Tier 4,3,1,2,Yes
+V0326018,Vivo Hadiya 3/4 Sleeve Maxi Dress in Chiffon,Tier 4,2,1,1,Yes
+V0326020,Vivo Studio Cowl Neck Maxi Dress in Satin,Tier 4,2,1,1,Yes
+V0326022,Vivo Pintuck Waist Pants in Crepe,Tier 4,2,1,1,Yes
+V0326032,Vivo Long Sleeve Tie Dress in Crepe,Tier 4,2,1,1,Yes
+V0326042,Vivo Tie Top in Jersey,Tier 4,3,1,2,Yes
+V0426003,Vivo Extended Sleeve Maxi Dress in Jersey,Tier 4,2,1,1,Yes
+V0426017,Vivo Sleeveless Maxi Dress in Cotton,Tier 4,2,1,1,Yes
+V0426018,Vivo Side Tie Knee Length Dress in Jersey,Tier 4,2,1,1,Yes
+V0426020,Vivo Kaisa 3/4 Sleeve Knee Length Bodycon in Stretch Rib,Tier 4,2,1,1,Yes
+V0426023,Vivo Tatili Pinstripe Pants in Crepe,Tier 4,2,1,1,Yes
+V0426025,Vivo Pendo 3/4 Sleeve A Line Dress in Twill,Tier 4,3,1,2,Yes
+V0426032,Vivo Long Sleeve Wrap Dress in Satin,Tier 4,3,1,2,Yes
+V0426043,Vivo Mini Butterfly Kimono in Sweater,Tier 4,2,1,1,Yes
+V0526005,Vivo Tiered Knee Length Dress in Chiffon,Tier 4,2,1,1,Yes
+V0526007,Vivo Slim Fit Pants in Crepe,Tier 4,2,1,1,Yes
+V0526008,Vivo Sleeveless Godet Midi Dress in Jersey,Tier 4,2,1,1,Yes
+V0526009,Vivo Straight Leg Pants in Satin,Tier 4,2,1,1,Yes
+V0526012,Vivo Dolman Sweater in Rib,Tier 4,2,1,1,Yes
+V0526020,Vivo Diella V-Neck Jumpsuit in Crepe,Tier 4,2,1,1,Yes
+V0526021,Vivo Esna Bubble Sleeve Maxi Dress in Crepe,Tier 4,2,1,1,Yes
+V0526029,Vivo Pleated Sleeve Top in Chiffon,Tier 4,2,1,1,Yes
+V0526032,Vivo Maxi Wrap Dress in Satin,Tier 4,2,1,1,Yes
+V0526039,Vivo Sakari Circular Loose Top in Textured Chiffon,Tier 4,2,1,1,Yes
+V0526058,Vivo Wide Top in Chiffon,Tier 4,3,1,2,Yes
+V0526059,Vivo Zena Shirred Waist Knee Length Dress in Crepe,Tier 4,3,1,2,Yes
+V0526064,Vivo Gathered Waist Pants in Satin,Tier 4,2,1,1,Yes
+V0526077,Vivo Loose Shirt in Satin,Tier 4,3,1,2,Yes
+V0526082,Vivo Front Tie Top in Scuba,Tier 4,2,1,1,Yes
+V0526083,Vivo Wide Leg Pants in Scuba,Tier 4,2,1,1,Yes
+V0526087,Vivo Long Sleeve Maxi Waterfall in Jersey,Tier 4,2,1,1,Yes
+V0526093,Vivo Lounge Pants in Rib,Tier 4,2,1,1,Yes
+V0526095,Vivo Ustawi Easy Fit Shirt in Crepe,Tier 4,2,1,1,Yes
+V0526097,Vivo Puff Sleeve A-Line Dress in Kitenge,Tier 4,2,1,1,Yes
+V0526101,Vivo 3/4 Sleeve Side Slit Top in Crepe,Tier 4,2,1,1,Yes
+V0526104,Vivo Hanabi Wrap Maxi Dress in Satin,Tier 4,2,1,1,Yes
+V0626002,Vivo Zola 3/4 Sleeve Maxi Dress in Crepe,Tier 4,2,1,1,Yes
+V0626013,Vivo Bishop Sleeve Maxi Dress in Crepe,Tier 4,2,1,1,Yes
+V0626015,Vivo Scooped Neck Top in Jersey,Tier 4,2,1,1,Yes
+V0626017,Vivo Contrast Stitch Wide Leg Pants in Twill,Tier 4,2,1,1,Yes
+V0626024,Vivo Drop Shoulder Cowl Top in Satin,Tier 4,3,1,2,Yes
+V0626029,Vivo Dolman Top in Crepe,Tier 4,2,1,1,Yes
+V0626030,Vivo Ruffle Sleeve Top in Satin,Tier 4,2,1,1,Yes
+V0626047,Vivo Pleated Palazzo Pants in Twill,Tier 4,2,1,1,Yes
+V0626061,Vivo Elastic Waist Wide Leg Pants in Kitenge,Tier 4,2,1,1,Yes
+V0626065,Vivo Hooded Kimono in Tencel,Tier 4,2,1,1,Yes
+V0626068,Vivo Flared Sleeve Dress in Ponte,Tier 4,2,1,1,Yes
+V0626069,Vivo Ustawi Palazzo Pants in Crepe,Tier 4,2,1,1,Yes
+V0626077,Vivo Drawstring Wide Leg Pants in Crepe,Tier 4,2,1,1,Yes
+V0726005,Vivo Butterfly Kimono in Rib Sweater,Tier 4,2,1,1,Yes
+V0726007,Vivo Back Pleat Loose Top in Cotton,Tier 4,2,1,1,Yes
+V0726008,Vivo Panelled Straight Leg Pants in Ponte,Tier 4,2,1,1,Yes
+V0726013,Vivo Jema Short Sleeve Tent Dress in Ponte,Tier 4,2,1,1,Yes
+V0726018,Vivo Wide Leg Pants in Ponte,Tier 4,2,1,1,Yes
+V0726019,Vivo Dotted Panelled Leisure Pants in Ponte,Tier 4,2,1,1,Yes
+V0726022,Vivo Asha Sleeveless Knee Length Dress in Twill,Tier 4,3,1,2,Yes
+V0726025,Vivo Back Pleat Loose Top in Kitenge,Tier 4,2,1,1,Yes
+V0726026,Vivo Pleated Sleeve Maxi Dress in Crepe,Tier 4,2,1,1,Yes
+V0726042,Vivo May Rib Sweater,Tier 4,2,1,1,Yes
+V0726045,Vivo Short Sleeve Maxi Bodycon in Jersey,Tier 4,2,1,1,Yes
+V0726046,Vivo Basic Cap Sleeve Top in Textured Satin,Tier 4,2,1,1,Yes
+V0726047,Vivo Basic Double Layered Top in Satin,Tier 4,3,1,2,Yes
+V1125042,Vivo Liora Drawstring Kimono Sleeve Top in Textured Satin,Tier 4,3,1,2,Yes
+S0626055,Safari by Vivo Oversized Shirt in Linen Blend,Archived,2,1,1,
+S0123088,Safari Mali 3/4 Bishop Sleeve Tie Top,Retired,7,5,2,
+S0226011,Safari by Vivo Jacket in Denim MG,Retired,2,0,2,
+S0526006,Safari by Vivo 3/4 Sleeve Sweater in Rib,Retired,2,1,1,
+V0126008,Vivo Studio Mini Bubble Skirt in Satin,Retired,2,1,1,
+V0126024,Vivo Boat Neck Top in Scuba,Retired,2,1,1,
+V0126025,Vivo Boat Neck Dress in Ponte,Retired,2,1,1,
+V0126041,Vivo Maxi Kimono in Chiffon,Retired,3,2,1,
+V0222133,Vivo Zuri Cap Sleeved Maxi Dress,Retired,8,6,2,
+V0324028,Vivo Amai Asymmetrical Cape,Retired,2,1,1,
+V0326016,Vivo Studio Bell Sleeve Bodycon in Stretch Rib,Retired,2,1,1,
+V0426044,Vivo Studio Flared Pants in Rib,Retired,2,1,1,
+V0526011,Vivo Studio Bell Sleeve Tunic Top in Rib,Retired,2,1,1,
+V0825015,Vivo Lena Slim Fit Pants in Pinstripe,Retired,2,1,1,
+V1119113,Vivo Everyday Sleeveless Waterfall in Jersey,Retired,5,4,1,
+V1225011,Vivo Studio Longline Shorts in Crepe,Retired,1,0,1,
+Z1019075,Zoya Basic Jersey Bandeau,Retired,26,25,1,
+V0121065,Vivo Basic Dua Jacket in Ponte,Tier 1,5,4,1,
+V0121066,Vivo Dua Wide Leg Pants,Tier 1,14,12,2,
+V0121168,Vivo Basic Cap Sleeve Knee Length Tent Dress,Tier 1,15,14,1,
+V0122078,Vivo Basic Straight Leg Pants in Ponte,Tier 1,4,3,1,
+V0123114,Vivo Upe Wide Leg Pants in Ponte,Tier 1,20,14,6,
+V0220059,Vivo Basic Leisure Pants,Tier 1,38,36,2,
+V0421160,Vivo Basic Leggings,Tier 1,53,49,4,
+V0422070,Vivo Basic Cap Sleeve Bodycon in Rayon,Tier 1,7,5,2,
+V0423078,Vivo Basic Leila Short Waterfall,Tier 1,14,12,2,
+V0523154,Vivo Basic Cap Sleeved Bodysuit,Tier 1,11,9,2,
+V0524178,Vivo Basic Chiffon Cap Sleeve Top (Double Layered),Tier 1,5,4,1,
+V0524192,Vivo Basic Short Sleeve Top in Jersey,Tier 1,11,8,3,
+V0625051,Vivo Everyday Tank Top in Jersey,Tier 1,3,2,1,
+V0719112,Vivo Basic Long Sleeved Bodysuit,Tier 1,9,7,2,
+V0719290,Vivo Basic Extra Long Lily Waterfall,Tier 1,10,9,1,
+V0719674,Vivo Basic Short Waterfall,Tier 1,17,15,2,
+V0723043,Vivo Basic Val Long Sleeve Top,Tier 1,12,10,2,
+V0724080,Vivo Basic Tank Top,Tier 1,13,11,2,
+V0819036,Vivo Basic Bodycon,Tier 1,32,30,2,
+V0819098,Vivo Basic Kena Tent Knee Length Dress,Tier 1,10,9,1,
+V0819102,Vivo Basic Double Layered Wrap Poncho,Tier 1,2,1,1,
+V0819120,Vivo Basic Sienna Waterfall,Tier 1,47,42,5,
+V0919035,Vivo Basic 3/4 Sleeve Double Layered Bodycon Dress,Tier 1,7,6,1,
+V1019069,Vivo Basic Escape A-Line Dress,Tier 1,8,7,1,
+V1020057,Vivo Waridi Pencil Skirt,Tier 1,24,23,1,
+V1120036,Vivo Everyday Cap Sleeve Top in Jersey,Tier 1,16,12,4,
+V1120122,Vivo Lindi High Low Dress,Tier 1,25,24,1,
+V1121090,Vivo Basic Capri Leggings in Rayon,Tier 1,4,3,1,
+S0125059,Safari by Vivo Tiwa Wide Leg Pants in Linen,Tier 2,4,3,1,
+S0724086,Safari by Vivo Savannah Drawstring Shacket in Linen Blend,Tier 2,4,2,2,
+S0824069,Safari by Vivo Njano Drawstring Top in Cotton,Tier 2,8,5,3,
+S0924011,Safari Mansi Wide Hem Tent Dress in Cotton,Tier 2,4,3,1,
+S1025050,Safari by Vivo Zehra 3/4 Sleeve Kitenge Maxi Dress,Tier 2,5,2,3,
+S1125031,Safari by Vivo Zehra Extra Wide Shirt in Linen Blend,Tier 2,3,2,1,
+V0121119,Vivo Basic Satin Bishop Sleeved Top,Tier 2,31,28,3,
+V0121167,Vivo Dua Shirt,Tier 2,25,20,5,
+V0123105,Vivo Imara 3/4 Sleeve Tent Dress,Tier 2,9,8,1,
+V0125069,Vivo Niari Sleeveless Top,Tier 2,3,2,1,
+V0221084,Vivo Sierra Cap Sleeve Tent Chiffon Dress,Tier 2,17,15,2,
+V0222066,Vivo Thando Mock Neck Maxi Dress,Tier 2,6,4,2,
+V0225024,Vivo Chela Wide Leg Pants in Stretch Rib,Tier 2,3,2,1,
+V0225026,Vivo Chela Tank Top in Stretch Rib,Tier 2,2,1,1,
+V0324069,Vivo Basic Sleeveless Bodysuit,Tier 2,5,4,1,
+V0325011,Vivo Safa Drop Shoulder Top,Tier 2,4,2,2,
+V0325012,Vivo Safa Sweater in Stretch Rib,Tier 2,5,3,2,
+V0325053,Vivo Safa Straight Leg Pants in Stretch Rib,Tier 2,5,4,1,
+V0423006,Vivo Bana Batwing Top in Jersey,Tier 2,18,15,3,
+V0423023,Vivo Tatili Bishop Long Sleeve Top,Tier 2,13,8,5,
+V0423050,Vivo Tatili Wide Leg Pants,Tier 2,6,5,1,
+V0425011,Vivo Takali Tunic Top in Textured Satin,Tier 2,8,4,4,
+V0425012,Vivo Takali Asymmetrical Midi Length Kaftan In Satin,Tier 2,4,3,1,
+V0425034,Vivo Sierra Maxi Dress in Chiffon,Tier 2,7,3,4,
+V0523165,Vivo Laika 3/4 Sleeve Tent Dress,Tier 2,5,4,1,
+V0523168,Vivo Laika Bishop Sleeve Shift Dress in Crepe,Tier 2,8,6,2,
+V0524179,Vivo Basic Chiffon Bishop Sleeve Top (Double Layered),Tier 2,5,4,1,
+V0525008,Vivo Keza Circular Loose Top,Tier 2,2,0,2,
+V0525015,Vivo Samira Pants in Rayon,Tier 2,4,2,2,
+V0525028,Vivo Keza V-Neck Maxi Kaftan in Satin,Tier 2,3,2,1,
+V0525029,Vivo Samira Wide Kimono,Tier 2,2,1,1,
+V0525036,Vivo Zawadi Shift Dress in Chiffon,Tier 2,3,2,1,
+V0525058,Vivo Selah Palazzo Pants in Stretch Rib,Tier 2,8,5,3,
+V0525064,Vivo Straight Leg Pants in Denim,Tier 2,4,1,3,
+V0525071,Vivo Maisha Straight Leg Pants in Crepe,Tier 2,2,1,1,
+V0525075,Vivo Basic Round Neck Maxi Dress,Tier 2,4,2,2,
+V0620049,Vivo Basic Leila Maxi Waterfall,Tier 2,5,4,1,
+V0622019,Vivo Basic Sleeveless Tent Maxi Dress,Tier 2,10,9,1,
+V0625013,Vivo Selah Sleeveless Maxi Dress in Stretch Rib,Tier 2,4,3,1,
+V0625016,Vivo Diella Wide Leg Pants in Crepe,Tier 2,4,2,2,
+V0625035,Vivo Kani Cap Sleeve Maxi Dress,Tier 2,1,0,1,
+V0719544,Vivo Mini Butterfly Sweater,Tier 2,6,5,1,
+V0723045,Vivo Sawari Crossed Cuff Batwing Top,Tier 2,8,7,1,
+V0724026,Vivo Amai Hi-Low Top,Tier 2,2,1,1,
+V0725001,Vivo Kani Bishop Sleeve Top in Crepe,Tier 2,5,2,3,
+V0725002,Vivo Kani Wide Leg Pants,Tier 2,2,1,1,
+V0725027,Vivo Ari Sweater,Tier 2,5,3,2,
+V0725039,Vivo Aleri Wide Leg Pants in Ponte,Tier 2,3,2,1,
+V0819003,Vivo Basic Panelled Leisure Pants,Tier 2,22,19,3,
+V0819010,Vivo Basic Imelda Cowl Sweater,Tier 2,13,12,1,
+V0819031,Vivo Double Layered Capri Skirt in Jersey,Tier 2,5,4,1,
+V0819126,Vivo Basic Tulip Sweater,Tier 2,7,6,1,
+V0819145,Vivo Basic Dolman Sweater,Tier 2,4,3,1,
+V0821064,Vivo Basic Crepe Cap Sleeved Top,Tier 2,15,14,1,
+V0824085,Vivo Chidii Tunic Dress With Frills,Tier 2,2,1,1,
+V0824090,Vivo Chidii Maxi Kaftan in Satin,Tier 2,4,2,2,
+V0825017,Vivo Basic Cap Sleeve Maxi Dress in Chiffon,Tier 2,4,3,1,
+V0924035,Vivo Zena Shirred Waist Maxi Shirt Dress in Crepe,Tier 2,6,3,3,
+V0924038,Vivo Mandla Tent Dress,Tier 2,4,2,2,
+V1020048,Vivo Basic 3/4 Sleeved Double Layered Bodysuit,Tier 2,5,4,1,
+V1021160,Vivo Lani Maxi Top,Tier 2,6,5,1,
+V1024048,Vivo Merika Satin Wrap Top,Tier 2,7,5,2,
+V1025011,Vivo Niari Pleated Dress in Crepe,Tier 2,5,3,2,
+V1121020,Vivo Basic Sleeveless Kena Tent Maxi Dress,Tier 2,8,7,1,
+V1123058,Vivo Yumi Cap Sleeve Dress,Tier 2,8,7,1,
+V1123080,Vivo Ajani V-Neck Top,Tier 2,4,3,1,
+V1123172,Vivo Sakari Cap Sleeve Maxi Dress,Tier 2,12,9,3,
+V1123177,Vivo Sakari Drop Shoulder Jumpsuit in Crepe,Tier 2,6,4,2,
+V1124117,Vivo Seli Maxi Dress,Tier 2,2,0,2,
+V1221043,Vivo Basic Satin Cap Sleeve Top,Tier 2,18,16,2,
+V1223034,Vivo Asha Sleeveless Knee Length Dress,Tier 2,7,5,2,
+S0226026,Safari by Vivo Barrel Pants in Denim,Tier 3,2,1,1,
+S0326036,Safari by Vivo Two Way Wrap Top in Cotton,Tier 3,2,1,1,
+S0425020,Safari Naledi Wrap Top in Cotton,Tier 3,2,1,1,
+S0425042,Shiv Shikie X Safari V-Neck Long Sleeve Sweatshirt in Rib,Tier 3,2,1,1,
+S0526054,Safari by Vivo Crew Neck Tee in Rib,Tier 3,2,1,1,
+S0825039,Safari Solana Bubble Midi Skirt in Cotton,Tier 3,2,1,1,
+S0923063,Safari by Vivo Shirred Top Maxi Dress in Kikoy Blend,Tier 3,8,6,2,
+S1025021,Safari by Vivo Zehra Embroidered Linen Kimono,Tier 3,2,1,1,
+S1025026,Safari by Vivo Zehra Drawstring Pants in Linen Blend,Tier 3,2,1,1,
+V0126004,Vivo Wrap Top in Crepe,Tier 3,2,1,1,
+V0126009,Vivo Button Up Shirt in Chiffon,Tier 3,2,1,1,
+V0126011,Vivo Ruched Maxi Top in Textured Satin,Tier 3,3,2,1,
+V0126022,Vivo Scoop Neck Bodycon in Jersey,Tier 3,2,1,1,
+V0126027,Vivo Dua Shirt in Textured Satin,Tier 3,9,5,4,
+V0126033,Vivo Contrast Stitch Pants in Denim,Tier 3,6,4,2,
+V0126039,Vivo High Low Top in Crepe,Tier 3,3,2,1,
+V0226003,Vivo Off Shoulder Dress in Print Cotton,Tier 3,2,1,1,
+V0226005,Vivo Liora Scooped Neck Tank Top in Crepe,Tier 3,2,1,1,
+V0226008,Vivo Multiway Poncho in Sweater,Tier 3,2,1,1,
+V0226016,Vivo Maxi Dress in Stretch Rib,Tier 3,6,4,2,
+V0226021,Vivo Multiway Cover Up in Chiffon,Tier 3,2,1,1,
+V0226024,Vivo Amai Maxi Kaftan In Textured Satin,Tier 3,6,5,1,
+V0226030,Vivo Tanda Cap Sleeve Sheath Dress in Ponte,Tier 3,2,1,1,
+V0226035,Vivo Dalia Sleeveless Tie Midi Dress in Print Cotton,Tier 3,2,1,1,
+V0226036,Vivo Sierra Sleeveless Double Layered Top in Chiffon,Tier 3,3,1,2,
+V0226038,Vivo Off Shoulder Maxi Dress in Cotton,Tier 3,1,0,1,
+V0226042,Vivo Tie Kimono in Sweater,Tier 3,2,1,1,
+V0226044,Vivo Godet Midi Dress in Crepe,Tier 3,2,1,1,
+V0326002,Vivo V-Neck Camisole in Satin- Dark Teal,Tier 3,2,1,1,
+V0326004,Vivo Cowl Neck Camisole in Satin,Tier 3,2,1,1,
+V0326021,Vivo Square Neck Camisole in Satin,Tier 3,2,1,1,
+V0326029,Vivo Godet Maxi Dress in Satin,Tier 3,2,1,1,
+V0326031,Vivo Pencil Skirt in Ponte,Tier 3,2,1,1,
+V0525018,Vivo Rema 3/4 Sleeve Side Slit Tunic Top,Tier 3,2,1,1,
+V0526013,Vivo Wrap Top in Cotton,Tier 3,2,1,1,
+V0526014,Vivo Tanda V-Neck Top in Stretch Rib,Tier 3,8,4,4,
+V0725018,Vivo Essi Scalloped Maxi Top in Satin,Tier 3,2,1,1,
+V0725047,Vivo Tanda Maxi Skirt in Stretch Rib,Tier 3,3,2,1,
+V0825024,Vivo Anavi Leggings in Jersey,Tier 3,3,2,1,
+V0825038,Vivo Nuru Side Panel Wide Leg Pants in Crepe,Tier 3,2,1,1,
+V0825059,Vivo Lulu Flared Pants in Denim,Tier 3,3,2,1,
+V0925019,Vivo Sierra Long Sleeve Top in Chiffon (Double Layered),Tier 3,2,1,1,
+V0925054,Vivo Talia Maxi Slip Skirt in Satin,Tier 3,2,1,1,
+V0925064,Vivo Studio Flared Pants In Ponte,Tier 3,3,2,1,
+V0925065,Vivo Cotton 3/4 Sleeve Wrap Top,Tier 3,2,1,1,
+V1025001,Vivo High Low Top in Cotton,Tier 3,3,2,1,
+V1025002,Vivo Lulu Cotton Tent Mini Dress in Cotton,Tier 3,3,2,1,
+V1025004,Vivo Lulu Cotton Bubble Sleeveless Top,Tier 3,2,1,1,
+V1025015,Vivo Chela Sleeveless Waterfall in Jersey,Tier 3,3,2,1,
+V1025016,Vivo Liora Multiway Top in Satin,Tier 3,2,1,1,
+V1025025,Vivo Liora Side Drawstring Kaftan Dress in Satin,Tier 3,5,4,1,
+V1025045,Vivo Wrap Poncho in Sweater,Tier 3,2,1,1,
+V1125023,Vivo Liora Strappy Cullote Jumpsuit in Crepe,Tier 3,2,1,1,
+V1125028,Vivo Liora Asymmetrical Kaftan Top in Satin,Tier 3,3,2,1,
+V1125034,Vivo Studio Panelled Mini Dress in Ponte,Tier 3,3,2,1,
+V1125035,Vivo Lulu 3/4 Sleeve Maxi Kaftan,Tier 3,2,1,1,
+V1125039,Vivo Liora Front Drawstring Kaftan Dress in Satin,Tier 3,1,0,1,
+S0126001,Safari by Vivo Mansi Wide Hem Embroidered Tent Dress in Cotton,Tier 4,3,2,1,
+S0326026,Safari by Vivo Short Trench Coat in Kitenge,Tier 4,4,2,2,
+S0426036,Safari by Vivo Drop Waist Maxi Dress in Cotton,Tier 4,4,2,2,
+V0126017,Vivo Wide Leg Pants in Textured Satin,Tier 4,3,2,1,
+V0224136,Vivo Asha Wide Leg Pants in Chiffon,Tier 4,5,4,1,
+V0326037,Vivo Panelled Waist Midi Dress in Ponte,Tier 4,3,2,1,
+V0426021,Vivo Zuri 3/4 Sleeve Knee Length Dress in Crepe,Tier 4,4,2,2,
+V0426022,Vivo Dalia Flounce Sleeve Knee Length Dress in Chiffon,Tier 4,5,3,2,
+V0426029,Vivo Tie Waist Kimono Maxi Dress in Textured Crepe,Tier 4,3,2,1,
+V0426031,Vivo Ria Drawstring Pants in Stretch Rib,Tier 4,3,2,1,
+V0426035,Vivo Izzy Bishop Sleeve Top in Textured Satin,Tier 4,6,3,3,
+V0526010,Vivo 3/4 Sleeve Side Slit Top in Satin,Tier 4,4,2,2,
+V0526019,Vivo 3/4 Sleeve Maxi Dress in Crepe,Tier 4,5,2,3,
+V0526066,Vivo Peplum Top in Kitenge,Tier 4,4,2,2,
+V0526092,Vivo 3/4 Sleeve Crew Neck Top in Rib,Tier 4,4,2,2,
+V0626014,Vivo Bishop Sleeve Shirred Maxi Dress in Crepe,Tier 4,8,3,5,
+V0626046,Vivo Drop Shoulder Jacket in Faux Suede,Tier 4,4,2,2,
+V0626049,Vivo Pleated Wide Leg Pants in Kitenge,Tier 4,3,2,1,
+V0826020,Vivo Basic Cap Sleeve Tent Knee Length Dress in Crepe,Tier 4,5,3,2,
+V0826021,Vivo Kani Cap Sleeve Maxi Dress in Textured Crepe,Tier 4,4,2,2,
+V0826022,Vivo Sakari Cap Sleeve Maxi Dress in Crepe,Tier 4,6,2,4,
+V0826031,Vivo Lulu Contrast Stitch Tent Dress in Cotton,Tier 4,4,2,2,
+V0220055,Vivo Basic Cap Sleeve Maxi Tent Dress,Untiered,34,33,1,

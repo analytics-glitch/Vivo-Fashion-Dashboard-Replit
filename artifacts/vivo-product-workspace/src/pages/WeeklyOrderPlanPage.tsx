@@ -9,10 +9,13 @@ type SourceStyle = {
   styleType: string | null; tier: string | null; category: string | null; subCategory: string | null;
   brand: string | null; fabric: string | null; fabricProductId: number | null; targetOrderWeek: string | null;
   imageUrl: string | null; colourways: string[]; availableMetres: number;
+  patternType: 'Print' | 'Plain' | null; fabricStructure: 'Knit' | 'Woven' | null;
+  fabricConsumptionMetresPerUnit: number | null;
 };
 type PlanLine = SourceStyle & {
   id: number; orderNumber: string; availableColourways: string[]; selectedColourways: string[];
   estimatedQuantity: number; orderType: string; orderStage: string;
+  colourwayAllocations: Array<{ name: string; units: number }>;
   dataQualityFlags: string[];
   firstOrderDate: string | null; actualQuantity: number;
   actualOrders: { orderRef: string; orderDate: string; quantity: number }[];
@@ -41,6 +44,7 @@ type PlanPayload = {
   kpis: Array<{
     metricKey: string; actual: number | null; target: number | null; variance: number | null;
     unit: 'units' | 'percent' | 'count'; available: boolean;
+    basisCount?: number; totalCount?: number;
   }>;
   kpiTargets: Array<{ metricKey: string; label: string; targetValue: number; unit: string }>;
   viewer: { canUnlockTarget: boolean };
@@ -54,6 +58,7 @@ type PlanPayload = {
     newnessTargetComponents: Array<{ monthLabel: string; monthlyTargetUnits: number; sharePct: number; targetUnits: number }>;
     notRaisedStyles: number; notRaisedUnits: number; orderedStyles: number; orderedUnits: number;
     unplannedStyles: number; unplannedUnits: number;
+    colourwaysComplete: number; colourwaysPending: number;
   };
   fabricSummary: { fabric: string; units: number; styles: number; availableMetres: number }[];
   subcategories: {
@@ -102,17 +107,23 @@ function SourcePicker({ year, week, onClose }: { year: number; week: number; onC
   const [quantity, setQuantity] = useState('300');
   const [orderType, setOrderType] = useState('New');
   const [orderStage, setOrderStage] = useState(stages[0]);
-  const [colours, setColours] = useState<string[]>([]);
+  const [patternType, setPatternType] = useState('');
+  const [fabricStructure, setFabricStructure] = useState('');
+  const [classificationError, setClassificationError] = useState('');
   const sources = useQuery<{ items: SourceStyle[] }>({
     queryKey: ['weekly-order-sources', source, search],
     queryFn: () => jsonFetch(`/api/workspace/weekly-order-plan/sources?source=${source}&search=${encodeURIComponent(search)}`),
   });
-  useEffect(() => { setSelected(null); setColours([]); setOrderType(source === 'development' ? 'New' : 'Repeat'); }, [source]);
+  useEffect(() => {
+    setSelected(null); setPatternType(''); setFabricStructure(''); setClassificationError('');
+    setOrderType(source === 'development' ? 'New' : 'Repeat');
+  }, [source]);
   const add = useMutation({
     mutationFn: () => jsonFetch('/api/workspace/weekly-order-plan/lines', {
       method: 'POST', body: JSON.stringify({
         isoYear: year, isoWeek: week, source: selected?.source, sourceId: selected?.sourceId,
-        estimatedQuantity: Number(quantity), orderType, orderStage, selectedColourways: colours,
+        estimatedQuantity: Number(quantity), orderType, orderStage, selectedColourways: [],
+        patternType, fabricStructure,
       }),
     }),
     onSuccess: () => { client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] }); onClose(); },
@@ -136,7 +147,11 @@ function SourcePicker({ year, week, onClose }: { year: number; week: number; onC
         <div className="weekly-results">
           {sources.isLoading ? <p>Searching source records…</p> : sources.data?.items.length ? sources.data.items.map((style) =>
             <button key={`${style.source}-${style.sourceId}`} className={selected?.sourceId === style.sourceId ? 'selected' : ''} onClick={() => {
-              setSelected(style); setColours([]); setOrderType(style.source === 'development' ? (style.styleType === 'RR' ? 'Range Refreshed' : 'New') : 'Repeat');
+               setSelected(style);
+               setPatternType(style.patternType || '');
+               setFabricStructure(style.fabricStructure || '');
+               setClassificationError('');
+               setOrderType(style.source === 'development' ? (style.styleType === 'RR' ? 'Range Refreshed' : 'New') : 'Repeat');
             }}>
               <StyleImage style={style} /><span><strong>{style.styleName}</strong><b>{style.styleNumber}</b><small>{[style.brand, style.category, style.subCategory, style.tier].filter(Boolean).join(' · ')}</small><em>{style.fabric || 'Fabric pending'} · {Math.round(style.availableMetres || 0).toLocaleString()}m available</em></span>
             </button>
@@ -148,8 +163,17 @@ function SourcePicker({ year, week, onClose }: { year: number; week: number; onC
             <label>Estimated quantity<input type="number" min="1" value={quantity} onChange={(event) => setQuantity(event.target.value)} /></label>
             <label>Order type<select value={orderType} onChange={(event) => setOrderType(event.target.value)}>{orderTypes.map((value) => <option key={value}>{value}</option>)}</select></label>
             <label>Order stage<select value={orderStage} onChange={(event) => setOrderStage(event.target.value)}>{stages.map((value) => <option key={value}>{value}</option>)}</select></label>
-            {selected.colourways.length ? <fieldset><legend>Colourways this week</legend>{selected.colourways.map((colour) => <label key={colour} className="weekly-check"><input type="checkbox" checked={colours.includes(colour)} onChange={() => setColours((current) => current.includes(colour) ? current.filter((item) => item !== colour) : [...current, colour])} />{colour}</label>)}</fieldset> : <p className="weekly-source-note">No saved catalogue colourways. Correct the source record if colourways are missing.</p>}
-            <button className="button button-gold" disabled={add.isPending || !Number(quantity)} onClick={() => add.mutate()}><Plus size={15} />{add.isPending ? 'Adding…' : 'Add to week'}</button>
+            <label>Knit or Woven<select value={fabricStructure} onChange={(event) => { setFabricStructure(event.target.value); setClassificationError(''); }}><option value="">Select…</option><option>Knit</option><option>Woven</option></select></label>
+            <label>Print or Plain<select value={patternType} onChange={(event) => { setPatternType(event.target.value); setClassificationError(''); }}><option value="">Select…</option><option>Print</option><option>Plain</option></select></label>
+            <p className="weekly-source-note">Specific colourways can be added after the style is saved to the week.</p>
+            <button className="button button-gold" disabled={add.isPending || !Number(quantity)} onClick={() => {
+              if (!patternType || !fabricStructure) {
+                setClassificationError('Choose both Knit or Woven and Print or Plain. The weekly % Knit and % Print KPIs cannot be calculated without them.');
+                return;
+              }
+              add.mutate();
+            }}><Plus size={15} />{add.isPending ? 'Adding…' : 'Add to week'}</button>
+            {classificationError && <span className="form-error">{classificationError}</span>}
             {addError && <div className="weekly-add-error"><span className="form-error">{addError.message}</span>
               {addError.code === 'TARGET_LOCKED' && (addError.canUnlock
                 ? <button className="button button-outline" disabled={unlock.isPending} onClick={() => unlock.mutate()}>{unlock.isPending ? 'Unlocking…' : 'Unlock target and continue'}</button>
@@ -168,10 +192,26 @@ function EditableLine({ line, locked, year, week, startDate, endDate }: { line: 
   const [quantity, setQuantity] = useState(String(line.estimatedQuantity));
   const [orderType, setOrderType] = useState(line.orderType);
   const [orderStage, setOrderStage] = useState(line.orderStage);
+  const [patternType, setPatternType] = useState(line.patternType || '');
+  const [fabricStructure, setFabricStructure] = useState(line.fabricStructure || '');
+  const [colourwayAllocations, setColourwayAllocations] = useState(
+    Array.isArray(line.colourwayAllocations) ? line.colourwayAllocations : [],
+  );
   const [moveOpen, setMoveOpen] = useState(false);
   const [destinationWeek, setDestinationWeek] = useState(week < 53 ? week + 1 : week - 1);
   const save = useMutation({
-    mutationFn: () => jsonFetch(`/api/workspace/weekly-order-plan/lines/${line.id}`, { method: 'PATCH', body: JSON.stringify({ estimatedQuantity: Number(quantity), orderType, orderStage, selectedColourways: line.selectedColourways }) }),
+    mutationFn: (override: Partial<{
+      patternType: string; fabricStructure: string;
+      colourwayAllocations: Array<{ name: string; units: number }>;
+    }> = {}) => jsonFetch(`/api/workspace/weekly-order-plan/lines/${line.id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        estimatedQuantity: Number(quantity), orderType, orderStage,
+        patternType: override.patternType ?? patternType,
+        fabricStructure: override.fabricStructure ?? fabricStructure,
+        colourwayAllocations: override.colourwayAllocations ?? colourwayAllocations,
+      }),
+    }),
     onSuccess: () => client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] }),
   });
   const remove = useMutation({
@@ -193,16 +233,49 @@ function EditableLine({ line, locked, year, week, startDate, endDate }: { line: 
   const raisedThisWeek = line.actualOrders.some((order) => dateOnly(order.orderDate) >= startDate && dateOnly(order.orderDate) <= endDate);
   const raisedAfterWeek = line.actualOrders.some((order) => dateOnly(order.orderDate) > endDate);
   const status = raisedThisWeek ? 'Raised this week' : raisedAfterWeek ? 'Raised later' : line.firstOrderDate ? 'Raised before' : 'Not raised';
+  const uniqueOrders = Array.from(new Map(line.actualOrders.map((order) => [order.orderRef, order])).values());
+  const orderedUnits = uniqueOrders.reduce((sum, order) => sum + Number(order.quantity || 0), 0);
+  const firstHeldOrderDate = uniqueOrders.map((order) => dateOnly(order.orderDate)).filter(Boolean).sort()[0] || null;
+  const colourwayMinimum = patternType === 'Plain' ? 4 : 2;
+  const colourwayUnits = colourwayAllocations.reduce((sum, item) => sum + Number(item.units || 0), 0);
+  const requiredMetres = line.fabricConsumptionMetresPerUnit == null
+    ? null : Math.ceil(Number(quantity) * line.fabricConsumptionMetresPerUnit);
   return <tr className={!line.firstOrderDate ? 'weekly-target-pending' : ''}>
     <td><span className="weekly-order-no">{line.orderNumber}</span></td>
     <td><div className="weekly-line-style"><StyleImage style={line} /><div><strong>{line.styleName}</strong><span>{line.styleNumber || 'Needs style number'} · {line.brand || '—'}</span><small>{line.source === 'development' ? 'Style Development' : 'Style Catalogue'}</small>{line.dataQualityFlags?.map((flag) => <small className="weekly-data-quality-flag" key={flag}><AlertTriangle size={11} /> {flag}</small>)}</div></div></td>
     <td><strong>{line.subCategory || 'Uncategorised'}</strong><span>{line.category || '—'} · {line.tier || '—'}</span></td>
     <td><strong>{line.fabric || 'Pending'}</strong><span>{Math.round(line.availableMetres || 0).toLocaleString()}m available</span></td>
-    <td><input className="weekly-qty" type="number" min="1" disabled={locked} value={quantity} onChange={(event) => setQuantity(event.target.value)} onBlur={() => Number(quantity) !== line.estimatedQuantity && save.mutate()} /></td>
-    <td>{line.selectedColourways.length ? line.selectedColourways.join(', ') : <span>Not selected</span>}</td>
-    <td><span className={`weekly-raised-status ${status === 'Not raised' ? 'pending' : status === 'Raised this week' ? 'raised' : 'shifted'}`}>{status}</span>{line.actualOrders.length > 0 && <small className="weekly-order-detail">{line.actualOrders.map((order) => `${order.orderRef} · ${formatDate(order.orderDate)} · ${Number(order.quantity).toLocaleString()}`).join(' | ')}</small>}</td>
-    <td><select disabled={locked} value={orderType} onChange={(event) => setOrderType(event.target.value)} onBlur={() => orderType !== line.orderType && save.mutate()}>{orderTypes.map((value) => <option key={value}>{value}</option>)}</select></td>
-    <td><select disabled={locked} value={orderStage} onChange={(event) => setOrderStage(event.target.value)} onBlur={() => orderStage !== line.orderStage && save.mutate()}>{stages.map((value) => <option key={value}>{value}</option>)}</select></td>
+    <td><input className="weekly-qty" type="number" min="1" disabled={locked} value={quantity} onChange={(event) => setQuantity(event.target.value)} onBlur={() => Number(quantity) !== line.estimatedQuantity && save.mutate({})} /></td>
+    <td>
+      <div className="weekly-classification">
+        <label>Knit / Woven<select value={fabricStructure} onChange={(event) => {
+          const value = event.target.value; setFabricStructure(value); save.mutate({ fabricStructure: value });
+        }}><option value="">Select…</option><option>Knit</option><option>Woven</option></select></label>
+        <label>Print / Plain<select value={patternType} onChange={(event) => {
+          const value = event.target.value; setPatternType(value); save.mutate({ patternType: value });
+        }}><option value="">Select…</option><option>Print</option><option>Plain</option></select></label>
+      </div>
+    </td>
+    <td>
+      <details className="weekly-colourway-panel">
+        <summary>{colourwayAllocations.length ? `${colourwayAllocations.length} colourways` : 'Colourways pending'}</summary>
+        <div>
+          {colourwayAllocations.map((allocation, index) => <div className="weekly-colourway-row" key={`${index}-${allocation.name}`}>
+            <input aria-label="Colour or print" placeholder="Colour or print" value={allocation.name} onChange={(event) => setColourwayAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} />
+            <input aria-label="Planned colourway units" type="number" min="1" value={allocation.units} onChange={(event) => setColourwayAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, units: Number(event.target.value) } : item))} />
+            <button type="button" className="icon-button" onClick={() => setColourwayAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button>
+          </div>)}
+          <button type="button" className="weekly-colourway-add" onClick={() => setColourwayAllocations((current) => [...current, { name: '', units: 1 }])}><Plus size={12} /> Add colourway</button>
+          {colourwayAllocations.length > 0 && colourwayAllocations.length < colourwayMinimum && <small className="weekly-colourway-warning">Under the {colourwayMinimum}-colourway minimum for {patternType === 'Plain' ? 'Plain' : 'Print'} styles.</small>}
+          {colourwayAllocations.length > 0 && colourwayUnits !== Number(quantity) && <small className="weekly-colourway-warning">Split {colourwayUnits.toLocaleString()} of {Number(quantity).toLocaleString()} planned units.</small>}
+          {requiredMetres === null ? <small>Fabric rate pending.</small> : <small>{requiredMetres.toLocaleString()}m required at {line.fabricConsumptionMetresPerUnit}m/unit · {Math.round(line.availableMetres).toLocaleString()}m available</small>}
+          <button type="button" className="button button-outline" disabled={save.isPending || colourwayAllocations.some((item) => !item.name.trim() || !Number.isInteger(item.units) || item.units <= 0)} onClick={() => save.mutate({ colourwayAllocations })}>Save colourways</button>
+        </div>
+      </details>
+    </td>
+    <td><span className={`weekly-raised-status ${status === 'Not raised' ? 'pending' : status === 'Raised this week' ? 'raised' : 'shifted'}`}>{status}</span>{uniqueOrders.length > 0 && <details className="weekly-order-history-summary"><summary>{uniqueOrders.length} orders · {orderedUnits.toLocaleString()} units · since {new Date(`${firstHeldOrderDate}T12:00:00Z`).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' })}</summary><ol>{uniqueOrders.map((order) => <li key={order.orderRef}><strong>{order.orderRef}</strong><span>{formatDate(order.orderDate)} · {Number(order.quantity).toLocaleString()} units</span></li>)}</ol></details>}</td>
+    <td><select disabled={locked} value={orderType} onChange={(event) => setOrderType(event.target.value)} onBlur={() => orderType !== line.orderType && save.mutate({})}>{orderTypes.map((value) => <option key={value}>{value}</option>)}</select></td>
+    <td><select disabled={locked} value={orderStage} onChange={(event) => setOrderStage(event.target.value)} onBlur={() => orderStage !== line.orderStage && save.mutate({})}>{stages.map((value) => <option key={value}>{value}</option>)}</select></td>
     <td>
       <div className="weekly-line-controls">
         {line.moveCount > 0 && <details className="weekly-move-history">
@@ -326,8 +399,10 @@ export default function WeeklyOrderPlanPage() {
           <span>{kpiLabel(item.metricKey)}</span>
           {item.target == null && item.actual != null ? <strong>{formatKpi(item.actual, item.unit)}</strong> : item.available && item.actual != null ? <>
             <strong>{formatKpi(item.actual, item.unit)}</strong>
-            <small>Target {formatKpi(item.target!, item.unit)}</small>
-            <em>{formatVariance(item.variance ?? 0, item.unit)} vs target</em>
+            {['print_pct', 'knit_pct'].includes(item.metricKey) ? <small>Based on {item.basisCount ?? 0} of {item.totalCount ?? 0} styles</small> : <>
+              <small>Target {formatKpi(item.target!, item.unit)}</small>
+              <em>{formatVariance(item.variance ?? 0, item.unit)} vs target</em>
+            </>}
           </> : <>
             <strong>Attribute not available</strong>
             <small>Target {formatKpi(item.target!, item.unit)}</small>
@@ -335,11 +410,12 @@ export default function WeeklyOrderPlanPage() {
           </>}
         </article>)}
       </div>
+      <div className="weekly-colourway-completeness"><strong>{data?.summary.styles ?? 0} styles</strong><span>{data?.summary.colourwaysComplete ?? 0} with colourways</span><span>{data?.summary.colourwaysPending ?? 0} pending</span></div>
       {underNewness && <div className="weekly-alert warning"><AlertTriangle size={18} /><div><strong>Weekly newness is short by {(data?.summary?.newnessShortfallUnits || 0).toLocaleString()} units</strong><span>Add {(data?.summary?.newnessShortfallStyles || 0).toLocaleString()} new style{data?.summary?.newnessShortfallStyles === 1 ? '' : 's'} at the default {(data?.summary?.newStyleOrderSizeUnits || 300).toLocaleString()}-unit order size to meet {newnessTargetDetail || 'this week’s newness target'}.</span></div></div>}
       <div className={`weekly-actions ${locked ? 'is-locked' : ''}`}><div>{locked ? <div className="weekly-locked-summary"><span className="weekly-confirmed"><CheckCircle2 size={17} /> Weekly target confirmed and locked</span><strong>{Number(data?.plan?.lockedTargetUnits ?? 0).toLocaleString()} target units · {Number(data?.plan?.lockedTargetStyles ?? 0).toLocaleString()} target styles</strong><small>Confirmed by {data?.plan?.confirmedBy || 'Workspace user'} on {data?.plan?.confirmedAt ? new Date(data.plan.confirmedAt).toLocaleString('en-GB') : '—'} · Planned when locked: {Number(data?.plan?.lockedPlannedUnits ?? 0).toLocaleString()} units across {Number(data?.plan?.lockedPlannedStyles ?? 0).toLocaleString()} styles</small></div> : <span>Confirming locks the target. It never creates or dates an actual order.</span>}</div>{locked ? data?.viewer.canUnlockTarget && <button className="button button-outline" disabled={unlock.isPending} onClick={() => { if (window.confirm(`Unlock Week ${week} target for editing? Existing style lines will not be changed.`)) unlock.mutate(); }}>{unlock.isPending ? 'Unlocking…' : 'Unlock target'}</button> : <><button className="button button-outline" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add style</button><button className="button button-dark" disabled={!data?.lines.length || confirm.isPending} onClick={requestConfirmation}>{confirm.isPending ? 'Confirming…' : 'Confirm target'}</button></>}</div>
       {unlock.isError && <span className="form-error">{unlock.error.message}</span>}
       <div className="weekly-section-heading"><div><span className="range-eyebrow">Target</span><h2>Styles intended for Week {week}</h2></div><p>Order status follows the first real dated order, even when it is raised in a later week.</p></div>
-       <div className="weekly-table-wrap"><table className="weekly-table"><thead><tr><th>Plan #</th><th>Source style</th><th>Range</th><th>Fabric</th><th>Target units</th><th>Colourways</th><th>Raised status</th><th>Order type</th><th>Stage</th><th>Move / history</th></tr></thead><tbody>{data?.lines.map((line) => <EditableLine key={line.id} line={line} locked={locked} year={year} week={week} startDate={data.week.startDate} endDate={data.week.endDate} />)}{!data?.lines.length && <tr><td colSpan={10}><div className="weekly-no-lines"><strong>No target styles in Week {week}</strong><p>Real dated orders will still appear below, flagged as unplanned.</p>{!locked && <button className="button button-gold" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add first style</button>}</div></td></tr>}</tbody></table></div>
+       <div className="weekly-table-wrap"><table className="weekly-table"><thead><tr><th>Plan #</th><th>Source style</th><th>Range</th><th>Fabric</th><th>Target units</th><th>Classification</th><th>Colourways</th><th>Raised status</th><th>Order type</th><th>Stage</th><th>Move / history</th></tr></thead><tbody>{data?.lines.map((line) => <EditableLine key={line.id} line={line} locked={locked} year={year} week={week} startDate={data.week.startDate} endDate={data.week.endDate} />)}{!data?.lines.length && <tr><td colSpan={11}><div className="weekly-no-lines"><strong>No target styles in Week {week}</strong><p>Real dated orders will still appear below, flagged as unplanned.</p>{!locked && <button className="button button-gold" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add first style</button>}</div></td></tr>}</tbody></table></div>
       <div className="weekly-section-heading weekly-actual-heading"><div><span className="range-eyebrow">Actual record</span><h2>Orders raised from {formatWeekRange(data?.week)}</h2></div><p>Each row is assigned here by its order date, never by the target week.</p></div>
       <div className="weekly-table-wrap"><table className="weekly-table weekly-actual-table"><thead><tr><th>Order date</th><th>Odoo order</th><th>Style</th><th>Sub-category</th><th>Actual units</th><th>Weekly target</th></tr></thead><tbody>{data?.actualOrders.map((order) => <tr className={order.unplanned ? 'weekly-unplanned-order' : ''} key={`${order.orderRef}-${order.styleNumber}`}><td><strong>{formatDate(order.orderDate, true)}</strong></td><td><span className="weekly-order-no">{order.orderRef}</span><small>{order.orderState || '—'}</small></td><td><strong>{order.styleName}</strong><span>{order.styleNumber} · {order.brand || '—'}</span></td><td>{order.subCategory || 'Uncategorised'}</td><td><strong>{Number(order.quantity).toLocaleString()}</strong></td><td>{order.unplanned ? <span className="weekly-raised-status unplanned"><AlertTriangle size={12} /> Unplanned</span> : <span className="weekly-raised-status raised"><CheckCircle2 size={12} /> Planned</span>}</td></tr>)}{!data?.actualOrders.length && <tr><td colSpan={6}><div className="weekly-no-lines"><Clock3 size={20} /><strong>No orders raised in this date range yet</strong><p>The target remains visible above until dated orders arrive from Odoo.</p></div></td></tr>}</tbody></table></div>
       <div className="weekly-analysis-grid">

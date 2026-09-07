@@ -49,6 +49,9 @@
 .tracker-card-customize-heading { display: flex; justify-content: space-between; align-items: center; }
 .tracker-card-customize-heading strong { font-size: 13px; }
 .tracker-card-customize-heading button { border: 0; background: transparent; color: #8a6d38; padding: 0; font: 600 10px var(--app-font-sans); cursor: pointer; }
+.tracker-card-customize-actions { display: inline-flex; align-items: center; gap: 10px; }
+.tracker-card-customize-heading .tracker-card-customize-close { display: inline-flex; align-items: center; gap: 3px; color: #6f685e; }
+.tracker-card-customize-heading .tracker-card-customize-close:hover { color: var(--navy); }
 .tracker-card-customize-popover p { margin: 5px 0 10px; color: #8c8375; font-size: 11px; line-height: 1.4; }
 .tracker-card-customize-popover label { display: flex; align-items: center; gap: 9px; padding: 7px 0; color: var(--navy); font-size: 12px; cursor: pointer; }
 .tracker-card-customize-popover input { accent-color: var(--gold); }

@@ -156,3 +156,4 @@
 - [Assortment pipeline source](assortment-pipeline-current-stage.md) — use current Tracker stages, not order quantity; live Odoo replaces 3 ledger stages, Warehouse is excluded.
 - [Auth fallback connection budget](auth-fallback-connection-budget.md) — pool-exhaustion recovery must use a small shared reserve; an unbounded direct fallback turns contention into DB exhaustion.
 - [Dashboard snapshot recovery](dashboard-snapshot-recovery.md) — bound both shared-cache waiters and browser requests; section failures must never suppress already-loaded headline data.
+- [Product order-history cutover](product-order-history-cutover.md) — Product Workspace order evidence uses Central Tracker before a configured date and Odoo on/after it; never fuzzy-deduplicate.

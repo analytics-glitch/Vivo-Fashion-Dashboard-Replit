@@ -33,6 +33,7 @@
 .weekly-raised-status.raised { background: #e8f3ed; color: #396a52; }
 .weekly-raised-status.shifted { background: #eeeaf6; color: #6e5b87; }
 .weekly-order-detail { display: block; max-width: 270px; margin-top: 6px; color: var(--muted); font-size: 9px; line-height: 1.45; }
+.weekly-order-history-summary{max-width:240px;margin-top:7px}.weekly-order-history-summary summary{color:#665f54;cursor:pointer;font-size:10px;font-weight:700;line-height:1.4}.weekly-order-history-summary ol{display:grid;gap:5px;margin:7px 0 0;padding:8px 8px 8px 25px;background:#f7f4ee}.weekly-order-history-summary li{font-size:9px}.weekly-order-history-summary li span{display:block;color:var(--muted)}
 .weekly-line-controls { display: flex; min-width: 150px; align-items: flex-start; flex-direction: column; gap: 7px; }
 .weekly-move-button { display: inline-flex; align-items: center; gap: 5px; padding: 5px 7px; border: 1px solid #D8C7A5; border-radius: 3px; color: #6F5C35; background: #FCF8EE; cursor: pointer; font: 650 9px var(--font-sans); white-space: nowrap; }
 .weekly-move-control { display: grid; grid-template-columns: minmax(112px, 1fr) auto auto; align-items: end; gap: 5px; min-width: 260px; padding: 8px; border: 1px solid #E4D8C2; background: #FFFCF5; }
@@ -89,3 +90,4 @@
   gap: 4px;
   margin-top: 3px;
 }
+.weekly-colourway-completeness{display:flex;align-items:center;gap:10px;width:max-content;margin:-4px 0 14px;padding:8px 12px;border:1px solid #d9cfbd;background:#fff;font-size:12px}.weekly-colourway-completeness span{padding-left:10px;border-left:1px solid #ded7ca;color:var(--muted)}.weekly-classification{display:grid;gap:7px;min-width:130px}.weekly-classification label{display:grid;gap:3px;color:var(--muted);font-size:9px;text-transform:uppercase}.weekly-classification select{max-width:135px}.weekly-colourway-panel{min-width:240px}.weekly-colourway-panel summary{cursor:pointer;color:#765b2a;font-weight:700}.weekly-colourway-panel>div{display:grid;gap:7px;margin-top:8px;padding:9px;border:1px solid #ded7ca;background:#fcfaf6}.weekly-colourway-row{display:grid;grid-template-columns:minmax(110px,1fr) 68px 28px;gap:5px}.weekly-colourway-row input{min-width:0;max-width:none;padding:6px}.weekly-colourway-add{display:flex;align-items:center;gap:4px;width:max-content;border:0;background:transparent;color:#765b2a;font-weight:700;cursor:pointer}.weekly-colourway-warning{color:#a34f2e;font-weight:700}.weekly-colourway-panel .button{width:max-content;min-height:30px;padding:6px 9px;font-size:10px}

@@ -25,7 +25,7 @@ type TrackerStyle = {
   collection: string;
   theme: string;
   knitOrWoven: 'Knit' | 'Woven' | null;
-  printOrSolid: 'Print' | 'Solid' | null;
+  printOrSolid: 'Print' | 'Plain' | 'Solid' | null;
   patternMaker: string | null;
   patternAssignmentKey: string;
   patternMakerUserId: number | null;
@@ -134,7 +134,7 @@ const CARD_FIELD_OPTIONS: { key: CardFieldKey; label: string }[] = [
   { key: 'designer', label: 'Designer' },
   { key: 'collection', label: 'Collection' },
   { key: 'knitOrWoven', label: 'Knit or woven' },
-  { key: 'printOrSolid', label: 'Print or solid' },
+  { key: 'printOrSolid', label: 'Print or Plain' },
   { key: 'type', label: 'Type' },
   { key: 'tier', label: 'Tier' },
   { key: 'status', label: 'Status' },
@@ -380,6 +380,11 @@ function targetWeekNumber(value: string | null): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function normalizePrintOrPlain(value: string | null | undefined): 'Print' | 'Plain' | null {
+  if (value === 'Solid') return 'Plain';
+  return value === 'Print' || value === 'Plain' ? value : null;
+}
+
 export default function StyleDevelopmentTrackerPage() {
   const queryClient = useQueryClient();
   const tracker = useQuery({ queryKey: ['workspace', 'style-development-tracker'], queryFn: loadTracker });
@@ -406,6 +411,7 @@ export default function StyleDevelopmentTrackerPage() {
     }
   });
   const [customizeCardsOpen, setCustomizeCardsOpen] = useState(false);
+  const customizeCardsRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     try {
@@ -414,6 +420,26 @@ export default function StyleDevelopmentTrackerPage() {
       // Preferences are optional; the board remains usable when storage is unavailable.
     }
   }, [cardFields]);
+
+  useEffect(() => {
+    if (!customizeCardsOpen) return;
+
+    const closeOnOutsideClick = (event: MouseEvent) => {
+      if (customizeCardsRef.current && !customizeCardsRef.current.contains(event.target as Node)) {
+        setCustomizeCardsOpen(false);
+      }
+    };
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setCustomizeCardsOpen(false);
+    };
+
+    document.addEventListener('mousedown', closeOnOutsideClick);
+    document.addEventListener('keydown', closeOnEscape);
+    return () => {
+      document.removeEventListener('mousedown', closeOnOutsideClick);
+      document.removeEventListener('keydown', closeOnEscape);
+    };
+  }, [customizeCardsOpen]);
 
   useEffect(() => {
     try {
@@ -510,7 +536,7 @@ export default function StyleDevelopmentTrackerPage() {
     return `${display} · ${currentLoad}${incoming ? ` → ${currentLoad + incoming}` : ''}`;
   };
 
-  const facets = tracker.data?.facets ?? {
+  const fallbackFacets = {
     targetOrderWeek: Array.from(new Set(items.map(s => s.targetOrderWeek).filter(Boolean))) as string[],
     subCategory: Array.from(new Set(items.map(s => s.subCategory).filter(Boolean))) as string[],
     category: Array.from(new Set(items.map(s => s.category).filter(Boolean))) as string[],
@@ -522,9 +548,15 @@ export default function StyleDevelopmentTrackerPage() {
     collection: Array.from(new Set(items.map(s => s.collection).filter(Boolean))) as string[],
     theme: Array.from(new Set(items.map(s => s.theme).filter(Boolean))) as string[],
     knitOrWoven: Array.from(new Set(items.map(s => s.knitOrWoven).filter(Boolean))) as string[],
-    printOrSolid: Array.from(new Set(items.map(s => s.printOrSolid).filter(Boolean))) as string[],
+    printOrSolid: Array.from(new Set(items.map(s => normalizePrintOrPlain(s.printOrSolid)).filter(Boolean))) as string[],
     launchMonth: Array.from(new Set(items.map(s => s.launchMonth).filter(Boolean))) as string[],
     status: Array.from(new Set(items.map(s => s.status).filter(Boolean))) as string[],
+  };
+  const facets = {
+    ...(tracker.data?.facets ?? fallbackFacets),
+    printOrSolid: Array.from(new Set((tracker.data?.facets?.printOrSolid ?? fallbackFacets.printOrSolid)
+      .map(value => normalizePrintOrPlain(value))
+      .filter(Boolean))) as string[],
   };
 
   const filtered = useMemo(() => {
@@ -548,8 +580,9 @@ export default function StyleDevelopmentTrackerPage() {
         || (filters.theme === 'Unassigned' ? !style.theme : style.theme === filters.theme);
       const matchKnitOrWoven = filters.knitOrWoven === 'All'
         || (filters.knitOrWoven === 'Unassigned' ? !style.knitOrWoven : style.knitOrWoven === filters.knitOrWoven);
+      const normalizedPrintOrPlain = normalizePrintOrPlain(style.printOrSolid);
       const matchPrintOrSolid = filters.printOrSolid === 'All'
-        || (filters.printOrSolid === 'Unassigned' ? !style.printOrSolid : style.printOrSolid === filters.printOrSolid);
+        || (filters.printOrSolid === 'Unassigned' ? !normalizedPrintOrPlain : normalizedPrintOrPlain === filters.printOrSolid);
       const matchStatus = filters.status === 'All' || style.status === filters.status;
       const matchBlocked = filters.blocked === 'All' || (filters.blocked === 'Blocked' ? style.blocked : !style.blocked);
 
@@ -721,7 +754,7 @@ export default function StyleDevelopmentTrackerPage() {
                 <option value="collection">Collection</option>
                 <option value="theme">Theme</option>
                 <option value="knitOrWoven">Knit or woven</option>
-                <option value="printOrSolid">Print or solid</option>
+                <option value="printOrSolid">Print or Plain</option>
                 <option value="launchMonth">Launch month</option>
                 <option value="blocked">Blocked</option>
               </select>
@@ -818,7 +851,7 @@ export default function StyleDevelopmentTrackerPage() {
             </select>
           </div>
           <div className="tracker-filter-select">
-            <label>Print / Solid</label>
+            <label>Print / Plain</label>
             <select value={filters.printOrSolid} onChange={e => setFilters({...filters, printOrSolid: e.target.value})}>
               <option value="All">All</option>
               <option value="Unassigned">Unassigned</option>
@@ -848,7 +881,7 @@ export default function StyleDevelopmentTrackerPage() {
       {view === 'board' && (
         <div className="tracker-board-toolbar">
           <span className="tracker-board-toolbar-note">Design view · larger cards keep the garment visible</span>
-          <div className="tracker-card-customize">
+          <div className="tracker-card-customize" ref={customizeCardsRef}>
             <button
               type="button"
               className="tracker-customize-button"
@@ -862,7 +895,12 @@ export default function StyleDevelopmentTrackerPage() {
               <div className="tracker-card-customize-popover" id="style-card-fields">
                 <div className="tracker-card-customize-heading">
                   <strong>Card fields</strong>
-                  <button type="button" onClick={() => setCardFields(DEFAULT_CARD_FIELDS)}>Reset</button>
+                  <div className="tracker-card-customize-actions">
+                    <button type="button" onClick={() => setCardFields(DEFAULT_CARD_FIELDS)}>Reset</button>
+                    <button type="button" className="tracker-card-customize-close" onClick={() => setCustomizeCardsOpen(false)} aria-label="Close card field settings">
+                      <X size={14} /> Close
+                    </button>
+                  </div>
                 </div>
                 <p>Choose the supporting details shown below each style.</p>
                 {CARD_FIELD_OPTIONS.map(option => (
@@ -1177,7 +1215,7 @@ function StyleDevelopmentBoardCard({
           {cardFields.designer && <span className="tracker-card-chip tracker-card-chip-designer" title={item.designer || 'Unassigned designer'}>{item.designer || 'Designer unassigned'}</span>}
           {cardFields.collection && <span className="tracker-card-chip tracker-card-chip-collection" title={item.collection || 'Unassigned collection'}>{item.collection || 'Collection unassigned'}</span>}
           {cardFields.knitOrWoven && <span className="tracker-card-chip">{item.knitOrWoven || 'Knit / woven unassigned'}</span>}
-          {cardFields.printOrSolid && <span className="tracker-card-chip">{item.printOrSolid || 'Print / solid unassigned'}</span>}
+          {cardFields.printOrSolid && <span className="tracker-card-chip">{normalizePrintOrPlain(item.printOrSolid) || 'Print / Plain unassigned'}</span>}
           {cardFields.type && <span className="tracker-card-chip tracker-card-chip-type">{item.type}</span>}
           {cardFields.tier && <span className="tracker-card-chip tracker-card-chip-tier">{item.tier}</span>}
         </div>
@@ -2242,39 +2280,19 @@ function TrackerDetailDrawer({ id, patternMakers, designers, reassignmentReasons
                     </div>
                  </div>
 
-                 {data.intervalMetrics && data.intervalMetrics.length > 0 && (
-                    <div className="tracker-drawer-section">
-                       <h3>Style Intervals</h3>
-                       <table className="tracker-rep-table">
-                         <thead><tr><th>Interval</th><th>Standard</th><th>Work</th><th>Queue</th><th>Total</th></tr></thead>
-                         <tbody>
-                            {data.intervalMetrics.map((int, i) => (
-                               <tr key={i}>
-                                  <td>{int.key}</td>
-                                  <td>{int.standard} days</td>
-                                  <td>{int.workWorkingDays ?? '-'}</td>
-                                  <td>{int.queueWorkingDays ?? '-'}</td>
-                                  <td>{int.totalWorkingDays ?? '-'}</td>
-                               </tr>
-                            ))}
-                         </tbody>
-                       </table>
-                    </div>
-                 )}
-
-                 <div className="tracker-drawer-section">
-                     <TrackerFabricSelection item={data} />
-                 </div>
-
-                 <div className="tracker-drawer-section">
-                     <h3>Log Action</h3>
-                     <TrackerEventForm item={data} />
-                 </div>
-
                  <div className="tracker-drawer-section">
                      <h3>Master Details</h3>
                      <TrackerMasterForm item={data} patternMakers={patternMakers} designers={designers} reassignmentReasons={reassignmentReasons} />
                  </div>
+
+                  <div className="tracker-drawer-section">
+                      <TrackerFabricSelection item={data} />
+                  </div>
+
+                  <div className="tracker-drawer-section">
+                      <h3>Log Action</h3>
+                      <TrackerEventForm item={data} />
+                  </div>
 
                  <div className="tracker-drawer-section">
                      <h3>Add Note</h3>
@@ -2285,6 +2303,26 @@ function TrackerDetailDrawer({ id, patternMakers, designers, reassignmentReasons
                      <h3>History Timeline</h3>
                      <TrackerHistory history={data.history} />
                  </div>
+
+                  {data.intervalMetrics && data.intervalMetrics.length > 0 && (
+                     <div className="tracker-drawer-section">
+                        <h3>Style Intervals</h3>
+                        <table className="tracker-rep-table">
+                          <thead><tr><th>Interval</th><th>Standard</th><th>Work</th><th>Queue</th><th>Total</th></tr></thead>
+                          <tbody>
+                             {data.intervalMetrics.map((int, i) => (
+                                <tr key={i}>
+                                   <td>{int.key}</td>
+                                   <td>{int.standard} days</td>
+                                   <td>{int.workWorkingDays ?? '-'}</td>
+                                   <td>{int.queueWorkingDays ?? '-'}</td>
+                                   <td>{int.totalWorkingDays ?? '-'}</td>
+                                </tr>
+                             ))}
+                          </tbody>
+                        </table>
+                     </div>
+                  )}
                </>
             ) : null}
          </div>
@@ -2454,7 +2492,7 @@ function TrackerMasterForm({ item, patternMakers, designers, reassignmentReasons
        collection: item.collection || '',
        theme: item.theme || '',
        knitOrWoven: (item.knitOrWoven || '') as '' | 'Knit' | 'Woven',
-       printOrSolid: (item.printOrSolid || '') as '' | 'Print' | 'Solid',
+       printOrSolid: normalizePrintOrPlain(item.printOrSolid) || '',
       patternAssignmentKey: item.patternAssignmentKey || '',
       adoptionDate: item.adoptionDate || '',
       targetOrderWeek: item.targetOrderWeek || '',
@@ -2486,7 +2524,7 @@ function TrackerMasterForm({ item, patternMakers, designers, reassignmentReasons
         collection: form.collection,
         theme: form.theme,
         knitOrWoven: form.knitOrWoven || null,
-        printOrSolid: form.printOrSolid || null,
+        printOrSolid: (form.printOrSolid || null) as 'Print' | 'Plain' | null,
         patternAssignmentKey: form.patternAssignmentKey,
         adoptionDate: form.adoptionDate || null,
         targetOrderWeek: form.targetOrderWeek || null,
@@ -2578,9 +2616,9 @@ function TrackerMasterForm({ item, patternMakers, designers, reassignmentReasons
                 </select>
              </label>
              <label className="tracker-input-wrap">
-                <span>Print or solid</span>
-                <select value={form.printOrSolid} onChange={e => setForm({...form, printOrSolid: e.target.value as '' | 'Print' | 'Solid'})}>
-                  <option value="">Unassigned</option><option value="Print">Print</option><option value="Solid">Solid</option>
+                 <span>Print or Plain</span>
+                 <select value={form.printOrSolid} onChange={e => setForm({...form, printOrSolid: e.target.value as '' | 'Print' | 'Plain'})}>
+                   <option value="">Unassigned</option><option value="Print">Print</option><option value="Plain">Plain</option>
                 </select>
              </label>
             <label className="tracker-input-wrap">

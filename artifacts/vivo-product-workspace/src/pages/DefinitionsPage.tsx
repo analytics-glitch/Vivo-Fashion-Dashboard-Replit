@@ -23,6 +23,35 @@ type WeeklyKpiTarget = {
   metricKey: string; label: string; targetValue: number; unit: 'units' | 'percent' | 'count';
   updatedAt: string; updatedBy: string;
 };
+type OrderHistoryConfig = { odooStartDate: string; updatedAt: string; updatedBy: string };
+
+function OrderHistoryConfigCard({ item }: { item: OrderHistoryConfig }) {
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState(item.odooStartDate);
+  useEffect(() => setValue(item.odooStartDate), [item.odooStartDate]);
+  const update = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/workspace/order-history-config', {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ odooStartDate: value }),
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'Cutover date could not be saved');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'order-history-config'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'assortment-plan'] });
+      queryClient.invalidateQueries({ queryKey: ['weekly-order-plan'] });
+    },
+  });
+  return <div className="fabric-rate-table-wrap"><table className="fabric-rate-table"><thead><tr><th>Definition</th><th>Date</th><th>Rule</th><th>Last changed</th><th /></tr></thead><tbody><tr>
+    <td><strong>Odoo order history start date</strong></td>
+    <td><input type="date" value={value} onChange={(event) => setValue(event.target.value)} aria-label="Odoo order history start date" /></td>
+    <td>Before this date: Central Tracker only. On or after: Odoo only.</td>
+    <td><span>{item.updatedBy}</span><small>{` · ${new Date(item.updatedAt).toLocaleString('en-GB')}`}</small></td>
+    <td><button className="icon-button" disabled={update.isPending || value === item.odooStartDate} onClick={() => update.mutate()} aria-label="Save Odoo order history start date"><Save size={16} /></button>{update.isError && <small className="fabric-rate-error">{update.error.message}</small>}</td>
+  </tr></tbody></table></div>;
+}
 
 const text = (value: unknown, fallback: string) => typeof value === 'string' && value.trim() ? value : fallback;
 const passes = (item: Reconciliation) => item.passed === true || ['pass', 'passed', 'ok', 'trusted', 'success'].includes(String(item.status).toLowerCase());
@@ -166,6 +195,14 @@ export default function DefinitionsPage() {
       return response.json() as Promise<{ items: WeeklyKpiTarget[] }>;
     },
   });
+  const orderHistory = useQuery({
+    queryKey: ['workspace', 'order-history-config'],
+    queryFn: async () => {
+      const response = await fetch('/api/workspace/order-history-config', { credentials: 'include' });
+      if (!response.ok) throw new Error(`Order history configuration failed (${response.status})`);
+      return response.json() as Promise<OrderHistoryConfig>;
+    },
+  });
   const definitions = trust.data?.definitions ?? [];
   const reconciliations = trust.data?.reconciliations ?? [];
   const sources = trust.data?.sourceStatus ?? [];
@@ -173,6 +210,10 @@ export default function DefinitionsPage() {
   return <section className="page definitions-page">
     <header className="definitions-hero"><div><span className="range-eyebrow">Data governance / Single source rule</span><h1>Definitions &amp; data trust</h1><p>Shared metrics are owned by BI. Workspace planning references and Style Development remain operational exceptions.</p></div><div className="definitions-hero-icon"><ShieldCheck size={30} /></div></header>
     {failed.length > 0 && <div className="definitions-blocked" role="alert"><AlertTriangle size={22} /><div><strong>{failed.length} reconciliation {failed.length === 1 ? 'has' : 'have'} failed — BI headline figures are not trusted</strong><p>Resolve the failures below before using BI-owned metrics in planning decisions.</p></div></div>}
+    <section className="definitions-section">
+      <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Data integrity / Workspace-owned</span><h2>Order history source cutover</h2><p>A clean source boundary prevents Odoo and Central Tracker from counting the same underlying buying order twice.</p></div></div>
+      {orderHistory.isLoading ? <div className="definitions-empty">Loading order history cutover…</div> : orderHistory.isError ? <div className="definitions-empty">Order history cutover could not be loaded.</div> : <OrderHistoryConfigCard item={orderHistory.data!} />}
+    </section>
     <section className="definitions-section">
       <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Planning reference / Workspace-owned</span><h2>Weekly Order Plan KPI targets</h2><p>Percentage targets are measured on planned units. New includes New and Range Refreshed order types.</p></div></div>
       {weeklyKpis.isLoading ? <div className="definitions-empty">Loading weekly KPI targets…</div> : weeklyKpis.isError ? <div className="definitions-empty">Weekly KPI targets could not be loaded. <button className="button" onClick={() => weeklyKpis.refetch()}>Try again</button></div> :

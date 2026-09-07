@@ -266,3 +266,17 @@ mtime_ms = 1788247464806
 storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/1bec1ebc-7b67-40b8-80a9-29bfcd70bd71/d2bbc007-5fe3-4820-bcfe-d3863a198281"
 storage_version_token = "1788247494646767"
 content_type = "image/svg+xml"
+
+[[outputs]]
+id = "mw_C3NT4_WJD67jQsxJk2"
+uri = "file://artifacts/vivo-product-workspace/reports/order-history-cutover-impact-2026-09-07.csv"
+type = "table"
+title = "Order history cutover impact"
+description = "All 304 changed styles, before/after order counts, reductions, tiers, and graduation-threshold crossings."
+logical_id = "9774836f-8427-46b2-8128-920f98db9061"
+content_hash = "sha256:721001900f838a67d1e5a5d729ee571b055144ec61dd573ce4c82ecf1a495b0e"
+size = 19118
+mtime_ms = 1788799851035
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/9774836f-8427-46b2-8128-920f98db9061/b8953aff-fd7e-4957-b7c6-6d5870d81b80"
+storage_version_token = "1788799885836609"
+content_type = "text/csv"
