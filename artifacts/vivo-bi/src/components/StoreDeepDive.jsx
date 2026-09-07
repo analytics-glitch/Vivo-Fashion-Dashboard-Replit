@@ -38,6 +38,7 @@ const statTone = (delta) => {
   if (delta == null || !isFinite(delta)) return "";
   return delta >= 0 ? "text-emerald-700" : "text-red-600";
 };
+const personId = (row) => row?.person_id ?? row?.customer_id;
 
 const DeltaPill = ({ delta, higherIsBetter = true, label }) => {
   if (delta == null || !isFinite(delta)) return null;
@@ -311,10 +312,10 @@ const StoreDeepDive = ({
             ) : (
               <ol className="space-y-1.5">
                 {topCustomers.map((c, i) => {
-                  const name = c.customer_name || c.display_name || c.customer_id || "Customer";
+                  const name = c.customer_name || c.display_name || personId(c) || "Customer";
                   return (
                     <li
-                      key={(c.customer_id || name) + i}
+                      key={(personId(c) || name) + i}
                       className="flex items-center gap-2 py-1.5 border-b border-border/50 last:border-0"
                     >
                       <span className="w-4 text-[11px] text-muted text-right font-bold">{i + 1}</span>

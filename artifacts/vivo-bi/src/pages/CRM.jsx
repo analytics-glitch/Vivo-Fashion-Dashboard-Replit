@@ -221,14 +221,14 @@ const ContactsTab = ({ brand, team, onOpen360 }) => {
             <tbody>
               {rows.map((c) => (
                 <tr
-                  key={c.customer_id}
+                  key={c.person_id ?? c.customer_id}
                   className="cursor-pointer border-b border-border/60 hover:bg-panel/60"
-                  onClick={() => onOpen360(c.customer_id)}
+                  onClick={() => onOpen360(c.person_id ?? c.customer_id)}
                 >
                   <td className="px-3 py-2">
                     <div className="font-semibold text-foreground">{c.name || "Unnamed contact"}</div>
                     <div className="text-[11.5px] text-muted">
-                      {c.phone || c.email || c.customer_id}
+                      {c.phone || c.email || c.person_id || c.customer_id}
                       {c.is_manual && <span className="ml-2 text-[10px] text-brand">manual</span>}
                     </div>
                     {c.tags?.length > 0 && (
@@ -293,7 +293,7 @@ const CreateContactModal = ({ open, onClose, brand, onCreated }) => {
       .post("/crm/customers", form)
       .then((r) => {
         toast.success("Contact created");
-        onCreated(r.data?.customer_id);
+        onCreated(r.data?.person_id ?? r.data?.customer_id);
       })
       .catch((e) => toast.error(errOf(e)))
       .finally(() => setSaving(false));
@@ -1252,7 +1252,7 @@ const CampaignDetail = ({ campaignId, onClose, onChanged }) => {
                 <tbody>
                   {data.members.map((m) => (
                     <tr key={m.id} className="border-t border-border/50">
-                      <td className="px-2 py-1">{m.name || m.customer_id}</td>
+                      <td className="px-2 py-1">{m.name || m.person_id || m.customer_id}</td>
                       <td className="px-2 py-1">{m.phone || m.email || "—"}</td>
                       <td className="px-2 py-1">
                         {m.send_status === "sent" ? (
@@ -1616,10 +1616,10 @@ const LoyaltyTab = ({ isAdmin, onOpen360 }) => {
         {results.length > 0 && (
           <ul className="mt-3 divide-y divide-border/60">
             {results.map((c) => (
-              <li key={c.customer_id} className="flex cursor-pointer items-center justify-between py-2 hover:bg-panel/40" onClick={() => onOpen360(c.customer_id)}>
+              <li key={c.person_id ?? c.customer_id} className="flex cursor-pointer items-center justify-between py-2 hover:bg-panel/40" onClick={() => onOpen360(c.person_id ?? c.customer_id)}>
                 <div>
                   <div className="font-semibold">{c.name || "Unnamed"}</div>
-                  <div className="text-[11.5px] text-muted">{c.phone || c.email || c.customer_id}</div>
+                  <div className="text-[11.5px] text-muted">{c.phone || c.email || c.person_id || c.customer_id}</div>
                 </div>
                 <div className="text-right">
                   {c.tier ? <Pill color={TIER_COLORS[c.tier] || "#6b7280"} subtle>{c.tier} · {fmtNum(c.points_balance || 0)} pts</Pill> : <span className="text-[12px] text-muted">Not enrolled</span>}

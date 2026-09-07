@@ -48,6 +48,12 @@ const telHref = (p) => {
   return digits.length >= 7 ? `tel:${digits}` : null;
 };
 
+// `person_id` is the stable customer-master identity. Older API payloads used
+// `customer_id`; retain that as a read fallback while every UI identity,
+// comparison and request prefers the canonical field.
+const personId = (row) => row?.person_id ?? row?.customer_id;
+const withPersonId = (row) => ({ ...row, person_id: personId(row) });
+
 // Customer lifecycle definitions are server-owned. Keep these display values
 // aligned with the API contract; there is intentionally no user-adjustable
 // threshold control on this page.
@@ -342,7 +348,8 @@ const Customers = () => {
     for (const [key, p] of rest) {
       p.then((r) => {
         if (!cancelled) {
-          setters[key](r.data || (key === "prev" ? null : []));
+          const payload = r.data || (key === "prev" ? null : []);
+          setters[key](Array.isArray(payload) ? payload.map(withPersonId) : payload);
           if (key === "repeatCustomers") setRepeatCustomersLoading(false);
         }
       });
@@ -505,7 +512,7 @@ const Customers = () => {
     ]).then(([ch, tc, ar]) => {
       if (cancelled) return;
       if (ch?.data) setChurned(ch.data);
-      if (tc?.data) setTop(tc.data);
+      if (tc?.data) setTop(tc.data.map(withPersonId));
       if (ar?.data) setAtRisk(ar.data);
     });
     return () => { cancelled = true; };
@@ -542,7 +549,7 @@ const Customers = () => {
           params: { q: searchQ.trim(), ...(revealToken ? { reveal: true } : {}) },
           ...(revealToken ? { headers: { "X-PII-Reveal-Token": revealToken } } : {}),
         });
-        setSearchResults(data || []);
+        setSearchResults((data || []).map(withPersonId));
       } catch {
         setSearchResults([]);
       } finally {
@@ -558,7 +565,7 @@ const Customers = () => {
     setCustomerProducts([]);
     try {
       const { data } = await api.get("/customer-products", {
-        params: { customer_id: c.customer_id },
+        params: { person_id: personId(c) },
       });
       setCustomerProducts(data || []);
     } catch {
@@ -765,7 +772,7 @@ const Customers = () => {
               <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
                 {searchResults.slice(0, 24).map((r) => (
                   <button
-                    key={r.customer_id || r.phone}
+                    key={personId(r) || r.phone}
                     type="button"
                     onClick={() => openCustomer(r)}
                     data-testid="customer-result-card"
@@ -819,7 +826,7 @@ const Customers = () => {
                 ) : (
                   <SortableTable
                     testId="customer-products-table"
-                    exportName={`customer-${selectedCustomer.customer_id}-products.csv`}
+                    exportName={`customer-${personId(selectedCustomer)}-products.csv`}
                     initialSort={{ key: "units_bought", dir: "desc" }}
                     columns={[
                       { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[280px] inline-block">{r.style_name}</span> },
@@ -1232,7 +1239,7 @@ const Customers = () => {
               <div className="flex items-center gap-2">
                 <UserCircle size={16} className="text-brand" />
                 <div className="eyebrow">Walk-in Customers</div>
-                <span title="Anonymous transactions counted 1:1 as customers (each order = 1 walk-in customer). Detected when customer_type = Guest OR customer_id is missing. Slow upstream — uses /api/customers/walk-ins (chunked /orders fan-out)." className="text-muted text-[10px] cursor-help">ⓘ</span>
+                <span title="Anonymous transactions counted 1:1 as customers (each order = 1 walk-in customer). Detected when customer_type = Guest OR person ID is missing. Slow upstream — uses /api/customers/walk-ins (chunked /orders fan-out)." className="text-muted text-[10px] cursor-help">ⓘ</span>
               </div>
               {walkInsLoading || !walkIns ? (
                 <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight text-muted">…</div>
@@ -1284,19 +1291,19 @@ const Customers = () => {
               )}
             </div>
             {/* ---- Incomplete Profile (Iter 88p) ----
-                Identified customers (have a customer_id) but missing
+                Identified customers (have a person ID) but missing
                 name / phone / email — a data-quality / capture-discipline
                 gap, NOT a walk-in. Each gap is a missed marketing
                 opportunity. Drives store-manager coaching. */}
             <div
               className="card-white p-3.5 sm:p-5 border-l-4 border-l-amber-400"
               data-testid="kpi-incomplete-profile"
-              title="Incomplete Profile = identified customers (have a customer_id) but with at least one missing field (name, phone, or email). They ARE trackable for retention — but you can't market to them. Use this as a capture-discipline metric for store managers."
+              title="Incomplete Profile = identified customers (have a person ID) but with at least one missing field (name, phone, or email). They ARE trackable for retention — but you can't market to them. Use this as a capture-discipline metric for store managers."
             >
               <div className="flex items-center gap-2">
                 <Warning size={16} weight="bold" className="text-amber-500" />
                 <div className="eyebrow">Incomplete Profile</div>
-                <span title="Customers with customer_id but missing name / phone / email. Source: /api/customers/walk-ins.incomplete_profile (same data pass as walk-in detection)." className="text-muted text-[10px] cursor-help">ⓘ</span>
+                <span title="Customers with a person ID but missing name / phone / email. Source: /api/customers/walk-ins.incomplete_profile (same data pass as walk-in detection)." className="text-muted text-[10px] cursor-help">ⓘ</span>
               </div>
               {walkInsLoading || !walkIns?.incomplete_profile ? (
                 <div className="mt-2 text-[18px] sm:text-[24px] font-bold num leading-tight text-muted">…</div>
@@ -2075,7 +2082,7 @@ const Customers = () => {
                             "First Order", "Last Order", "Order ID", "Order Date", "Channel", "Order Total (KES)", "Units"]];
               for (const c of rows) {
                 for (const o of (c.orders || [])) {
-                  out.push([c.customer_id, c.customer_name || "", c.mobile || "", c.email || "",
+                  out.push([personId(c), c.customer_name || "", c.mobile || "", c.email || "",
                             c.order_count, c.total_spend_kes, c.first_order_date, c.last_order_date,
                             o.order_id, o.order_date, o.channel || "", o.total_kes, o.units]);
                 }
@@ -2140,8 +2147,9 @@ const Customers = () => {
                     <SortableTable
                       testId="repeat-customers-list"
                       columns={[
-                        { key: "customer_id", label: "Customer ID", sortable: true,
-                          render: (r) => <span className="font-mono text-[11px]">{r.customer_id}</span> },
+                        { key: "person_id", label: "Person ID", sortable: true,
+                          render: (r) => <span className="font-mono text-[11px]">{personId(r)}</span>,
+                          csv: (r) => personId(r) },
                         { key: "customer_name", label: "Name", sortable: true,
                           render: (r) => r.customer_name || <span className="text-muted">(no name)</span> },
                         { key: "mobile", label: "Mobile", sortable: true,
@@ -2166,7 +2174,7 @@ const Customers = () => {
                             Orders ({r.order_count})
                           </div>
                           <SortableTable
-                            testId={`repeat-orders-${r.customer_id}`}
+                            testId={`repeat-orders-${personId(r)}`}
                             initialSort={{ key: "order_date", dir: "desc" }}
                             maxHeight={null}
                             columns={[
@@ -2202,7 +2210,7 @@ const Customers = () => {
           {(() => {
             // Decorate rows with derived fields (segment, days_since, rank,
             // rank_delta, is_new_to_top, profile_completeness).
-            const prevRankMap = new Map((topPrev || []).map((r, i) => [r.customer_id, i + 1]));
+            const prevRankMap = new Map((topPrev || []).map((r, i) => [personId(r), i + 1]));
             const decorated = (top || []).map((r, i) => {
               const rank = i + 1;
               const seg = segmentFor(r.total_orders);
@@ -2212,9 +2220,9 @@ const Customers = () => {
                 isAnonymous ? "walk_in"
                   : !r.customer_name || !r.phone || !r.city ? "partial"
                   : "complete";
-              const prevRank = prevRankMap.get(r.customer_id) || null;
+              const prevRank = prevRankMap.get(personId(r)) || null;
               const rankDelta = prevRank ? prevRank - rank : null; // +ve = moved up
-              const isNewToTop = compareMode !== "none" && topPrev.length > 0 && !prevRankMap.has(r.customer_id);
+              const isNewToTop = compareMode !== "none" && topPrev.length > 0 && !prevRankMap.has(personId(r));
               return { ...r, rank, seg, daysLast, completeness, prevRank, rankDelta, isNewToTop };
             });
 
@@ -2347,9 +2355,9 @@ const Customers = () => {
                         csv: (r) => r.rank,
                       },
                       ...(showCustomerId ? [{
-                        key: "customer_id", label: "Customer ID", align: "left",
-                        render: (r) => <span className="text-muted num text-[11px]">{r.customer_id || "—"}</span>,
-                        csv: (r) => r.customer_id,
+                        key: "person_id", label: "Person ID", align: "left",
+                        render: (r) => <span className="text-muted num text-[11px]">{personId(r) || "—"}</span>,
+                        csv: (r) => personId(r),
                       }] : []),
                       {
                         key: "customer_name", label: "Name", align: "left",
@@ -2514,11 +2522,11 @@ const Customers = () => {
                       { key: "customer_name", label: "Customer", align: "left",
                         render: (r) => (
                           <div>
-                            <div className="font-semibold">{r.customer_name || `Customer #${r.customer_id?.slice?.(-6) || "—"}`}</div>
+                            <div className="font-semibold">{r.customer_name || `Customer #${personId(r)?.slice?.(-6) || "—"}`}</div>
                             {r.email && <div className="text-[10.5px] text-muted">{r.email}</div>}
                           </div>
                         ),
-                        csv: (r) => r.customer_name || r.customer_id },
+                        csv: (r) => r.customer_name || personId(r) },
                       { key: "phone", label: "Phone", align: "left",
                         render: (r) => {
                           const href = telHref(r.phone);
@@ -2588,14 +2596,14 @@ const Customers = () => {
                   { key: "customer_name", label: "Customer", align: "left",
                     render: (r) => (
                       <div>
-                        <div className="font-semibold">{r.customer_name || `Customer #${r.customer_id?.slice?.(-6) || "—"}`}</div>
+                        <div className="font-semibold">{r.customer_name || `Customer #${personId(r)?.slice?.(-6) || "—"}`}</div>
                         {r.customer_email && <div className="text-[10.5px] text-muted">{r.customer_email}</div>}
-                        {!r.customer_email && r.customer_id && (
-                          <div className="text-[10.5px] text-muted font-mono">{r.customer_id}</div>
+                        {!r.customer_email && personId(r) && (
+                          <div className="text-[10.5px] text-muted font-mono">{personId(r)}</div>
                         )}
                       </div>
                     ),
-                    csv: (r) => r.customer_name || r.customer_id },
+                    csv: (r) => r.customer_name || personId(r) },
                   { key: "gap_days", label: "Silence (days)", numeric: true,
                     render: (r) => (
                       <span className={

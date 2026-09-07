@@ -17,6 +17,7 @@ import {
 } from "@/components/ExportsExtraTables";
 
 const PAGE_SIZE = 50;
+const personId = (row) => row?.person_id;
 
 const InventoryExport = () => {
   const { applied, touchLastUpdated } = useFilters();
@@ -458,10 +459,11 @@ const SalesExport = () => {
         if (cancelled) return;
         const enriched = (r.data || []).map((row) => ({
           ...row,
+          person_id: personId(row),
           // Precomputed lowercase blob for 120 ms debounced search.
           _search: [
             row.order_id, row.order_name, row.pos_location_name, row.channel,
-            row.customer_id, row.customer_type, row.product_title, row.sku,
+             personId(row), row.customer_id, row.customer_type, row.product_title, row.sku,
             row.style_name, row.brand, row.collection, row.subcategory,
             row.color, row.size,
           ].filter(Boolean).join("\t").toLowerCase(),
@@ -547,7 +549,8 @@ const SalesExport = () => {
       ["pos_location_name", "POS / Location"],
       ["channel", "Channel"],
       ["country", "Country"],
-      ["customer_id", "Customer ID"],
+      ["person_id", "Person ID"],
+      ["customer_id", "Source Customer ID"],
       ["customer_type", "Customer Type"],
       ["sale_kind", "Sale Kind"],
       ["product_title", "Product Title"],
@@ -582,14 +585,14 @@ const SalesExport = () => {
         params: { date_from: dateFrom, date_to: dateTo, country, channel, brand, sale_kind, limit: EXPORT_CAP,
                   include_stock: includeStock ? 1 : undefined },
       });
-      const all = resp.data || [];
+      const all = (resp.data || []).map((row) => ({ ...row, person_id: personId(row) }));
       // Re-apply the free-text search (server can't replicate it) so the export
       // matches what the user is looking at when a search is active.
       const exportRows = search
         ? all.filter((r) => {
             const blob = [
               r.order_id, r.order_name, r.pos_location_name, r.channel,
-              r.customer_id, r.customer_type, r.product_title, r.sku,
+               personId(r), r.customer_id, r.customer_type, r.product_title, r.sku,
               r.style_name, r.brand, r.collection, r.subcategory, r.color, r.size,
             ].filter(Boolean).join("\t").toLowerCase();
             return blob.includes(search);
@@ -739,7 +742,7 @@ const SalesExport = () => {
             {filtered.length === 0 ? (
               <Empty label="No order lines match the current filters." />
             ) : (
-              <SortableTable
+                   <SortableTable
                 testId="sales-export-table"
                 exportName={`sales-export-${dateFrom}_${dateTo}.csv`}
                 initialSort={{ key: "order_date", dir: "desc" }}
@@ -750,7 +753,7 @@ const SalesExport = () => {
                   { key: "pos_location_name", label: "POS / Location", align: "left", render: (r) => <span className="font-medium">{r.pos_location_name || "—"}</span> },
                   { key: "country", label: "Country", align: "left", render: (r) => <span className="capitalize">{r.country || "—"}</span> },
                   { key: "sale_kind", label: "Kind", align: "left", render: (r) => <span className={r.sale_kind === "return" ? "pill-red" : "pill-neutral"}>{r.sale_kind || "—"}</span>, csv: (r) => r.sale_kind },
-                  { key: "customer_id", label: "Customer", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{r.customer_id || "—"}{r.customer_type ? ` · ${r.customer_type}` : ""}</span>, csv: (r) => r.customer_id },
+                   { key: "person_id", label: "Person", align: "left", render: (r) => <span className="font-mono text-[11px] text-muted">{personId(r) || "—"}{r.customer_type ? ` · ${r.customer_type}` : ""}</span>, csv: (r) => personId(r) },
                   { key: "style_name", label: "Style", align: "left", render: (r) => <span className="font-medium break-words max-w-[220px] inline-block">{r.style_name || "—"}</span> },
                   { key: "color", label: "Color", align: "left", render: (r) => r.color || "—" },
                   { key: "size", label: "Size", align: "left", render: (r) => r.size || "—" },

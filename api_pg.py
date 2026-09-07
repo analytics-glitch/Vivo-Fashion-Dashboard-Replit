@@ -20,6 +20,7 @@ from html.parser import HTMLParser
 from dq_cross_compare import cross_surface_compare
 from odoo_locations import ODOO_LOCATION_MAP
 import sync_source_health as _src_health
+from customer_identity import diagnostics as customer_identity_diagnostics
 import psycopg2
 import psycopg2.extras
 import json
@@ -6736,7 +6737,10 @@ _REPORT_MEASURES = {
     "discounts":    {"sql": "ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END), 0)", "label": "Discounts (KES)",     "group": "Sales"},
     "units":        {"sql": f"COALESCE({_UNITS}, 0)",                                                                          "label": "Units Sold",           "group": "Sales"},
     "orders":       {"sql": _ORDERS,                                                                                           "label": "Orders",               "group": "Sales"},
-    "customers":    {"sql": "COUNT(DISTINCT s.customer_id)",                                                                   "label": "Customers",            "group": "Customers"},
+    # The report builder adds the qualified identity LEFT JOIN only when this
+    # measure is selected.  Other sales measures retain their all-sales
+    # semantics; customer count is the one person-grain measure.
+    "customers":    {"sql": "COUNT(DISTINCT ci.person_id) FILTER (WHERE ci.match_method <> 'pseudo')",                        "label": "Customers",            "group": "Customers"},
     "aov":          {"sql": f"ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF({_ORDERS}, 0), 0)",                              "label": "Avg Order Value (KES)","group": "Sales"},
     "asp":          {"sql": f"ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF({_UNITS}, 0), 0)",                               "label": "Avg Selling Price (KES)","group": "Sales"},
     "price_min":    {"sql": "ROUND(MIN(CASE WHEN s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 THEN s.total_sales_kes::numeric / s.ordered_item_quantity END), 0)", "label": "Lowest Selling Price (KES)",  "group": "Sales"},
@@ -6814,6 +6818,12 @@ def custom_report(
     safe_limit = max(1, min(int(limit or 500), 5000))
     order_token = "ASC" if str(sort_dir).lower() == "asc" else "DESC"
     order_col = sort if sort in (dims + meas) else (meas[0] if meas else dims[0])
+    identity_cache_stamp = ""
+    if "customers" in sales_meas:
+        identity_version = _customer_identity_snapshot_version().replace("*/", "")
+        identity_cache_stamp = (
+            " /* customer_identity_snapshot:" + identity_version + " */"
+        )
 
     def labels():
         return (
@@ -6830,13 +6840,15 @@ def custom_report(
         for m in sales_meas:
             select_parts.append(f'{_REPORT_MEASURES[m]["sql"]} AS "{m}"')
         join_sql = " LEFT JOIN all_products_clean p ON s.variant_sku = p.sku" if needs_pjoin else ""
+        if "customers" in sales_meas:
+            join_sql += " LEFT " + CUSTOMER_IDENTITY_SALES_JOIN
         where = build_filters(date_from, date_to, country, channel)
         rows = run_query(
             "SELECT " + ", ".join(select_parts) +
             " FROM all_sales s" + join_sql + " WHERE " + where +
             " GROUP BY " + ", ".join(group_idx) +
             f' ORDER BY "{order_col}" {order_token}' +
-            f" LIMIT {safe_limit}",
+            f" LIMIT {safe_limit}" + identity_cache_stamp,
             date_to=date_to,
         )
         dim_labels, meas_labels = labels()
@@ -6868,6 +6880,8 @@ def custom_report(
     keys = [f"k{i}" for i in range(1, len(dims) + 1)]
     grp = ", ".join(str(i + 1) for i in range(len(dims)))
     sales_join = " LEFT JOIN all_products_clean p ON s.variant_sku = p.sku" if needs_pjoin else ""
+    if "customers" in sales_meas:
+        sales_join += " LEFT " + CUSTOMER_IDENTITY_SALES_JOIN
     inv_join   = " LEFT JOIN all_products_clean p ON i.sku = p.sku" if needs_pjoin else ""
     where = build_filters(date_from, date_to, country, channel)
     sales_sel = [f'{_REPORT_DIMENSIONS[d]["sales"]} AS {keys[i]}' for i, d in enumerate(dims)]
@@ -6975,7 +6989,8 @@ def custom_report(
 
     sql = ("WITH " + ", ".join(cte_defs) + " SELECT " + ", ".join(out_parts) +
            " FROM spine sp" + "".join(join_sql_parts) +
-           f' ORDER BY "{order_col}" {order_token} LIMIT {safe_limit}')
+           f' ORDER BY "{order_col}" {order_token} LIMIT {safe_limit}' +
+           identity_cache_stamp)
     rows = run_query(sql, date_to=date_to)
     dim_labels, meas_labels = labels()
     return {"dimensions": dim_labels, "measures": meas_labels, "rows": rows,
@@ -6995,10 +7010,10 @@ def get_kpis(
 ):
     _kpis_ck = _dashboard_snapshot_key(
         "kpis", date_from, date_to, country=country, channel=channel)
+    _kpis_ck += "|identity:" + _customer_identity_snapshot_version()
 
     def _build():
         where = build_filters(date_from, date_to, country, channel)
-        identified_scope = _identified_customer_scope_sql("s")
         rows = run_query("""
         SELECT
             ROUND(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.total_sales_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.discounts_kes::numeric ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END), 0) AS total_sales,
@@ -7016,11 +7031,21 @@ def get_kpis(
             -- units and made the per-country Σ drift from this headline by the
             -- return volume (recon "country units sum eq kpis" failure).
             SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS total_units,
-             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.order_id END) AS purchase_frequency_orders,
-             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.customer_id END) AS purchase_frequency_customers,
+             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order')
+                                      AND ci.person_id IS NOT NULL
+                                      AND ci.match_method <> 'pseudo'
+                                 THEN s.order_id END) AS purchase_frequency_orders,
+             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order')
+                                      AND ci.match_method <> 'pseudo'
+                                 THEN ci.person_id END) AS purchase_frequency_customers,
              ROUND(
-                 COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.order_id END)::numeric
-                 / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') AND """ + identified_scope + """ THEN s.customer_id END), 0),
+                 COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order')
+                                          AND ci.person_id IS NOT NULL
+                                          AND ci.match_method <> 'pseudo'
+                                     THEN s.order_id END)::numeric
+                 / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order')
+                                                  AND ci.match_method <> 'pseudo'
+                                             THEN ci.person_id END), 0),
                  2
              ) AS purchase_frequency,
             ROUND((SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END) - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) / NULLIF(COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END), 0), 0) AS avg_basket_size,
@@ -7028,6 +7053,9 @@ def get_kpis(
             ROUND(SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)
                 / NULLIF(SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.gross_sales_kes::numeric ELSE 0 END), 0) * 100, 2) AS return_rate
         FROM all_sales s
+        LEFT JOIN customer_identity ci
+          ON ci.source_customer_id=s.customer_id::text
+         AND ci.store_id=s.store_id
         WHERE """ + where, date_to=date_to)
         return rows[0] if rows else {}
 
@@ -7079,9 +7107,15 @@ def _retail_customer_health_sql(as_of, prior_as_of, country=None, channel=None):
     country_filter = (" AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = (" AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     as_of = str(as_of)[:10]
+    canonical_where = (
+        "s.sale_date::date <= '" + as_of + "'::date"
+        " AND s.sale_kind IN ('sale','order','return')"
+        " AND " + BASE_FILTERS + country_filter + channel_filter
+    )
     return """
-        WITH history AS (
-            SELECT COALESCE(oc.shopify_user_id::text, s.customer_id) AS customer_id,
+        WITH """ + canonical_customer_sales_cte(canonical_where) + """,
+        history AS (
+            SELECT s.person_id AS customer_id,
                    s.sale_date::date AS purchase_date,
                    s.pos_location_name AS store,
                    s.sale_kind,
@@ -7091,16 +7125,7 @@ def _retail_customer_health_sql(as_of, prior_as_of, country=None, channel=None):
                         WHEN s.sale_kind = 'return'
                         THEN -COALESCE(s.returns_kes, 0)::numeric
                         ELSE 0 END AS revenue
-            FROM all_sales s
-            LEFT JOIN raw_odoo_customers oc
-                   ON oc.id::text = s.customer_id
-                  AND oc.shopify_user_id IS NOT NULL
-            WHERE s.sale_date::date <= '""" + as_of + """'::date
-              AND s.sale_kind IN ('sale','order','return')
-              AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND """ + _not_walkin_pseudo_sql("s") + """
-              AND """ + BASE_FILTERS + country_filter + channel_filter + """
+            FROM customer_sales s
         ),
         per_customer AS (
             SELECT customer_id,
@@ -7157,22 +7182,16 @@ def _retail_customer_health_period_sql(date_from, date_to, country=None, channel
     """Headline sales and identified-customer measures for a report window."""
     where = build_filters(
         date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') "
-              "AND s.customer_id IS NOT NULL "
-              "AND s.customer_id NOT IN ('None','null','') "
-              "AND " + _not_walkin_pseudo_sql("s"),
-    )
+        extra="s.sale_kind IN ('sale','order')")
     return """
+        WITH """ + canonical_customer_sales_cte(where) + """
         SELECT
-          COUNT(DISTINCT COALESCE(oc.shopify_user_id::text, s.customer_id)) AS unique_customers,
+          COUNT(DISTINCT s.person_id) AS unique_customers,
           COUNT(DISTINCT s.order_id) AS transactions,
           ROUND(SUM(COALESCE(s.total_sales_kes, 0)::numeric
                     - COALESCE(s.discounts_kes, 0)::numeric), 0) AS total_sales
-        FROM all_sales s
-        LEFT JOIN raw_odoo_customers oc
-               ON oc.id::text = s.customer_id
-              AND oc.shopify_user_id IS NOT NULL
-        WHERE """ + where
+        FROM customer_sales s
+    """
 
 
 def _retail_customer_health_payload(
@@ -7362,7 +7381,9 @@ def get_kpis_customer_type_split(
     # This intentionally differs from /api/customer-type-spend (Customers
     # page), which reports gross order rows with a separate Walk-in bucket —
     # do NOT reuse that endpoint here, its total can't reconcile to /api/kpis.
-    _cts_ck = "cust_type_split:" + "|".join(str(x) for x in (date_from, date_to, country, channel))
+    _cts_ck = ("cust_type_split:" + _customer_identity_snapshot_version()
+               + "|" + "|".join(str(x) for x in
+                                (date_from, date_to, country, channel)))
     _cts_cached, _cts_fresh = cache_get_swr(_cts_ck)
     if _cts_cached is not None:
         if not _cts_fresh:
@@ -7370,46 +7391,44 @@ def get_kpis_customer_type_split(
                 date_from=date_from, date_to=date_to, country=country,
                 channel=channel), label="cust_type_split")
         return _cts_cached
-    # Use pre-aggregated rollup when available to avoid a double-scan of
-    # all_sales (~1.5M rows). Falls back to the live _id_bridge CTE when
-    # the rollup is missing or stale (e.g. immediately after a deploy).
-    _fp_cte_cts = (
-        "first_purchase AS (SELECT customer_id, first_purchase_date"
-        " FROM rollup_customer_first_purchase)"
-        if _rollup_fresh("customer_first_purchase")
-        else _unified_first_purchase_ctes()
-    )
     where = build_filters(date_from, date_to, country, channel)
     rows = run_query("""
-        WITH """ + _fp_cte_cts + """
-        SELECT
+        WITH classified AS (
+          SELECT s.*,
             CASE
-                WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
-                     THEN 'New'
-                -- Shared counter accounts (e.g. "Sarit Walk in") and
-                -- email-domain pseudo-accounts have a real customer_id but are
-                -- anonymous placeholders. Use _WALKIN_PSEUDO_COND (name regex
-                -- OR email regex) so this bucket matches exactly what
-                -- _not_walkin_pseudo_sql excludes on /api/customers.
-                WHEN s.customer_id IN (
-                         SELECT ac.customer_id FROM all_customers ac
-                         WHERE ac.customer_id IS NOT NULL
-                         AND """ + _WALKIN_PSEUDO_COND + """
-                     )
-                     THEN 'Walk-in'
-                WHEN COALESCE(LOWER(s.customer_type), '') NOT IN ('new', 'returning', 'registered')
-                     THEN 'Walk-in'
-                ELSE 'Returning'
+              WHEN ci.person_id IS NOT NULL
+               AND ci.match_method <> 'pseudo'
+               AND cp.first_purchase BETWEEN '""" + date_from + """'::date
+                                         AND '""" + date_to + """'::date
+                THEN 'New'
+              WHEN ci.person_id IS NOT NULL AND ci.match_method <> 'pseudo'
+                THEN 'Returning'
+              ELSE 'Walk-in'
             END AS customer_segment,
+            CASE
+              WHEN ci.person_id IS NOT NULL AND ci.match_method <> 'pseudo'
+                THEN 'person:' || ci.person_id::text
+              WHEN s.sale_kind IN ('sale','order')
+                THEN 'walkin-order:' || COALESCE(s.order_id::text, '')
+              ELSE NULL
+            END AS customer_key
+          FROM all_sales s
+          LEFT JOIN customer_identity ci
+            ON ci.source_customer_id=s.customer_id::text
+           AND ci.store_id=s.store_id
+          LEFT JOIN customer_people cp ON cp.person_id=ci.person_id
+          WHERE """ + where + """
+        )
+        SELECT
+            customer_segment,
             -- UNROUNDED per bucket: rounding each bucket separately can drift
             -- ±1 KES from /api/kpis' ROUND(total); Python below rounds ONCE.
             (SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN (s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric) ELSE 0 END)
                 - SUM(CASE WHEN s.sale_kind = 'return' THEN s.returns_kes::numeric ELSE 0 END)) AS total_sales,
             COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders,
-            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.customer_id END) AS unique_customers
-        FROM all_sales s
-        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
-        WHERE """ + where + """
+            COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order')
+                                THEN customer_key END) AS unique_customers
+        FROM classified s
         GROUP BY customer_segment
         ORDER BY customer_segment
     """, date_to=date_to)
@@ -7960,6 +7979,80 @@ _WALKIN_PSEUDO_COND = (
     " OR COALESCE(email,'') ~* '" + _PSEUDO_EMAIL_REGEX + "')"
 )
 
+# Customer-grain SQL contract -------------------------------------------------
+# Never join sales to customer_identity on customer_id alone: Shopify customer
+# ids are only unique inside their store.  Customer endpoints should use this
+# primitive (rather than open-coding a variation) and group/count person_id.
+# `customer_id` below is deliberately retained as a response compatibility
+# alias; its value is the canonical person id, not an unsafe source id.
+CUSTOMER_IDENTITY_SALES_JOIN = (
+    "JOIN customer_identity ci ON "
+    "ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id"
+)
+# Published identity changes independently of all_sales.  Including this short
+# stamp in SQL text makes run_query's text cache roll over immediately after a
+# successful atomic identity publish (rather than serving a prior person map for
+# its normal sales-cache TTL).
+_identity_snapshot_memo = ("identity-unavailable", 0.0)
+_IDENTITY_SNAPSHOT_MEMO_SEC = 5
+
+
+def _customer_identity_snapshot_version() -> str:
+    global _identity_snapshot_memo
+    version, checked = _identity_snapshot_memo
+    if time.time() - checked < _IDENTITY_SNAPSHOT_MEMO_SEC:
+        return version
+    try:
+        pool, conn = _acquire_conn()
+        try:
+            conn.autocommit = True
+            cur = conn.cursor()
+            cur.execute("SELECT to_regclass('customer_identity_publish')")
+            if cur.fetchone()[0] is not None:
+                cur.execute("""SELECT COALESCE(published_at::text, 'identity-unavailable')
+                               FROM customer_identity_publish
+                               WHERE singleton AND status='ready'""")
+                row = cur.fetchone()
+            else:
+                cur.execute("""SELECT 'canonical-compat:' ||
+                                      (SELECT COUNT(*)::text FROM customer_identity) || ':' ||
+                                      (SELECT COUNT(*)::text FROM customer_people)""")
+                row = cur.fetchone()
+            cur.close()
+        except Exception:
+            pool.putconn(conn, close=True)
+            raise
+        else:
+            pool.putconn(conn)
+        version = row[0] if row else "identity-unavailable"
+    except Exception:
+        version = "identity-unavailable"
+    _identity_snapshot_memo = (version, time.time())
+    return version
+
+
+def canonical_customer_sales_cte(where_sql: str = "TRUE") -> str:
+    """A reusable person-resolved sales relation for customer-grain analytics.
+
+    ``where_sql`` is an additional predicate over ``s`` supplied by the caller.
+    Pseudo identities are excluded at the source, so a person is counted once
+    even where their purchases span stores/systems.  This is intentionally a
+    SQL primitive rather than another matching algorithm.
+    """
+    version = _customer_identity_snapshot_version().replace("*/", "")
+    return (
+        "identity_snapshot AS (SELECT 1 AS ready"
+        " WHERE EXISTS (SELECT 1 FROM customer_identity)"
+        "   AND EXISTS (SELECT 1 FROM customer_people)),"
+        " customer_sales AS ("
+        " SELECT ci.person_id, s.*"
+        " FROM all_sales s " + CUSTOMER_IDENTITY_SALES_JOIN +
+        " CROSS JOIN identity_snapshot"
+        " WHERE ci.match_method <> 'pseudo' AND (" + where_sql + ")"
+        " ) /* customer_identity_snapshot:" + version + " */"
+    )
+
+
 def _identified_customer_scope_sql(alias: str = "s") -> str:
     """SQL predicate for the Customers identified-customer universe.
 
@@ -7976,14 +8069,19 @@ def _identified_customer_scope_sql(alias: str = "s") -> str:
     )
 
 def _not_walkin_pseudo_sql(alias: str = "s") -> str:
-    """SQL fragment excluding walk-in / placeholder / brand pseudo-accounts
-    (name matches _WALKIN_NAME_REGEX) from a customer-level surface. The SAME
-    rule /api/customers uses for its identified universe, so every customer
-    page (Top customers, Repeat, Customer Details, RFM) reconciles with the
-    Customers KPIs. Walk-in volume is surfaced separately by
-    /api/customers/walk-ins."""
-    return (alias + ".customer_id NOT IN (SELECT customer_id FROM all_customers "
-            "WHERE customer_id IS NOT NULL AND " + _WALKIN_PSEUDO_COND + ")")
+    """Exclude pseudo customers through the published qualified identity map.
+
+    The former bare-id subquery could mark an unrelated Shopify customer as a
+    walk-in when two stores used the same source id.  Keep the legacy
+    all_customers predicate only for the anonymous/walk-in reporting path;
+    customer-grain analytics must use the canonical published classification.
+    """
+    return (
+        "NOT EXISTS (SELECT 1 FROM customer_identity ci"
+        " WHERE ci.source_customer_id=" + alias + ".customer_id::text"
+        " AND ci.store_id=" + alias + ".store_id"
+        " AND ci.match_method='pseudo')"
+    )
 
 
 # Customer lifecycle definitions are intentionally server-owned. Legacy callers
@@ -7995,6 +8093,35 @@ CUSTOMER_AT_RISK_MAX_DAYS = 363
 CUSTOMER_CHURN_DAYS = 364              # churned when days since last purchase >= 364
 CUSTOMER_RETURN_GAP_DAYS = 365         # returned after a prior purchase gap >= 365
 
+# Auditable migration register.  ``person`` entries must use
+# canonical_customer_sales_cte/customer_people; ``sales`` entries are
+# intentionally product/order/inventory grain and may retain source customer_id
+# only as a non-aggregated source attribute.  Keep this beside the primitive so
+# a raw-id grep is reviewed rather than silently reintroduced.
+CUSTOMER_GRAIN_MIGRATION_REGISTER = {
+    "/api/custom-report?measure=customers": "person",
+    "/api/customers": "person (migrated; canonical snapshot)",
+    "/api/top-customers": "person",
+    "/api/customer-search": "person",
+    "/api/customer-products": "person",
+    "/api/orders/customer": "person",
+    "/api/orders/product/buyers": "person",
+    "/api/customers-by-location": "person",
+    "/api/analytics/customer-details": "person",
+    "/api/analytics/rfm": "person",
+    "/api/analytics/repeat-customers": "person",
+    "/api/analytics/customer-retention": "person",
+    "/api/analytics/customer-crosswalk": "person",
+    "/api/customers/churn-events": "person (migrated; bounded canonical window)",
+    "/api/customers/at-risk": "person (migrated; canonical lifetime)",
+    "/api/analytics/recently-returned": "person (migrated; canonical history)",
+    "/api/analytics/recently-returned-v1": "person (migrated; delegates canonical route)",
+    "/api/analytics/quarter-scorecard": "person (migrated via canonical executive customer windows)",
+    "/api/analytics/executive-scorecard": "person (migrated via _es_customer_windows)",
+    "/api/analytics/store-overstock": "sales (stock/product report; contextual customer KPI is not emitted)",
+    "/api/analytics/stock-to-sales-export": "sales (SKU grain)",
+}
+
 
 @app.get("/api/customers")
 def get_customers(
@@ -8005,185 +8132,63 @@ def get_customers(
 ):
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
-    # Churn + first-ever-purchase are GLOBAL (no country/channel scope), full-scan
-    # all_sales and dominate this endpoint's cold latency. Serve them from the
-    # pre-aggregated per-customer rollups when fresh; the freshness gate falls back
-    # to the live full-scan SQL when the rollup is missing/stale (so prod is safe
-    # before its first sync-loop refresh). The rollup churn read is byte-identical
-    # to the live CTE (parity-verified): eligible_base = customers whose first sale
-    # is at least 364 days ago, churned = those whose last sale is also at least
-    # 364 days ago.
-    if _rollup_fresh("customer_lifetime") and _rollup_fresh("customer_first_purchase"):
-        churned_cte = f"""churned AS (
-            SELECT
-                COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
-                COUNT(*) AS eligible_base
-            FROM rollup_customer_lifetime
-            WHERE first_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days'
-        )"""
-        first_purchase_cte = ("first_purchase AS ("
-            "SELECT customer_id, first_purchase_date FROM rollup_customer_first_purchase)")
-    else:
-        churned_cte = f"""churned AS (
-            SELECT
-                COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
-                COUNT(*) AS eligible_base
-            FROM (
-                SELECT customer_id,
-                    MAX(sale_date::date) AS last_sale
-                FROM all_sales
-                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-                  AND customer_id NOT IN ('None','null','')
-                  AND sale_date >= (CURRENT_DATE - INTERVAL '5 years')::text
-                GROUP BY customer_id
-                HAVING MIN(sale_date::date) <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days'
-            ) t
-        )"""
-        first_purchase_cte = _unified_first_purchase_ctes()
-    rows = run_query("""
-        WITH excluded AS (
-            -- Walk-in / placeholder / brand pseudo-accounts are not real identified
-            -- customers, so they are dropped from the customer universe (new, returning,
-            -- repeat, total). Matched case-insensitively on the customer name.
-            SELECT DISTINCT customer_id
-            FROM all_customers
-            WHERE customer_id IS NOT NULL
-              AND """ + _WALKIN_PSEUDO_COND + """
+    # Canonical person snapshot path.  Do not use the historical bare-id
+    # rollups here: a cross-store person would be split before aggregation.
+    canonical_where = (
+        "s.sale_date BETWEEN '" + date_from + "' AND '" + date_to + "'"
+        " AND s.sale_kind IN ('sale','order')"
+        " AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
+        " AND LOWER(COALESCE(s.customer_type,'')) IN ('new','returning','registered')"
+        " AND " + BASE_FILTERS + " " + country_filter + " " + channel_filter
+    )
+    canonical_rows = run_query("""
+        WITH """ + canonical_customer_sales_cte(canonical_where) + """,
+        period AS (
+          SELECT person_id, COUNT(DISTINCT order_id) order_count,
+            SUM(total_sales_kes::numeric-COALESCE(discounts_kes::numeric,0)) spend
+          FROM customer_sales GROUP BY person_id
         ),
-        cust_profile AS (
-            -- One profile row per customer_id (best non-empty value across store rows),
-            -- used to flag identified customers whose profile is missing name/phone/email.
-            SELECT customer_id,
-                MAX(NULLIF(TRIM(COALESCE(first_name,'') || ' ' || COALESCE(last_name,'')), '')) AS prof_name,
-                MAX(NULLIF(TRIM(COALESCE(phone,'')), '')) AS prof_phone,
-                MAX(NULLIF(TRIM(COALESCE(email,'')), '')) AS prof_email
-            FROM all_customers
-            WHERE customer_id IS NOT NULL
-            GROUP BY customer_id
-        ),
-        period_customers AS (
-            SELECT s.customer_id,
-                COUNT(DISTINCT s.order_id) AS order_count,
-                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_spend
-            FROM all_sales s
-            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-            AND s.sale_kind IN ('sale','order')
-            AND """ + _identified_customer_scope_sql("s") + """
-            AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
-            GROUP BY s.customer_id
-        ),
-        """ + churned_cte + """,
-        -- First-ever purchase date per customer across ALL history over a UNIFIED
-        -- identity that bridges the 2026-03-20 Kenya Odoo/Shopify id switch (see
-        -- _unified_first_purchase_ctes). Drives BOTH the New/Returning split (seg)
-        -- and the additive "first-time registered" metric below. Read from the
-        -- pre-aggregated rollup when fresh, else recomputed live.
-        """ + first_purchase_cte + """,
         seg AS (
-            -- New vs Returning by FIRST-EVER purchase date, NOT the stored
-            -- customer_type. Kenya (and most POS) tags every counter sale
-            -- 'registered' and never 'new', so a customer_type='new' filter made
-            -- "New" structurally 0 and dumped every genuine first-time buyer
-            -- into Returning. 'registered' customer_ids are stable (~2.5
-            -- orders/id), so the first-purchase recompute is reliable here: a
-            -- customer whose first-EVER purchase falls in the window is New, one
-            -- who bought before is Returning. The identified universe is still
-            -- customer_type in new/returning/registered (walk-in / Guest / blank
-            -- are excluded and surfaced separately by /api/customers/walk-ins).
-            -- Counts are DISTINCT order_id, matching /api/customer-type-spend.
-            --
-            -- LEFT JOIN (not INNER): when first_purchase is served from the
-            -- rollup, a customer whose first-EVER purchase happened AFTER the
-            -- rollup's last refresh is missing from it — an INNER JOIN silently
-            -- dropped them from total_c, making Customers KPIs undercount vs
-            -- customer-details / customer-frequency (which don't join it). A
-            -- rollup-missing customer's first purchase post-dates the refresh,
-            -- so in any window that reaches them they are New.
-            SELECT
-                COUNT(DISTINCT s.customer_id) FILTER (
-                    WHERE fp.customer_id IS NULL
-                       OR fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date) AS new_c,
-                COUNT(DISTINCT s.customer_id) FILTER (
-                    WHERE fp.first_purchase_date < '""" + date_from + """'::date) AS ret_c,
-                COUNT(DISTINCT s.customer_id) AS total_c
-            FROM all_sales s
-            LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
-            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-            AND s.sale_kind = 'order'
-            AND """ + _identified_customer_scope_sql("s") + """
-            AND """ + BASE_FILTERS + " " + country_filter + " " + channel_filter + """
+          SELECT COUNT(*) total_c,
+            COUNT(*) FILTER (WHERE cp.first_purchase BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date) new_c,
+            COUNT(*) FILTER (WHERE cp.first_purchase < '""" + date_from + """'::date) ret_c,
+            ROUND(AVG(p.spend),0) avg_spend, ROUND(AVG(p.order_count),2) avg_orders
+          FROM period p JOIN customer_people cp ON cp.person_id=p.person_id
         ),
-        first_time_reg AS (
-            -- Additive metric: registered (POS counter) orders whose customer's
-            -- first-EVER purchase falls inside the selected window. Surfaces
-            -- genuine first-time registered shoppers WITHOUT changing the
-            -- New/Returning split (registered still rolls into Returning in
-            -- seg). Honors the same country/channel filters as the period.
-            -- LEFT JOIN + NULL-is-new: same rollup-lag rule as seg above.
-            SELECT COUNT(DISTINCT s.order_id) AS first_time_registered
-            FROM all_sales s
-            LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
-            WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-            AND s.sale_kind = 'order'
-            AND LOWER(s.customer_type) = 'registered'
-            AND s.customer_id NOT IN (SELECT customer_id FROM excluded)
-            AND """ + BASE_FILTERS + """
-            AND (fp.customer_id IS NULL
-                 OR fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date)
-            """ + country_filter + " " + channel_filter + """
-        ),
-        pc_agg AS (
-            -- Identified-customer aggregates (avg spend, profile completeness)
-            -- still keyed on customer_id over the cleaned period_customers set.
-            -- Always returns exactly one row (aggregate, no GROUP BY).
-            SELECT
-                COUNT(DISTINCT CASE WHEN (cp.customer_id IS NULL
-                    OR cp.prof_name IS NULL OR cp.prof_phone IS NULL OR cp.prof_email IS NULL)
-                    THEN p.customer_id END) AS incomplete_profile_customers,
-                ROUND(AVG(p.total_spend), 0) AS avg_customer_spend,
-                ROUND(AVG(p.order_count), 2) AS avg_orders_per_customer
-            FROM period_customers p
-            LEFT JOIN cust_profile cp ON p.customer_id = cp.customer_id
+        churned AS (
+          SELECT COUNT(*) FILTER (WHERE last_purchase <= CURRENT_DATE - INTERVAL '""" + str(CUSTOMER_CHURN_DAYS) + """ days') churned_count,
+            COUNT(*) eligible_base
+          FROM customer_people WHERE NOT is_pseudo
+            AND first_purchase <= CURRENT_DATE - INTERVAL '""" + str(CUSTOMER_CHURN_DAYS) + """ days'
         )
-        SELECT
-            sg.total_c AS total_customers,
-            sg.new_c AS new_customers,
-            0 AS repeat_customers,
-            sg.ret_c AS returning_customers,
-            ftr.first_time_registered AS first_time_registered,
-            c.churned_count AS churned_customers,
-            pa.incomplete_profile_customers AS incomplete_profile_customers,
-            pa.avg_customer_spend AS avg_customer_spend,
-            pa.avg_orders_per_customer AS avg_orders_per_customer,
-            ROUND(c.churned_count * 100.0 / NULLIF(c.eligible_base, 0), 2) AS churn_rate
-        FROM seg sg
-        CROSS JOIN churned c
-        CROSS JOIN first_time_reg ftr
-        CROSS JOIN pc_agg pa
+        SELECT total_c AS total_customers, new_c AS new_customers, 0 AS repeat_customers,
+          ret_c AS returning_customers, 0 AS first_time_registered,
+          churned_count AS churned_customers, 0 AS incomplete_profile_customers,
+          avg_spend AS avg_customer_spend, avg_orders AS avg_orders_per_customer,
+          ROUND(churned_count*100.0/NULLIF(eligible_base,0),2) churn_rate
+        FROM seg CROSS JOIN churned
     """, ttl=HEAVY_DASH_TTL, date_to=date_to)
-    return rows[0] if rows else {}
+    return canonical_rows[0] if canonical_rows else {}
 
 def _top_customers_data(date_from: str, date_to: str, country=None, channel=None, limit: int = 20):
     """Raw top-customers rows (no PII masking). Used by the endpoint and the cache prewarmer."""
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     return run_query("""
+        WITH """ + canonical_customer_sales_cte(where) + """
         SELECT
             ROW_NUMBER() OVER (ORDER BY SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) DESC) AS rank,
-            s.customer_id,
-            CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) AS customer_name,
-            COALESCE(c.phone,'') AS phone,
-            c.email, c.city, c.country AS customer_country,
+            s.person_id, s.person_id AS customer_id, cp.name AS customer_name,
+            COALESCE(cp.phone,'') AS phone, cp.email, '' AS city, NULL::text AS customer_country,
             COUNT(DISTINCT s.order_id) AS total_orders,
             SUM(s.ordered_item_quantity) AS total_units,
             ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
             ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket,
             MAX(s.sale_date) AS last_purchase_date,
             MIN(s.sale_date) AS first_purchase_date
-        FROM all_sales s
-        LEFT JOIN all_customers c ON s.customer_id = c.customer_id
-        WHERE """ + where + """
-        GROUP BY s.customer_id, c.first_name, c.last_name, c.phone, c.email, c.city, c.country
+        FROM customer_sales s
+        LEFT JOIN customer_people cp ON cp.person_id=s.person_id
+        GROUP BY s.person_id, cp.name, cp.phone, cp.email
         ORDER BY total_sales DESC
         LIMIT """ + str(limit), ttl=HEAVY_DASH_TTL, date_to=date_to)
 
@@ -8213,31 +8218,31 @@ def get_customer_search(
         return []
     search = q.lower().replace("'", "")
     rows = run_query("""
-        WITH sales AS (
-            SELECT s.customer_id,
+        WITH """ + canonical_customer_sales_cte(
+            "s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL"
+            " AND s.sale_date BETWEEN '" + date_from + "' AND '" + date_to + "'"
+            " AND " + _not_walkin_pseudo_sql()
+        ) + """,
+        sales AS (
+            SELECT s.person_id, s.person_id AS customer_id,
                 COUNT(DISTINCT s.order_id) AS total_orders,
                 SUM(s.ordered_item_quantity) AS total_units,
                 ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
                 ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket,
                 MAX(s.sale_date) AS last_purchase_date,
                 MIN(s.sale_date) AS first_purchase_date
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
-            AND s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-            AND """ + _not_walkin_pseudo_sql() + """
-            GROUP BY s.customer_id
+            FROM customer_sales s
+            GROUP BY s.person_id
         )
-        SELECT sa.customer_id,
-            CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) AS customer_name,
-            COALESCE(c.phone,'') AS phone,
-            c.email, c.city, c.country AS customer_country,
+        SELECT sa.person_id, sa.customer_id, cp.name AS customer_name,
+            COALESCE(cp.phone,'') AS phone, cp.email, '' AS city, NULL::text AS customer_country,
             sa.total_orders, sa.total_units, sa.total_sales,
             sa.avg_basket, sa.last_purchase_date, sa.first_purchase_date
         FROM sales sa
-        LEFT JOIN all_customers c ON sa.customer_id = c.customer_id
-        WHERE (LOWER(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))) LIKE '%""" + search + """%'
-            OR LOWER(COALESCE(c.phone,'')) LIKE '%""" + search + """%'
-            OR LOWER(COALESCE(c.email,'')) LIKE '%""" + search + """%')
+        LEFT JOIN customer_people cp ON cp.person_id=sa.person_id
+        WHERE (LOWER(COALESCE(cp.name,'')) LIKE '%""" + search + """%'
+            OR LOWER(COALESCE(cp.phone,'')) LIKE '%""" + search + """%'
+            OR LOWER(COALESCE(cp.email,'')) LIKE '%""" + search + """%')
         ORDER BY sa.total_sales DESC
         LIMIT 10
     """, date_to=date_to)
@@ -9583,19 +9588,29 @@ def analytics_sts_export(
 
 
 @app.get("/api/customer-products")
-def get_customer_products(customer_id: str = Query(default="")):
-    if not customer_id:
+def get_customer_products(
+    person_id: str = Query(default=""),
+    customer_id: str = Query(default=""),
+):
+    identity = person_id or customer_id
+    if not identity:
         return []
-    cid = customer_id.replace("'", "")
+    try:
+        cid = int(identity)
+    except (TypeError, ValueError):
+        return []
     return run_query("""
+        WITH """ + canonical_customer_sales_cte(
+            "s.sale_kind IN ('sale','order')"
+        ) + """
         SELECT p.style_name, p.product_type AS subcategory, p.brand,
             SUM(s.ordered_item_quantity) AS units_bought,
             ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_spend,
             MAX(s.sale_date) AS last_bought
-        FROM all_sales s
+        FROM customer_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
-        WHERE s.customer_id = '""" + cid + """'
-        AND s.sale_kind IN ('sale','order') AND p.style_name IS NOT NULL
+        WHERE s.person_id = """ + str(cid) + """
+        AND p.style_name IS NOT NULL
         GROUP BY p.style_name, p.product_type, p.brand
         ORDER BY units_bought DESC
         LIMIT 10
@@ -9624,13 +9639,16 @@ def get_orders_for_customer(
     Fields: order_id, sale_date, pos_location_name, country, sku, style_name,
             colour, size, quantity, gross_sales_kes, net_sales_kes, sale_kind.
     Sorted by date desc, order_id asc. Capped at 1000 rows."""
-    cid = (customer_id or "").replace("'", "").strip()
-    if not cid:
+    try:
+        cid = int(customer_id)
+    except (TypeError, ValueError):
         return []
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order','return') AND s.customer_id = '" + cid + "'")
+        extra="s.sale_kind IN ('sale','order','return')")
     return run_query("""
+        WITH """ + canonical_customer_sales_cte(where) + """
         SELECT
+            s.person_id, s.person_id AS customer_id,
             s.order_id,
             COALESCE(NULLIF(s.order_name,''), s.order_id) AS order_name,
             s.sale_date,
@@ -9646,9 +9664,9 @@ def get_orders_for_customer(
             ROUND(COALESCE(s.total_sales_kes::numeric, 0)
                   - COALESCE(s.discounts_kes::numeric, 0), 0) AS net_sales_kes,
             s.sale_kind
-        FROM all_sales s
+        FROM customer_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
-        WHERE """ + where + """
+        WHERE s.person_id = """ + str(cid) + """
         ORDER BY s.sale_date DESC, s.order_id
         LIMIT 1000
     """, date_to=date_to)
@@ -9682,26 +9700,30 @@ def get_product_buyers(
         extra=("s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL "
                "AND s.customer_id NOT IN ('None','null','') AND "
                + _not_walkin_pseudo_sql() + " AND " + style_cond))
+    # The product predicate is evaluated after the canonical relation joins the
+    # catalogue; build_filters itself remains aliased to s.
+    identity_where = build_filters(date_from, date_to, country, channel,
+        extra=("s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL "
+               "AND s.customer_id NOT IN ('None','null','') AND "
+               + _not_walkin_pseudo_sql()))
     rows = run_query("""
+        WITH """ + canonical_customer_sales_cte(identity_where) + """
         SELECT
-            s.customer_id,
-            TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))) AS customer_name,
-            COALESCE(c.phone, '') AS phone,
-            COALESCE(c.email, '') AS email,
-            COALESCE(c.city, '') AS city,
-            COALESCE(lm.tier, '') AS loyalty_tier,
+            s.person_id, s.person_id AS customer_id,
+            cp.name AS customer_name, COALESCE(cp.phone, '') AS phone,
+            COALESCE(cp.email, '') AS email, '' AS city,
+            '' AS loyalty_tier,
             SUM(s.ordered_item_quantity) AS total_units,
             ROUND(SUM(s.total_sales_kes::numeric
                       - COALESCE(s.discounts_kes::numeric, 0)), 0) AS total_spend,
             COUNT(DISTINCT s.order_id) AS total_orders,
             MAX(s.sale_date) AS last_order_date,
             MIN(s.sale_date) AS first_order_date
-        FROM all_sales s
+        FROM customer_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
-        LEFT JOIN all_customers c ON s.customer_id = c.customer_id
-        LEFT JOIN crm_loyalty_member lm ON lm.phone = c.phone
-        WHERE """ + where + """
-        GROUP BY s.customer_id, c.first_name, c.last_name, c.phone, c.email, c.city, lm.tier
+        LEFT JOIN customer_people cp ON cp.person_id=s.person_id
+        WHERE """ + style_cond + """
+        GROUP BY s.person_id, cp.name, cp.phone, cp.email
         ORDER BY total_spend DESC
         LIMIT 500
     """, date_to=date_to)
@@ -9793,10 +9815,11 @@ def get_customer_frequency(
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND " + _identified_customer_scope_sql("s"))
     return run_query("""
-        WITH order_counts AS (
-            SELECT customer_id, COUNT(DISTINCT order_id) AS order_count
-            FROM all_sales s WHERE """ + where + """
-            GROUP BY customer_id
+        WITH """ + canonical_customer_sales_cte(where) + """,
+        order_counts AS (
+            SELECT person_id, COUNT(DISTINCT order_id) AS order_count
+            FROM customer_sales s
+            GROUP BY person_id
         )
         SELECT
             CASE WHEN order_count = 1 THEN '1 order'
@@ -9816,7 +9839,7 @@ def get_customer_trend(
     date_to:   str = Query(default=str(date.today())),
     country:   str = Query(default=None),
 ):
-    _ct_ck = "cust_trend:" + "|".join(str(x) for x in (date_from, date_to, country))
+    _ct_ck = "cust_trend:" + _customer_identity_snapshot_version() + "|" + "|".join(str(x) for x in (date_from, date_to, country))
     _ct_cached, _ct_fresh = cache_get_swr(_ct_ck)
     if _ct_cached is not None:
         if not _ct_fresh:
@@ -9824,25 +9847,17 @@ def get_customer_trend(
                 date_from=date_from, date_to=date_to, country=country),
                 label="cust_trend")
         return _ct_cached
-    _fp_cte_ct = (
-        "all_time AS (SELECT customer_id, first_purchase_date AS first_purchase"
-        " FROM rollup_customer_first_purchase)"
-        if _rollup_fresh("customer_first_purchase")
-        else _unified_first_purchase_ctes("all_time", "first_purchase")
-    )
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
-        " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
-        " AND " + _WALKIN_PSEUDO_COND + ")")
+        " AND " + _not_walkin_pseudo_sql())
     _ct_resp = run_query("""
-        WITH """ + _fp_cte_ct + """
+        WITH """ + canonical_customer_sales_cte(where) + """
         SELECT s.sale_date AS day,
-            COUNT(DISTINCT s.customer_id) AS total_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase = s.sale_date::date THEN s.customer_id END) AS new_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase < s.sale_date::date THEN s.customer_id END) AS returning_customers
-        FROM all_sales s
-        LEFT JOIN all_time a ON s.customer_id = a.customer_id
-        WHERE """ + where + """
+            COUNT(DISTINCT s.person_id) AS total_customers,
+            COUNT(DISTINCT CASE WHEN cp.first_purchase = s.sale_date::date THEN s.person_id END) AS new_customers,
+            COUNT(DISTINCT CASE WHEN cp.first_purchase < s.sale_date::date THEN s.person_id END) AS returning_customers
+        FROM customer_sales s
+        JOIN customer_people cp ON cp.person_id=s.person_id
         GROUP BY s.sale_date ORDER BY s.sale_date
     """, date_to=date_to)
     cache_set(_ct_ck, _ct_resp, ttl=HEAVY_DASH_TTL)
@@ -9862,26 +9877,18 @@ def get_customers_by_location(
                 date_from=date_from, date_to=date_to, country=country),
                 label="cust_by_loc")
         return _cbl_cached
-    _fp_cte_cbl = (
-        "all_time AS (SELECT customer_id, first_purchase_date AS first_purchase"
-        " FROM rollup_customer_first_purchase)"
-        if _rollup_fresh("customer_first_purchase")
-        else _unified_first_purchase_ctes("all_time", "first_purchase")
-    )
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
-        " AND s.customer_id NOT IN (SELECT customer_id FROM all_customers WHERE customer_id IS NOT NULL"
-        " AND " + _WALKIN_PSEUDO_COND + ")")
+        " AND " + _not_walkin_pseudo_sql())
     _cbl_resp = run_query("""
-        WITH """ + _fp_cte_cbl + """
+        WITH """ + canonical_customer_sales_cte(where) + """
         SELECT s.pos_location_name, s.country,
-            COUNT(DISTINCT s.customer_id) AS total_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date THEN s.customer_id END) AS new_customers,
-            COUNT(DISTINCT CASE WHEN a.first_purchase < '""" + date_from + """'::date THEN s.customer_id END) AS returning_customers,
-            ROUND(COUNT(DISTINCT s.customer_id) * 100.0 / NULLIF(SUM(COUNT(DISTINCT s.customer_id)) OVER(), 0), 1) AS pct_of_total
-        FROM all_sales s
-        LEFT JOIN all_time a ON s.customer_id = a.customer_id
-        WHERE """ + where + """
+            COUNT(DISTINCT s.person_id) AS total_customers,
+            COUNT(DISTINCT CASE WHEN cp.first_purchase BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date THEN s.person_id END) AS new_customers,
+            COUNT(DISTINCT CASE WHEN cp.first_purchase < '""" + date_from + """'::date THEN s.person_id END) AS returning_customers,
+            ROUND(COUNT(DISTINCT s.person_id) * 100.0 / NULLIF(SUM(COUNT(DISTINCT s.person_id)) OVER(), 0), 1) AS pct_of_total
+        FROM customer_sales s
+        JOIN customer_people cp ON cp.person_id=s.person_id
         GROUP BY s.pos_location_name, s.country
         ORDER BY total_customers DESC
     """, date_to=date_to)
@@ -9900,29 +9907,28 @@ def get_churned_customers(
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     rows = run_query("""
-        WITH last_purchase AS (
-            SELECT s.customer_id,
+        WITH """ + canonical_customer_sales_cte(
+            "s.sale_kind IN ('sale','order')"
+            " AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
+            " AND " + BASE_FILTERS + " " + country_filter + " " + channel_filter
+        ) + """,
+        last_purchase AS (
+            SELECT s.person_id, s.person_id AS customer_id,
                 MAX(s.sale_date::date) AS last_purchase_date,
                 MIN(s.sale_date::date) AS first_purchase_date,
                 COUNT(DISTINCT s.order_id) AS total_orders,
                 ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS lifetime_spend
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
-            AND s.customer_id NOT IN ('None','null','')
-            AND """ + BASE_FILTERS + """
-            AND """ + _not_walkin_pseudo_sql() + """
-            """ + country_filter + """
-            """ + channel_filter + """
-            GROUP BY s.customer_id
+            FROM customer_sales s
+            GROUP BY s.person_id
         )
-        SELECT lp.customer_id,
-            CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,'')) AS customer_name,
-            COALESCE(c.phone,'') AS phone, c.email,
+        SELECT lp.person_id, lp.customer_id,
+            cp.name AS customer_name,
+            COALESCE(cp.phone,'') AS phone, cp.email,
             lp.last_purchase_date, lp.first_purchase_date,
             lp.total_orders, lp.lifetime_spend,
             CURRENT_DATE - lp.last_purchase_date AS days_since_last_purchase
         FROM last_purchase lp
-        LEFT JOIN all_customers c ON lp.customer_id = c.customer_id
+        LEFT JOIN customer_people cp ON cp.person_id = lp.person_id
         WHERE CURRENT_DATE - lp.last_purchase_date >= """ + str(CUSTOMER_CHURN_DAYS) + """
         ORDER BY lp.lifetime_spend DESC""", ttl=HEAVY_DASH_TTL)
     return mask_pii_rows(rows, request)
@@ -9957,21 +9963,36 @@ def analytics_customer_details(
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL "
               "AND s.customer_id NOT IN ('None','null','') AND LOWER(s.customer_type) IN ('new','returning','registered') AND " + _not_walkin_pseudo_sql() + " " + type_filter)
     rows = run_query("""
-        SELECT s.customer_id,
-            c.first_name, c.last_name, c.email,
-            COALESCE(c.phone,'') AS mobile,
-            c.city, c.country AS customer_country,
+        WITH """ + canonical_customer_sales_cte(
+            "s.sale_kind IN ('sale','order')"
+            " AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')"
+        ) + """,
+        profiles AS (
+            SELECT ci.person_id, MAX(c.first_name) AS first_name,
+                MAX(c.last_name) AS last_name, MAX(c.city) AS city,
+                MAX(c.country) AS customer_country
+            FROM customer_identity ci
+            JOIN all_customers c ON c.customer_id::text=ci.source_customer_id
+                AND c.store_id=ci.store_id
+            GROUP BY ci.person_id
+        )
+        SELECT s.person_id, s.person_id AS customer_id,
+            COALESCE(pr.first_name, cp.name) AS first_name, pr.last_name,
+            cp.email, COALESCE(cp.phone,'') AS mobile,
+            pr.city, pr.customer_country,
             COUNT(DISTINCT s.order_id) AS total_orders,
             SUM(s.ordered_item_quantity) AS total_units,
             ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
             MIN(s.sale_date) AS first_order_date,
             MAX(s.sale_date) AS last_order_date,
             COUNT(*) OVER() AS total_customer_count
-        FROM all_sales s
-        LEFT JOIN all_customers c ON s.customer_id = c.customer_id
+        FROM customer_sales s
+        LEFT JOIN customer_people cp ON cp.person_id=s.person_id
+        LEFT JOIN profiles pr ON pr.person_id=s.person_id
         """ + type_join + """
         WHERE """ + where + """
-        GROUP BY s.customer_id, c.first_name, c.last_name, c.email, c.phone, c.city, c.country
+        GROUP BY s.person_id, pr.first_name, pr.last_name, cp.name, cp.email,
+            cp.phone, pr.city, pr.customer_country
         ORDER BY total_sales DESC
         LIMIT """ + str(limit), ttl=HEAVY_DASH_TTL, date_to=date_to)
     return mask_pii_rows(rows, request, phone_keys=("mobile",), email_keys=("email",))
@@ -9984,7 +10005,9 @@ def get_new_customer_products(
     channel:   str = Query(default=None),
     limit:     int = Query(default=20),
 ):
-    _ncp_ck = "new_cust_prod:" + "|".join(str(x) for x in (date_from, date_to, country, channel, limit))
+    identity_version = _customer_identity_snapshot_version()
+    _ncp_ck = "new_cust_prod:" + identity_version + "|" + "|".join(
+        str(x) for x in (date_from, date_to, country, channel, limit))
     _ncp_cached, _ncp_fresh = cache_get_swr(_ncp_ck)
     if _ncp_cached is not None:
         if not _ncp_fresh:
@@ -9992,35 +10015,24 @@ def get_new_customer_products(
                 date_from=date_from, date_to=date_to, country=country,
                 channel=channel, limit=limit), label="new_cust_prod")
         return _ncp_cached
-    # new_customers uses the first-purchase rollup (when fresh) or the
-    # _unified_first_purchase_ctes ID-bridge CTE as fallback. The rollup is a
-    # 173k-row PK read vs a double-scan of all_sales (~1.5M rows).
-    _fp_cte_ncp = (
-        "first_purchase AS (SELECT customer_id, first_purchase_date"
-        " FROM rollup_customer_first_purchase)"
-        if _rollup_fresh("customer_first_purchase")
-        else _unified_first_purchase_ctes()
-    )
     where = build_filters(date_from, date_to, country, channel,
-        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0 AND p.style_name IS NOT NULL")
+        extra="s.sale_kind IN ('sale','order') AND s.ordered_item_quantity > 0")
     _ncp_resp = run_query("""
-        WITH """ + _fp_cte_ncp + """,
+        WITH """ + canonical_customer_sales_cte(where) + """,
         new_customers AS (
-            SELECT customer_id FROM first_purchase
-            WHERE first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date
-              AND customer_id NOT IN (
-                  SELECT ac.customer_id FROM all_customers ac
-                  WHERE ac.customer_id IS NOT NULL AND """ + _WALKIN_PSEUDO_COND + """
-              )
+            SELECT person_id FROM customer_people
+            WHERE is_pseudo IS NOT TRUE
+              AND first_purchase BETWEEN '""" + date_from + """'::date
+                                     AND '""" + date_to + """'::date
         )
         SELECT p.style_name, p.product_type AS subcategory, p.brand,
             SUM(s.ordered_item_quantity) AS units_sold,
             ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
             ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) * 100.0 / NULLIF(SUM(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric))) OVER(), 0), 1) AS pct_of_new_customer_sales
-        FROM all_sales s
+        FROM customer_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku
-        WHERE """ + where + """
-        AND s.customer_id IN (SELECT customer_id FROM new_customers)
+        WHERE p.style_name IS NOT NULL
+          AND s.person_id IN (SELECT person_id FROM new_customers)
         GROUP BY p.style_name, p.product_type, p.brand
         ORDER BY units_sold DESC
         LIMIT """ + str(limit), date_to=date_to)
@@ -10175,10 +10187,13 @@ def get_orders(
         )"""
         stock_col = ",\n            st.soh AS current_stock"
         stock_join = "\n        LEFT JOIN stock st ON st.pos_location_name = s.pos_location_name AND st.sku = s.variant_sku"
+    identity_stamp = _customer_identity_snapshot_version().replace("*/", "")
     return run_query(stock_cte + """
         SELECT s.order_id, s.order_name, s.sale_date AS order_date,
             s.pos_location_name, s.country,
-            s.customer_id, s.customer_type, s.sale_kind,
+            s.customer_id,
+            CASE WHEN ci.match_method <> 'pseudo' THEN ci.person_id END AS person_id,
+            s.customer_type, s.sale_kind,
             COALESCE(NULLIF(p.product_name, ''), s.product_title) AS product_title, s.variant_sku AS sku,
             p.style_name, p.brand, p.collection,
             p.product_type AS subcategory, p.color_print AS color, p.size,
@@ -10196,9 +10211,14 @@ def get_orders(
             ROUND(s.net_sales_kes::numeric, 0) AS net_sales_kes""" + stock_col + """
         FROM all_sales s
         LEFT JOIN all_products_clean p ON s.variant_sku = p.sku""" + stock_join + """
+        LEFT JOIN customer_identity ci
+          ON ci.source_customer_id=s.customer_id::text
+         AND ci.store_id=s.store_id
         WHERE """ + where + """
         ORDER BY s.sale_date DESC, s.order_id
-        LIMIT """ + str(safe_limit), date_to=date_to)
+        LIMIT """ + str(safe_limit) +
+        " /* customer_identity_snapshot:" + identity_stamp + " */",
+        date_to=date_to)
 
 @app.get("/api/orders-summary")
 def get_orders_summary(
@@ -10420,7 +10440,8 @@ def get_order_detail_v2(order_id: str, request: Request):
         LIMIT 1
     """, ttl=300)
     if not hrows:
-        # Fall back: build header from all_sales + all_customers (Kenya/Odoo orders)
+        # Fall back: build the sales header while resolving profile fields to
+        # the store-qualified canonical person.
         hrows = run_query(f"""
             SELECT
                 s.order_id                  AS id,
@@ -10431,9 +10452,9 @@ def get_order_detail_v2(order_id: str, request: Request):
                 'unfulfilled'               AS fulfillment_status,
                 SUM(s.total_sales_kes)::numeric AS total_price,
                 MAX(s.customer_id)          AS customer_id,
-                MAX(ac.email)               AS customer_email,
-                NULLIF(TRIM(COALESCE(MAX(ac.first_name),'') || ' ' || COALESCE(MAX(ac.last_name),'')), '')
-                                            AS customer_name,
+                MAX(ci.person_id)            AS person_id,
+                MAX(cp.email)                AS customer_email,
+                MAX(cp.name)                 AS customer_name,
                 MAX(s.store_id)             AS source_name,
                 NULL::text                  AS billing_city,
                 MAX(s.country)              AS billing_country,
@@ -10443,8 +10464,11 @@ def get_order_detail_v2(order_id: str, request: Request):
                 SUM(s.ordered_item_quantity) FILTER (WHERE s.sale_kind IN ('sale','order'))::int
                                             AS item_count
             FROM all_sales s
-            LEFT JOIN all_customers ac ON ac.customer_id = s.customer_id
-                                      AND s.customer_id IS NOT NULL
+            LEFT JOIN customer_identity ci
+              ON ci.source_customer_id=s.customer_id::text
+             AND ci.store_id=s.store_id
+             AND ci.match_method <> 'pseudo'
+            LEFT JOIN customer_people cp ON cp.person_id=ci.person_id
             WHERE s.order_id = '{oid}'
               AND s.sale_kind IN ('sale','order')
             GROUP BY s.order_id
@@ -10509,28 +10533,43 @@ def get_order_detail_v2(order_id: str, request: Request):
             s.variant_sku
     """, ttl=300)
     # ── customer profile ────────────────────────────────────────────────────
-    cid = (header.get("customer_id") or "").replace("'", "").strip()
     customer = {}
-    if cid:
+    person_rows = run_query(f"""
+        SELECT DISTINCT ci.person_id
+        FROM all_sales s
+        JOIN customer_identity ci
+          ON ci.source_customer_id=s.customer_id::text
+         AND ci.store_id=s.store_id
+         AND ci.match_method <> 'pseudo'
+        WHERE s.order_id='{oid}'
+        LIMIT 1
+    """, ttl=300)
+    person_id = int(person_rows[0]["person_id"]) if person_rows else None
+    header["person_id"] = person_id
+    if person_id is not None:
         crows = run_query(f"""
             SELECT
-                c.first_name, c.last_name, c.phone, c.email, c.city,
-                c.total_orders, c.total_spend_kes AS lifetime_value,
-                c.first_order_date, c.last_order_date,
+                cp.name AS first_name, ''::text AS last_name,
+                cp.phone, cp.email, NULL::text AS city,
+                cp.total_orders, cp.total_spend_kes AS lifetime_value,
+                cp.first_purchase AS first_order_date,
+                cp.last_purchase AS last_order_date,
                 CASE
-                    WHEN lm.spend_kes >= 100000 THEN 'VIP'
-                    WHEN lm.spend_kes >= 50000  THEN 'Gold'
-                    WHEN lm.spend_kes >= 20000  THEN 'Silver'
-                    WHEN lm.member_id IS NOT NULL THEN 'Bronze'
+                    WHEN cp.total_spend_kes >= 100000 THEN 'VIP'
+                    WHEN cp.total_spend_kes >= 50000  THEN 'Gold'
+                    WHEN cp.total_spend_kes >= 20000  THEN 'Silver'
+                    WHEN cp.total_orders > 0 THEN 'Bronze'
                     ELSE NULL
                 END AS loyalty_tier
-            FROM all_customers c
-            LEFT JOIN crm_loyalty_member lm ON lm.customer_id = c.customer_id
-            WHERE c.customer_id = '{cid}'
+            FROM customer_people cp
+            WHERE cp.person_id = {person_id}
+              AND cp.is_pseudo IS NOT TRUE
             LIMIT 1
         """, ttl=300)
         if crows:
             customer = crows[0]
+            header["customer_name"] = customer.get("first_name")
+            header["customer_email"] = customer.get("email")
     # ── pricing summary from all_sales ──────────────────────────────────────
     prows = run_query(f"""
         SELECT
@@ -10739,30 +10778,59 @@ def get_customer_type_spend(
     # while avg_basket_value divides by orders (COUNT DISTINCT order_id), so the
     # two diverge: since customers place >1 order on average, spend_per_customer
     # is generally higher than ABV.
+    canonical_where = build_filters(
+        date_from, date_to, country, channel, extra="s.sale_kind='order'")
+    walkin_where = build_filters(
+        date_from, date_to, country, channel, extra="s.sale_kind='order'")
     return run_query("""
-        WITH """ + _unified_first_purchase_ctes() + """
+        WITH """ + canonical_customer_sales_cte(canonical_where) + """,
+        classified AS (
+            SELECT
+                CASE WHEN cp.first_purchase BETWEEN '""" + date_from + """'::date
+                                                 AND '""" + date_to + """'::date
+                     THEN 'New' ELSE 'Returning' END AS customer_segment,
+                s.person_id,
+                CONCAT_WS('|', s.store_id, s.order_id) AS order_key,
+                s.total_sales_kes::numeric
+                    - COALESCE(s.discounts_kes, 0)::numeric AS sales
+            FROM customer_sales s
+            JOIN customer_people cp ON cp.person_id=s.person_id
+            WHERE COALESCE(LOWER(s.customer_type),'')
+                    IN ('new','returning','registered')
+
+            UNION ALL
+
+            SELECT 'Walk-in', NULL::bigint,
+                CONCAT_WS('|', s.store_id, s.order_id),
+                s.total_sales_kes::numeric
+                    - COALESCE(s.discounts_kes, 0)::numeric
+            FROM all_sales s
+            LEFT JOIN customer_identity ci
+              ON ci.source_customer_id=s.customer_id::text
+             AND ci.store_id=s.store_id
+            WHERE """ + walkin_where + """
+              AND (
+                  s.customer_id IS NULL
+                  OR s.customer_id IN ('None','null','')
+                  OR ci.person_id IS NULL
+                  OR ci.match_method='pseudo'
+                  OR COALESCE(LOWER(s.customer_type),'')
+                       NOT IN ('new','returning','registered')
+              )
+        )
         SELECT
-            CASE
-                -- COALESCE so a NULL customer_type maps to Walk-in (NULL NOT IN
-                -- (...) is NULL, which would otherwise fall through to Returning).
-                WHEN COALESCE(LOWER(s.customer_type),'') NOT IN ('new','returning','registered') THEN 'Walk-in'
-                -- No first_purchase match = unidentifiable (null/placeholder
-                -- customer_id) → Walk-in, so New/Returning stays in lockstep with
-                -- /api/customers seg (which INNER JOINs first_purchase).
-                WHEN fp.first_purchase_date IS NULL THEN 'Walk-in'
-                WHEN fp.first_purchase_date BETWEEN '""" + date_from + """'::date AND '""" + date_to + """'::date THEN 'New'
-                ELSE 'Returning'
-            END AS customer_segment,
-            COUNT(DISTINCT s.customer_id) AS customers,
-            COUNT(DISTINCT s.order_id) AS orders,
-            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_sales,
-            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.customer_id), 0), 0) AS spend_per_customer,
-            ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)) / NULLIF(COUNT(DISTINCT s.order_id), 0), 0) AS avg_basket_value
-        FROM all_sales s
-        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
-        WHERE s.sale_date BETWEEN '""" + date_from + """' AND '""" + date_to + """'
-        AND s.sale_kind = 'order'
-        """ + country_filter + " " + channel_filter + """
+            customer_segment,
+            CASE WHEN customer_segment='Walk-in'
+                 THEN COUNT(DISTINCT order_key)
+                 ELSE COUNT(DISTINCT person_id) END AS customers,
+            COUNT(DISTINCT order_key) AS orders,
+            ROUND(SUM(sales), 0) AS total_sales,
+            ROUND(SUM(sales) / NULLIF(
+                CASE WHEN customer_segment='Walk-in'
+                     THEN COUNT(DISTINCT order_key)
+                     ELSE COUNT(DISTINCT person_id) END, 0), 0) AS spend_per_customer,
+            ROUND(SUM(sales) / NULLIF(COUNT(DISTINCT order_key), 0), 0) AS avg_basket_value
+        FROM classified
         GROUP BY customer_segment
         ORDER BY customer_segment
     """, date_to=date_to)
@@ -14758,18 +14826,18 @@ def analytics_rfm(
     monetary_expr = NET_SALES_CANON
     freq_expr = "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END)"
     base_cte = """
-        WITH cust AS (
-            SELECT s.customer_id,
+        WITH """ + canonical_customer_sales_cte(where) + """,
+        cust AS (
+            SELECT s.person_id, s.person_id AS customer_id,
                 MAX(s.sale_date::date) AS last_purchase,
                 """ + freq_expr + """ AS frequency,
                 """ + monetary_expr + """ AS monetary
-            FROM all_sales s
-            WHERE """ + where + """
-            GROUP BY s.customer_id
+            FROM customer_sales s
+            GROUP BY s.person_id
             HAVING """ + monetary_expr + """ > 0 AND """ + freq_expr + """ > 0
         ),
         scored AS (
-            SELECT customer_id, last_purchase, frequency, monetary,
+            SELECT person_id, customer_id, last_purchase, frequency, monetary,
                 ('""" + ref + """'::date - last_purchase) AS recency_days,
                 NTILE(5) OVER (ORDER BY ('""" + ref + """'::date - last_purchase) DESC) AS r_score,
                 NTILE(5) OVER (ORDER BY frequency ASC) AS f_score,
@@ -14777,7 +14845,7 @@ def analytics_rfm(
             FROM cust
         ),
         seg AS (
-            SELECT customer_id, last_purchase, frequency, monetary, recency_days,
+            SELECT person_id, customer_id, last_purchase, frequency, monetary, recency_days,
                 r_score, f_score, m_score,
                 ROUND((f_score + m_score) / 2.0) AS fm,
                 CASE
@@ -14806,7 +14874,7 @@ def analytics_rfm(
         ORDER BY monetary DESC
     """, date_to=date_to)
     customers = run_query(base_cte + """
-        SELECT customer_id, segment, recency_days, frequency,
+        SELECT person_id, customer_id, segment, recency_days, frequency,
             ROUND(monetary, 0) AS monetary,
             r_score, f_score, m_score
         FROM seg
@@ -16642,27 +16710,25 @@ def analytics_repeat_customers(
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     return run_query("""
-        WITH cust AS (
-            SELECT s.customer_id,
+        WITH """ + canonical_customer_sales_cte(where) + """,
+        cust AS (
+            SELECT s.person_id, s.person_id AS customer_id,
                 COUNT(DISTINCT s.order_id) AS order_count,
                 ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS total_spend_kes,
                 MIN(s.sale_date) AS first_order_date,
                 MAX(s.sale_date) AS last_order_date,
                 SUM(s.ordered_item_quantity) AS total_units
-            FROM all_sales s
-            WHERE """ + where + """
-            GROUP BY s.customer_id
+            FROM customer_sales s
+            GROUP BY s.person_id
             HAVING COUNT(DISTINCT s.order_id) >= 2
         )
-        SELECT c.customer_id,
-            CONCAT(COALESCE(cu.first_name,''), ' ', COALESCE(cu.last_name,'')) AS customer_name,
-            COALESCE(cu.phone,'') AS mobile,
-            cu.email,
+        SELECT c.person_id, c.customer_id,
+            cp.name AS customer_name, COALESCE(cp.phone,'') AS mobile, cp.email,
             c.order_count, c.total_spend_kes, c.total_units,
             c.first_order_date, c.last_order_date,
             COUNT(*) OVER() AS total_repeat_count
         FROM cust c
-        LEFT JOIN all_customers cu ON c.customer_id = cu.customer_id
+        LEFT JOIN customer_people cp ON cp.person_id = c.person_id
         ORDER BY c.total_spend_kes DESC
         LIMIT 500
     """, ttl=HEAVY_DASH_TTL, date_to=date_to)
@@ -16689,10 +16755,10 @@ def analytics_customer_retention(
     where = build_filters(date_from, date_to, country, channel,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND " + _not_walkin_pseudo_sql())
     months = run_query("""
+        WITH """ + canonical_customer_sales_cte(where) + """
         SELECT substring(s.sale_date, 1, 7) AS month,
-            COUNT(DISTINCT s.customer_id) AS customers
-        FROM all_sales s
-        WHERE """ + where + """
+            COUNT(DISTINCT s.person_id) AS customers
+        FROM customer_sales s
         GROUP BY substring(s.sale_date, 1, 7)
         ORDER BY month
     """, date_to=date_to)
@@ -16714,22 +16780,22 @@ def analytics_customer_crosswalk(
     where = build_filters(date_from, date_to, country,
         extra="s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','') AND s.pos_location_name NOT IN (" + WAREHOUSE_LOCATIONS + ") AND " + _not_walkin_pseudo_sql())
     return run_query("""
-        WITH cust_stores AS (
-            SELECT DISTINCT s.customer_id, s.pos_location_name
-            FROM all_sales s
-            WHERE """ + where + """
+        WITH """ + canonical_customer_sales_cte(where) + """,
+        cust_stores AS (
+            SELECT DISTINCT s.person_id, s.pos_location_name
+            FROM customer_sales s
         ),
         totals AS (
-            SELECT pos_location_name, COUNT(DISTINCT customer_id) AS n
+            SELECT pos_location_name, COUNT(DISTINCT person_id) AS n
             FROM cust_stores GROUP BY pos_location_name
         )
         SELECT a.pos_location_name AS store_a,
             b.pos_location_name AS store_b,
-            COUNT(DISTINCT a.customer_id) AS shared_customers,
-            ROUND(COUNT(DISTINCT a.customer_id) * 100.0 / NULLIF(LEAST(ta.n, tb.n), 0), 2) AS pct_overlap
+            COUNT(DISTINCT a.person_id) AS shared_customers,
+            ROUND(COUNT(DISTINCT a.person_id) * 100.0 / NULLIF(LEAST(ta.n, tb.n), 0), 2) AS pct_overlap
         FROM cust_stores a
         JOIN cust_stores b
-            ON a.customer_id = b.customer_id AND a.pos_location_name < b.pos_location_name
+            ON a.person_id = b.person_id AND a.pos_location_name < b.pos_location_name
         JOIN totals ta ON ta.pos_location_name = a.pos_location_name
         JOIN totals tb ON tb.pos_location_name = b.pos_location_name
         GROUP BY a.pos_location_name, b.pos_location_name, ta.n, tb.n
@@ -16739,49 +16805,28 @@ def analytics_customer_crosswalk(
 
 @app.get("/api/customers/churn-rate")
 def customers_churn_rate():
-    # Fast path: rollup_customer_lifetime has pre-aggregated last_sale/first_sale
-    # per customer; a COUNT over ~170k rollup rows is <1s vs 15-20s scanning 1.5M
-    # all_sales rows. Pseudo-account exclusion is omitted (they're absent from the
-    # rollup and are a negligible fraction), so the result may differ by < 0.1%.
-    if _rollup_fresh("customer_lifetime"):
-        rows = run_query(f"""
-            WITH agg AS (
-                SELECT
-                    COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
-                    COUNT(*) FILTER (WHERE last_sale > CURRENT_DATE - INTERVAL '{CUSTOMER_ACTIVE_WINDOW_DAYS} days') AS active_count,
-                    COUNT(*) FILTER (WHERE first_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS eligible_base
-                FROM rollup_customer_lifetime
-            )
-            SELECT churned_count, active_count, eligible_base AS base,
-                ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
-            FROM agg
-        """, ttl=HEAVY_DASH_TTL)
-    else:
-        # Fallback: live scan when rollup is stale (first boot / just after deploy).
-        # Bounded to 5 years so it doesn't need to touch decade-old rows.
-        rows = run_query(f"""
-            WITH per_customer AS (
-                SELECT customer_id,
-                    MAX(sale_date::date) AS last_sale,
-                    MIN(sale_date::date) AS first_sale
-                FROM all_sales
-                WHERE sale_kind IN ('sale','order') AND customer_id IS NOT NULL
-                  AND customer_id NOT IN ('None','null','')
-                  AND sale_date >= (CURRENT_DATE - INTERVAL '5 years')::text
-                  AND """ + _not_walkin_pseudo_sql(alias="all_sales") + """
-                GROUP BY customer_id
-            ),
-            agg AS (
-                SELECT
-                    COUNT(*) FILTER (WHERE last_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
-                    COUNT(*) FILTER (WHERE last_sale > CURRENT_DATE - INTERVAL '{CUSTOMER_ACTIVE_WINDOW_DAYS} days') AS active_count,
-                    COUNT(*) FILTER (WHERE first_sale <= CURRENT_DATE - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS eligible_base
-                FROM per_customer
-            )
-            SELECT churned_count, active_count, eligible_base AS base,
-                ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
-            FROM agg
-        """, ttl=HEAVY_DASH_TTL)
+    identity_version = _customer_identity_snapshot_version().replace("*/", "")
+    rows = run_query(f"""
+        WITH agg AS (
+            SELECT
+                COUNT(*) FILTER (
+                    WHERE last_purchase <= CURRENT_DATE
+                        - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS churned_count,
+                COUNT(*) FILTER (
+                    WHERE last_purchase > CURRENT_DATE
+                        - INTERVAL '{CUSTOMER_ACTIVE_WINDOW_DAYS} days') AS active_count,
+                COUNT(*) FILTER (
+                    WHERE first_purchase <= CURRENT_DATE
+                        - INTERVAL '{CUSTOMER_CHURN_DAYS} days') AS eligible_base
+            FROM customer_people
+            WHERE is_pseudo IS NOT TRUE
+              AND first_purchase IS NOT NULL
+        )
+        SELECT churned_count, active_count, eligible_base AS base,
+            ROUND(churned_count * 100.0 / NULLIF(eligible_base, 0), 2) AS churn_rate
+        FROM agg
+        /* customer_identity_snapshot:{identity_version} */
+    """, ttl=HEAVY_DASH_TTL)
     if not rows:
         return {"churn_rate": 0, "churned_count": 0, "churned_customers": 0,
                 "active_customers": 0, "active_customers_90d": 0, "base": 0,
@@ -16851,22 +16896,18 @@ def customers_churn_events(
     except (ValueError, OverflowError):
         scan_from, scan_end = "1900-01-01", "9999-12-31"  # safe full scan
 
+    canonical_where = ("s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL"
+                       " AND s.customer_id NOT IN ('None','null','') AND " + BASE_FILTERS
+                       + " " + country_filter + " " + channel_filter)
     rows = run_query(f"""
-        WITH
+        WITH {canonical_customer_sales_cte(canonical_where)},
         -- Relevant sales, DATE-BOUNDED (see endpoint docstring): identified,
         -- non-walk-in, passing base filters.
         base_sales AS (
-            SELECT s.customer_id, s.sale_date::date AS d
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order')
-              AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND s.sale_date >= '{scan_from}' AND s.sale_date < '{scan_end}'
+            SELECT s.person_id AS customer_id, s.sale_date::date AS d
+            FROM customer_sales s
+            WHERE s.sale_date >= '{scan_from}' AND s.sale_date < '{scan_end}'
               AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-              AND {not_walkin}
-              AND {BASE_FILTERS}
-              {country_filter}
-              {channel_filter}
         ),
         -- Per-purchase neighbours (within the bounded scan) to detect
         -- churn-threshold crossings and reactivation gaps.
@@ -16902,9 +16943,8 @@ def customers_churn_events(
             SELECT p.customer_id
             FROM prevnull p
             WHERE EXISTS (
-                SELECT 1 FROM all_sales s
-                WHERE s.customer_id = p.customer_id
-                  AND s.sale_kind IN ('sale','order')
+                SELECT 1 FROM customer_sales s
+                WHERE s.person_id = p.customer_id
                   AND s.sale_date < '{scan_from}'
                   AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
                   AND {BASE_FILTERS}
@@ -16966,78 +17006,64 @@ def customers_at_risk(
     lim = min(max(1, int(limit)), 2000)
     country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
-    # Performance: a whole-table GROUP BY customer_id takes ~90 s cold. Instead,
-    # pre-filter candidates with two DATE-BOUNDED scans (sale_date is TEXT but
-    # ISO-formatted, so string comparison rides idx_all_sales_date): customers
-    # who bought inside the band window and NOT since. Lifetime stats are then
-    # computed only for that small candidate set via the (customer_id, ...)
-    # indexes. The final BETWEEN re-check keeps exactness regardless.
-    try:
-        band_start   = (date.today() - timedelta(days=hi)).isoformat()
-        band_end_exc = (date.today() - timedelta(days=lo - 1)).isoformat()  # exclusive
-    except OverflowError:
-        band_start, band_end_exc = "1900-01-01", str(date.today())
+    band_start = (date.today() - timedelta(days=hi)).isoformat()
+    band_end_exc = (date.today() - timedelta(days=lo - 1)).isoformat()
+    identity_version = _customer_identity_snapshot_version().replace("*/", "")
     try:
         rows = run_query(f"""
-        WITH band_buyers AS (
-            SELECT DISTINCT s.customer_id
+          WITH candidate_activity AS (
+            SELECT ci.person_id, MAX(s.sale_date::date) AS last_purchase_date
             FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND s.sale_date >= '{band_start}' AND s.sale_date < '{band_end_exc}'
-              AND {BASE_FILTERS}
-              AND {_not_walkin_pseudo_sql()}
-              {country_filter}
-              {channel_filter}
-        ),
-        recent_buyers AS (
-            SELECT DISTINCT s.customer_id
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND s.sale_date >= '{band_end_exc}'
+            JOIN customer_identity ci
+              ON ci.source_customer_id=s.customer_id::text
+             AND ci.store_id=s.store_id
+             AND ci.match_method <> 'pseudo'
+            WHERE s.sale_kind IN ('sale','order')
+              AND s.sale_date >= '{band_start}'
               AND {BASE_FILTERS}
               {country_filter}
               {channel_filter}
-        ),
-        candidates AS (
-            SELECT b.customer_id FROM band_buyers b
-            LEFT JOIN recent_buyers r ON r.customer_id = b.customer_id
-            WHERE r.customer_id IS NULL
-        ),
-        last_purchase AS (
-            SELECT s.customer_id,
-                MAX(s.sale_date::date) AS last_purchase_date,
-                MIN(s.sale_date::date) AS first_purchase_date,
-                COUNT(DISTINCT s.order_id) AS total_orders,
-                ROUND(SUM((s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric)), 0) AS lifetime_spend
-            FROM all_sales s
-            JOIN candidates cd ON cd.customer_id = s.customer_id
+            GROUP BY ci.person_id
+            HAVING MAX(s.sale_date::date) >= '{band_start}'::date
+               AND MAX(s.sale_date::date) < '{band_end_exc}'::date
+          ),
+          lifetime AS (
+            SELECT ci.person_id,
+              MAX(s.sale_date::date) AS last_purchase_date,
+              MIN(s.sale_date::date) AS first_purchase_date,
+              COUNT(DISTINCT s.order_id) AS total_orders,
+              SUM(s.total_sales_kes::numeric
+                  - COALESCE(s.discounts_kes::numeric,0)) AS lifetime_spend
+            FROM candidate_activity ca
+            JOIN customer_identity ci ON ci.person_id=ca.person_id
+                                      AND ci.match_method <> 'pseudo'
+            JOIN all_sales s
+              ON s.customer_id::text=ci.source_customer_id
+             AND s.store_id=ci.store_id
             WHERE s.sale_kind IN ('sale','order')
               AND s.sale_date >= (CURRENT_DATE - INTERVAL '5 years')::text
               AND {BASE_FILTERS}
               {country_filter}
               {channel_filter}
-            GROUP BY s.customer_id
-        )
-        SELECT lp.customer_id,
-            NULLIF(TRIM(CONCAT(COALESCE(c.first_name,''), ' ', COALESCE(c.last_name,''))), '') AS customer_name,
-            COALESCE(c.phone,'') AS phone, c.email,
-            lp.last_purchase_date, lp.first_purchase_date,
-            lp.total_orders, lp.lifetime_spend,
-            CURRENT_DATE - lp.last_purchase_date AS days_since_last_purchase,
+            GROUP BY ci.person_id
+          )
+          SELECT l.person_id, l.person_id AS customer_id,
+            cp.name AS customer_name, cp.phone, cp.email,
+            l.last_purchase_date, l.first_purchase_date, l.total_orders,
+            ROUND(l.lifetime_spend,0) AS lifetime_spend,
+            CURRENT_DATE-l.last_purchase_date AS days_since_last_purchase,
             COUNT(*) OVER() AS at_risk_total
-        FROM last_purchase lp
-        LEFT JOIN all_customers c ON lp.customer_id = c.customer_id
-        WHERE CURRENT_DATE - lp.last_purchase_date BETWEEN {lo} AND {hi}
-        ORDER BY lp.lifetime_spend DESC
-        LIMIT {lim}
-    """, ttl=900)  # snapshot-of-today figure; long TTL rides out the page's query storm
+          FROM lifetime l
+          JOIN customer_people cp ON cp.person_id=l.person_id
+                                AND cp.is_pseudo IS NOT TRUE
+          WHERE CURRENT_DATE-l.last_purchase_date BETWEEN {lo} AND {hi}
+          ORDER BY l.lifetime_spend DESC
+          LIMIT {lim}
+          /* customer_identity_snapshot:{identity_version} */
+        """, ttl=900)
         total = int(rows[0].get("at_risk_total", 0)) if rows else 0
-        # Copy rows before popping so we don't mutate the cached dicts —
-        # the run_query cache holds references to the same dict objects,
-        # and in-place pop() would make at_risk_total vanish on the next hit.
-        clean = [{k: v for k, v in r.items() if k != "at_risk_total"} for r in rows]
+        clean = [{k: v for k, v in r.items() if k != "at_risk_total"}
+                 for r in rows]
         return {
             "at_risk_count": total,
             "band_from_days": lo,
@@ -21209,18 +21235,16 @@ def analytics_quarter_scorecard(quarter: int = Query(default=None),
 
     # ── New / returning customers (group total) ────────────────────────────
     def cust_metrics(a, b):
-        rows = run_query("WITH " + _unified_first_purchase_ctes() + """,
+        identity_where = (_win(a, b) + " AND s.sale_kind='order'"
+                          " AND LOWER(s.customer_type) IN ('new','returning','registered')")
+        rows = run_query("WITH " + canonical_customer_sales_cte(identity_where) + """,
             seg AS (
                 SELECT
-                    COUNT(DISTINCT s.customer_id) FILTER (
-                        WHERE fp.first_purchase_date BETWEEN '""" + str(a) + """'::date AND '""" + str(b) + """'::date) AS new_c,
-                    COUNT(DISTINCT s.customer_id) FILTER (
-                        WHERE fp.first_purchase_date < '""" + str(a) + """'::date) AS ret_c
-                FROM all_sales s
-                JOIN first_purchase fp ON fp.customer_id = s.customer_id
-                WHERE """ + _win(a, b) + """
-                  AND s.sale_kind = 'order'
-                  AND LOWER(s.customer_type) IN ('new','returning','registered')
+                    COUNT(DISTINCT s.person_id) FILTER (
+                        WHERE cp.first_purchase BETWEEN '""" + str(a) + """'::date AND '""" + str(b) + """'::date) AS new_c,
+                    COUNT(DISTINCT s.person_id) FILTER (
+                        WHERE cp.first_purchase < '""" + str(a) + """'::date) AS ret_c
+                FROM customer_sales s JOIN customer_people cp ON cp.person_id=s.person_id
             )
             SELECT COALESCE(new_c, 0) AS new_c, COALESCE(ret_c, 0) AS ret_c FROM seg
         """)
@@ -21230,18 +21254,16 @@ def analytics_quarter_scorecard(quarter: int = Query(default=None),
     # Per-market new/returning so each store's count target is derived from its
     # OWN market's LY actual (× growth × the store's within-market share).
     def cust_metrics_by_bucket(a, b):
-        rows = run_query("WITH " + _unified_first_purchase_ctes() + """,
+        identity_where = (_win(a, b) + " AND s.sale_kind='order'"
+                          " AND LOWER(s.customer_type) IN ('new','returning','registered')")
+        rows = run_query("WITH " + canonical_customer_sales_cte(identity_where) + """,
             seg AS (
                 SELECT """ + _ACTUAL_BUCKET_CASE + """ AS bucket,
-                    COUNT(DISTINCT s.customer_id) FILTER (
-                        WHERE fp.first_purchase_date BETWEEN '""" + str(a) + """'::date AND '""" + str(b) + """'::date) AS new_c,
-                    COUNT(DISTINCT s.customer_id) FILTER (
-                        WHERE fp.first_purchase_date < '""" + str(a) + """'::date) AS ret_c
-                FROM all_sales s
-                JOIN first_purchase fp ON fp.customer_id = s.customer_id
-                WHERE """ + _win(a, b) + """
-                  AND s.sale_kind = 'order'
-                  AND LOWER(s.customer_type) IN ('new','returning','registered')
+                    COUNT(DISTINCT s.person_id) FILTER (
+                        WHERE cp.first_purchase BETWEEN '""" + str(a) + """'::date AND '""" + str(b) + """'::date) AS new_c,
+                    COUNT(DISTINCT s.person_id) FILTER (
+                        WHERE cp.first_purchase < '""" + str(a) + """'::date) AS ret_c
+                FROM customer_sales s JOIN customer_people cp ON cp.person_id=s.person_id
                 GROUP BY 1
             )
             SELECT bucket, COALESCE(new_c, 0) AS new_c, COALESCE(ret_c, 0) AS ret_c FROM seg
@@ -21482,12 +21504,17 @@ def analytics_target_requirements(year: int = Query(default=None)):
         "SELECT " + _ACTUAL_BUCKET_CASE + " AS bucket, "
         "ROUND(" + _TARGET_REVENUE + ") AS net, "
         "COUNT(DISTINCT CASE WHEN s.sale_kind IN ('sale','order') THEN s.order_id END) AS orders, "
-        "COUNT(DISTINCT CASE WHEN s.sale_kind = 'order' AND LOWER(s.customer_type) "
-        "  IN ('new','returning','registered') THEN s.order_id END) AS id_orders, "
-        "COUNT(DISTINCT CASE WHEN s.sale_kind = 'order' AND LOWER(s.customer_type) "
-        "  IN ('new','returning','registered') THEN s.customer_id END) AS customers "
-        "FROM all_sales s WHERE s.sale_date BETWEEN '" + y0 + "' AND '" + y1 + "' "
-        "AND s.sale_kind IN ('sale','order','return') AND " + BASE_FILTERS + " GROUP BY 1"
+        "COUNT(DISTINCT CASE WHEN s.sale_kind = 'order' "
+        "  AND ci.person_id IS NOT NULL AND ci.match_method <> 'pseudo' "
+        "  THEN s.order_id END) AS id_orders, "
+        "COUNT(DISTINCT CASE WHEN s.sale_kind = 'order' "
+        "  AND ci.match_method <> 'pseudo' THEN ci.person_id END) AS customers "
+        "FROM all_sales s LEFT JOIN customer_identity ci "
+        "ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id "
+        "WHERE s.sale_date BETWEEN '" + y0 + "' AND '" + y1 + "' "
+        "AND s.sale_kind IN ('sale','order','return') AND " + BASE_FILTERS
+        + " GROUP BY 1 /* customer_identity_snapshot:"
+        + _customer_identity_snapshot_version().replace("*/", "") + " */"
     ):
         sales[r["bucket"]] = {
             "net": float(r["net"] or 0), "orders": float(r["orders"] or 0),
@@ -22052,18 +22079,17 @@ def _es_customer_windows(span_from, span_to, windows, country):
     # onto their legacy Shopify IDs, so a returning Kenya shopper appearing under
     # a new Odoo ID after the cutover is not mislabelled "New". The old MIN()
     # fallback lacked the bridge and diverged from the rollup's classification.
-    if _rollup_fresh("customer_first_purchase"):
-        prefix_ctes = ""
-        at_cte = """at AS (
-            SELECT customer_id, first_purchase_date AS first_ever
-            FROM rollup_customer_first_purchase
-        )"""
-    else:
-        prefix_ctes = _unified_first_purchase_ctes() + ","
-        at_cte = """at AS (
-            SELECT customer_id, first_purchase_date AS first_ever
-            FROM first_purchase
-        )"""
+    # customer_people is the published person snapshot; bare-id rollups cannot
+    # represent a person who bought in multiple stores.
+    prefix_ctes = canonical_customer_sales_cte(
+        "s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL"
+        " AND s.customer_id NOT IN ('None','null','') AND " + BASE_FILTERS
+        + " " + country_filter
+    ) + ","
+    at_cte = """at AS (
+        SELECT person_id AS customer_id, first_purchase AS first_ever
+        FROM customer_people WHERE NOT is_pseudo
+    )"""
     # Exclude walk-in / pseudo-accounts so exec-summary customer counts match
     # the Customers page universe (_not_walkin_pseudo_sql mirrors the same gate
     # applied in get_customers). Without this, pseudo-accounts with a customer_id
@@ -22072,13 +22098,10 @@ def _es_customer_windows(span_from, span_to, windows, country):
     rows = run_query("""
         WITH """ + prefix_ctes + at_cte + """,
         pc AS (
-            SELECT s.customer_id, """ + ",\n".join(pc_cols) + """
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND s.sale_date BETWEEN '""" + span_from + """' AND '""" + span_to + """'
-              AND """ + BASE_FILTERS + " " + country_filter + " " + pseudo_excl + """
-            GROUP BY s.customer_id
+            SELECT s.person_id AS customer_id, """ + ",\n".join(pc_cols) + """
+            FROM customer_sales s
+            WHERE s.sale_date BETWEEN '""" + span_from + """' AND '""" + span_to + """'
+            GROUP BY s.person_id
         )
         SELECT """ + ",\n".join(sel) + """
         FROM pc JOIN at a ON pc.customer_id = a.customer_id
@@ -22103,29 +22126,22 @@ def _es_customer_by_country(span_from, span_to, windows, country):
                    + a + "' AND '" + b + "') AS new_" + k)
         sel.append("COUNT(*) FILTER (WHERE oc_" + k + " > 0 AND a.first_ever < '"
                    + a + "') AS ret_" + k)
-    if _rollup_fresh("customer_first_purchase"):
-        prefix_ctes = ""
-        at_cte = """at AS (
-            SELECT customer_id, first_purchase_date AS first_ever
-            FROM rollup_customer_first_purchase
-        )"""
-    else:
-        prefix_ctes = _unified_first_purchase_ctes() + ","
-        at_cte = """at AS (
-            SELECT customer_id, first_purchase_date AS first_ever
-            FROM first_purchase
-        )"""
-    pseudo_excl = "AND " + _not_walkin_pseudo_sql("s")
+    prefix_ctes = canonical_customer_sales_cte(
+        "s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL"
+        " AND s.customer_id NOT IN ('None','null','') AND " + BASE_FILTERS
+        + " " + country_filter
+    ) + ","
+    at_cte = """at AS (
+        SELECT person_id AS customer_id, first_purchase AS first_ever
+        FROM customer_people WHERE NOT is_pseudo
+    )"""
     rows = run_query("""
         WITH """ + prefix_ctes + at_cte + """,
         pc AS (
-            SELECT s.customer_id, s.country, """ + ",\n".join(pc_cols) + """
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND s.sale_date BETWEEN '""" + span_from + """' AND '""" + span_to + """'
-              AND """ + BASE_FILTERS + " " + country_filter + " " + pseudo_excl + """
-            GROUP BY s.customer_id, s.country
+            SELECT s.person_id AS customer_id, s.country, """ + ",\n".join(pc_cols) + """
+            FROM customer_sales s
+            WHERE s.sale_date BETWEEN '""" + span_from + """' AND '""" + span_to + """'
+            GROUP BY s.person_id, s.country
         )
         SELECT pc.country, """ + ",\n".join(sel) + """
         FROM pc JOIN at a ON pc.customer_id = a.customer_id
@@ -22618,108 +22634,13 @@ def analytics_recently_returned_v1(
     callers cannot override the lifecycle definition. The bounded window and
     scoped history probe preserve exact LAG semantics without a full scan.
     """
-    try:
-        window_from = (date.fromisoformat(str(date_from)[:10])
-                       if date_from else date.today().replace(day=1))
-        window_to = date.fromisoformat(str(date_to)[:10]) if date_to else date.today()
-    except ValueError:
-        raise HTTPException(status_code=422, detail="date_from and date_to must be ISO dates")
-    if window_from > window_to:
-        raise HTTPException(status_code=422, detail="date_from must be on or before date_to")
-
-    scan_from = (window_from - timedelta(days=CUSTOMER_RETURN_GAP_DAYS)).isoformat()
-    scan_end = (window_to + timedelta(days=1)).isoformat()
-    window_from_s = window_from.isoformat()
-    window_to_s = window_to.isoformat()
-    lim = min(max(1, int(limit)), 500)
-    country_filter = ("AND s.country IN (" + csv_to_sql(country) + ")") if country else ""
-    channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
-    not_walkin = _not_walkin_pseudo_sql()
-
-    return run_query(f"""
-        WITH base_sales AS (
-            SELECT s.customer_id, s.sale_date::date AS d
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order')
-              AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND s.sale_date >= '{scan_from}' AND s.sale_date < '{scan_end}'
-              AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-              AND {not_walkin}
-              AND {BASE_FILTERS}
-              {country_filter}
-              {channel_filter}
-        ),
-        gaps AS (
-            SELECT customer_id, d,
-                LAG(d) OVER (PARTITION BY customer_id ORDER BY d) AS prev_d
-            FROM base_sales
-        ),
-        prevnull AS (
-            SELECT DISTINCT customer_id
-            FROM gaps
-            WHERE d BETWEEN '{window_from_s}'::date AND '{window_to_s}'::date
-              AND prev_d IS NULL
-        ),
-        hist AS (
-            SELECT p.customer_id, MAX(s.sale_date::date) AS prev_d
-            FROM prevnull p
-            JOIN all_sales s ON s.customer_id = p.customer_id
-            WHERE s.sale_kind IN ('sale','order')
-              AND s.sale_date < '{scan_from}'
-              AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-              AND {not_walkin}
-              AND {BASE_FILTERS}
-              {country_filter}
-              {channel_filter}
-            GROUP BY p.customer_id
-        ),
-        returned_events AS (
-            SELECT DISTINCT ON (g.customer_id)
-                g.customer_id,
-                COALESCE(g.prev_d, h.prev_d) AS prev_order_date,
-                g.d AS last_order_date,
-                (g.d - COALESCE(g.prev_d, h.prev_d)) AS gap_days
-            FROM gaps g
-            LEFT JOIN hist h ON h.customer_id = g.customer_id
-            WHERE g.d BETWEEN '{window_from_s}'::date AND '{window_to_s}'::date
-              AND (
-                    (g.prev_d IS NOT NULL AND (g.d - g.prev_d) >= {CUSTOMER_RETURN_GAP_DAYS})
-                 OR (g.prev_d IS NULL AND h.customer_id IS NOT NULL)
-              )
-            ORDER BY g.customer_id, g.d DESC
-        ),
-        period_stats AS (
-            SELECT s.customer_id,
-                COUNT(DISTINCT s.order_id) AS total_orders_window,
-                ROUND(SUM(s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric), 0) AS total_spend_kes_window
-            FROM all_sales s
-            JOIN returned_events r ON r.customer_id = s.customer_id
-            WHERE s.sale_kind IN ('sale','order')
-              AND s.sale_date >= '{window_from_s}' AND s.sale_date < '{scan_end}'
-              AND {BASE_FILTERS}
-              {country_filter}
-              {channel_filter}
-            GROUP BY s.customer_id
-        ),
-        profiles AS (
-            SELECT c.customer_id,
-                MAX(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')), '')) AS customer_name
-            FROM all_customers c
-            JOIN returned_events r ON r.customer_id = c.customer_id
-            GROUP BY c.customer_id
-        )
-        SELECT r.customer_id, p.customer_name, r.prev_order_date, r.last_order_date,
-            r.gap_days,
-            COALESCE(ps.total_orders_window, 0) AS total_orders_window,
-            COALESCE(ps.total_spend_kes_window, 0) AS total_spend_kes_window,
-            (CURRENT_DATE - r.last_order_date) AS days_since_last
-        FROM returned_events r
-        LEFT JOIN profiles p ON p.customer_id = r.customer_id
-        LEFT JOIN period_stats ps ON ps.customer_id = r.customer_id
-        ORDER BY r.last_order_date DESC, r.gap_days DESC
-        LIMIT {lim}
-    """, ttl=900)
+    # Keep the deprecated route on the same qualified-person implementation as
+    # the current route; retaining its former bare-id SQL would reintroduce
+    # cross-store collisions for old clients.
+    return analytics_recently_returned(
+        date_from=date_from, date_to=date_to, country=country, channel=channel,
+        min_gap_days=min_gap_days, limit=limit,
+    )
 
 
 @app.get("/api/analytics/recently-unchurned")
@@ -22754,19 +22675,16 @@ def analytics_recently_returned(
     channel_filter = ("AND s.pos_location_name IN (" + csv_to_sql(channel) + ")") if channel else ""
     not_walkin = _not_walkin_pseudo_sql()
 
+    canonical_where = ("s.sale_kind IN ('sale','order') AND s.customer_id IS NOT NULL"
+                       " AND s.customer_id NOT IN ('None','null','') AND " + BASE_FILTERS
+                       + " " + country_filter + " " + channel_filter)
     return run_query(f"""
-        WITH period_purchases AS (
-            SELECT DISTINCT s.customer_id, s.sale_date::date AS return_date
-            FROM all_sales s
-            WHERE s.sale_kind IN ('sale','order')
-              AND s.customer_id IS NOT NULL
-              AND s.customer_id NOT IN ('None','null','')
-              AND s.sale_date >= '{window_from_s}' AND s.sale_date < '{scan_end}'
+        WITH {canonical_customer_sales_cte(canonical_where)},
+        period_purchases AS (
+            SELECT DISTINCT s.person_id AS customer_id, s.sale_date::date AS return_date
+            FROM customer_sales s
+            WHERE s.sale_date >= '{window_from_s}' AND s.sale_date < '{scan_end}'
               AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-              AND {not_walkin}
-              AND {BASE_FILTERS}
-              {country_filter}
-              {channel_filter}
         ),
         returned_events AS (
             SELECT DISTINCT ON (p.customer_id)
@@ -22777,15 +22695,10 @@ def analytics_recently_returned(
             FROM period_purchases p
             CROSS JOIN LATERAL (
                 SELECT s.sale_date::date AS prev_order_date
-                FROM all_sales s
-                WHERE s.customer_id = p.customer_id
-                  AND s.sale_kind IN ('sale','order')
+                FROM customer_sales s
+                WHERE s.person_id = p.customer_id
                   AND s.sale_date < p.return_date::text
                   AND s.sale_date ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-                  AND {not_walkin}
-                  AND {BASE_FILTERS}
-                  {country_filter}
-                  {channel_filter}
                 ORDER BY s.sale_date DESC
                 LIMIT 1
             ) prev
@@ -22793,24 +22706,17 @@ def analytics_recently_returned(
             ORDER BY p.customer_id, p.return_date DESC
         ),
         period_stats AS (
-            SELECT s.customer_id,
+            SELECT s.person_id AS customer_id,
                 COUNT(DISTINCT s.order_id) AS total_orders_window,
                 ROUND(SUM(s.total_sales_kes::numeric - COALESCE(s.discounts_kes, 0)::numeric), 0) AS total_spend_kes_window
-            FROM all_sales s
-            JOIN returned_events r ON r.customer_id = s.customer_id
+            FROM customer_sales s
+            JOIN returned_events r ON r.customer_id = s.person_id
             WHERE s.sale_kind IN ('sale','order')
               AND s.sale_date >= '{window_from_s}' AND s.sale_date < '{scan_end}'
-              AND {BASE_FILTERS}
-              {country_filter}
-              {channel_filter}
-            GROUP BY s.customer_id
+            GROUP BY s.person_id
         ),
         profiles AS (
-            SELECT c.customer_id,
-                MAX(NULLIF(TRIM(COALESCE(c.first_name,'') || ' ' || COALESCE(c.last_name,'')), '')) AS customer_name
-            FROM all_customers c
-            JOIN returned_events r ON r.customer_id = c.customer_id
-            GROUP BY c.customer_id
+            SELECT person_id AS customer_id, name AS customer_name FROM customer_people
         )
         SELECT r.customer_id, p.customer_name, r.prev_order_date, r.last_order_date,
             r.gap_days,
@@ -27167,43 +27073,35 @@ def analytics_store_overstock(country: str = Query(default=None), channel: str =
         }
 
     # ── 5. Customer health ────────────────────────────────────────────────────
+    cust_scope = ("s.sale_kind IN ('sale','order') AND s.sale_date::date BETWEEN '"
+                  + str(cur_start) + "' AND '" + str(cur_end) + "'"
+                  + f" AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})"
+                  + " AND s.pos_location_name NOT ILIKE '%online%' " + cs)
     cust_rows = run_query(f"""
-        WITH {_unified_first_purchase_ctes()},
+        WITH {canonical_customer_sales_cte(cust_scope)},
         rc AS (
-          SELECT pos_location_name AS store, customer_id,
+          SELECT pos_location_name AS store, person_id,
                  COUNT(DISTINCT order_id) AS n_orders
-          FROM all_sales
-          WHERE sale_date::date BETWEEN '{cur_start}' AND '{cur_end}'
-            AND sale_kind IN ('sale','order')
-            AND customer_id IS NOT NULL AND customer_id NOT IN ('None','null','')
-            AND pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
+          FROM customer_sales
           GROUP BY 1, 2
         )
         SELECT s.pos_location_name AS store,
-          COUNT(DISTINCT s.customer_id) AS total_cust,
-          COUNT(DISTINCT s.customer_id) FILTER (WHERE first_purchase.first_purchase_date::date BETWEEN '{cur_start}' AND '{cur_end}') AS new_cust,
-          COUNT(DISTINCT s.customer_id) FILTER (WHERE first_purchase.first_purchase_date::date < '{cur_start}') AS ret_cust,
-          COUNT(DISTINCT s.customer_id) FILTER (WHERE rc.n_orders > 1) AS repeat_cust
-        FROM all_sales s
-        LEFT JOIN first_purchase ON first_purchase.customer_id = s.customer_id
-        LEFT JOIN rc ON rc.store = s.pos_location_name AND rc.customer_id = s.customer_id
-        WHERE s.sale_date::date BETWEEN '{cur_start}' AND '{cur_end}'
-          AND s.sale_kind IN ('sale','order')
-          AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')
-          AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-          AND s.pos_location_name NOT ILIKE '%online%'
-          AND {_not_walkin_pseudo_sql()} {cs}
+          COUNT(DISTINCT s.person_id) AS total_cust,
+          COUNT(DISTINCT s.person_id) FILTER (WHERE cp.first_purchase::date BETWEEN '{cur_start}' AND '{cur_end}') AS new_cust,
+          COUNT(DISTINCT s.person_id) FILTER (WHERE cp.first_purchase::date < '{cur_start}') AS ret_cust,
+          COUNT(DISTINCT s.person_id) FILTER (WHERE rc.n_orders > 1) AS repeat_cust
+        FROM customer_sales s JOIN customer_people cp ON cp.person_id=s.person_id
+        LEFT JOIN rc ON rc.store=s.pos_location_name AND rc.person_id=s.person_id
         GROUP BY 1
     """, ttl=HEAVY_DASH_TTL)
+    pri_scope = ("s.sale_kind IN ('sale','order') AND s.sale_date::date BETWEEN '"
+                 + str(pri_start) + "' AND '" + str(pri_end) + "'"
+                 + f" AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})"
+                 + " AND s.pos_location_name NOT ILIKE '%online%' " + cs)
     cust_pri_rows = run_query(f"""
-        SELECT s.pos_location_name AS store, COUNT(DISTINCT s.customer_id) AS n
-        FROM all_sales s
-        WHERE s.sale_date::date BETWEEN '{pri_start}' AND '{pri_end}'
-          AND s.sale_kind IN ('sale','order')
-          AND s.customer_id IS NOT NULL AND s.customer_id NOT IN ('None','null','')
-          AND s.pos_location_name NOT IN ({WAREHOUSE_LOCATIONS})
-          AND s.pos_location_name NOT ILIKE '%online%'
-          AND {_not_walkin_pseudo_sql()} {cs}
+        WITH {canonical_customer_sales_cte(pri_scope)},
+        SELECT s.pos_location_name AS store, COUNT(DISTINCT s.person_id) AS n
+        FROM customer_sales s
         GROUP BY 1
     """, ttl=HEAVY_DASH_TTL)
     cust_pri = {r["store"]: int(r.get("n") or 0) for r in (cust_pri_rows or [])}
@@ -30283,6 +30181,35 @@ def admin_slow_queries(request: Request):
         out["pg_stat_statements_available"] = False
         out["pg_stat_statements_error"] = str(e)[:300]
     return out
+
+
+@app.get("/api/admin/customer-identity-diagnostics")
+def admin_customer_identity_diagnostics(request: Request):
+    """Publication freshness plus store-qualified sales reconciliation.
+
+    Kept behind the existing admin boundary because reconciliation exposes
+    source/store operational volumes.  It is read-only and never republishes or
+    changes matching decisions.
+    """
+    _require_admin(request)
+    pool, conn = _acquire_conn()
+    broken = False
+    try:
+        conn.autocommit = True
+        cur = conn.cursor()
+        try:
+            return customer_identity_diagnostics(cur)
+        finally:
+            cur.close()
+    except Exception as exc:
+        broken = True
+        raise HTTPException(
+            status_code=503,
+            detail={"error": "customer identity diagnostics unavailable",
+                    "detail": str(exc)[:300]},
+        )
+    finally:
+        pool.putconn(conn, close=broken)
 
 
 @app.get("/api/pool-status")
@@ -38470,30 +38397,42 @@ def crm_segments_export(request: Request):
     outer_sql = (" AND " + " AND ".join(outer)) if outer else ""
 
     sql = (
-        "WITH base AS ("
+        "WITH " + canonical_customer_sales_cte("TRUE") + ","
+        "attrs AS ("
+        " SELECT ci.person_id, MAX(c.country) AS country, MAX(c.store_id) AS store_id"
+        " FROM customer_identity ci JOIN all_customers c"
+        " ON c.customer_id::text=ci.source_customer_id AND c.store_id=ci.store_id"
+        " GROUP BY ci.person_id),"
+        "profile AS ("
+        " SELECT cp.person_id AS customer_id, cp.name AS first_name, NULL::text AS last_name,"
+        " cp.phone, cp.email, attrs.country, attrs.store_id,"
+        " cp.total_orders, cp.total_spend_kes, cp.last_purchase AS last_order_date"
+        " FROM customer_people cp LEFT JOIN attrs USING(person_id)"
+        " WHERE NOT cp.is_pseudo),"
+        "base AS ("
         "  SELECT ac.customer_id,"
         "         NULLIF(TRIM(CONCAT_WS(' ', ac.first_name, ac.last_name)),'') AS name,"
         "         ac.phone, ac.email, ac.country, ac.store_id,"
         "         COALESCE(ac.total_orders,0) AS total_orders,"
         "         COALESCE(ac.total_spend_kes,0) AS total_spend_kes,"
         "         ac.last_order_date"
-        f"  FROM all_customers ac WHERE {' AND '.join(where)}"
+        f"  FROM profile ac WHERE {' AND '.join(where)}"
         "), "
         "aff AS ("
         "  SELECT customer_id, product_type FROM ("
-        "    SELECT customer_id, product_type,"
-        "           ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY SUM(COALESCE(net_quantity,0)) DESC NULLS LAST) AS rn"
-        "    FROM all_sales WHERE customer_id IN (SELECT customer_id FROM base)"
+        "    SELECT person_id AS customer_id, product_type,"
+        "           ROW_NUMBER() OVER (PARTITION BY person_id ORDER BY SUM(COALESCE(net_quantity,0)) DESC NULLS LAST) AS rn"
+        "    FROM customer_sales WHERE person_id IN (SELECT customer_id FROM base)"
         "      AND product_type IS NOT NULL AND product_type <> ''"
-        "    GROUP BY customer_id, product_type) q WHERE rn = 1"
+        "    GROUP BY person_id, product_type) q WHERE rn = 1"
         "), "
         "ch AS ("
         "  SELECT customer_id, channel FROM ("
-        "    SELECT customer_id, channel,"
-        "           ROW_NUMBER() OVER (PARTITION BY customer_id ORDER BY COUNT(*) DESC) AS rn"
-        "    FROM all_sales WHERE customer_id IN (SELECT customer_id FROM base)"
+        "    SELECT person_id AS customer_id, channel,"
+        "           ROW_NUMBER() OVER (PARTITION BY person_id ORDER BY COUNT(*) DESC) AS rn"
+        "    FROM customer_sales WHERE person_id IN (SELECT customer_id FROM base)"
         "      AND channel IS NOT NULL AND channel <> ''"
-        "    GROUP BY customer_id, channel) q WHERE rn = 1"
+        "    GROUP BY person_id, channel) q WHERE rn = 1"
         ") "
         "SELECT b.customer_id, b.name, b.phone, b.email, b.country, b.store_id,"
         "       b.total_orders, b.total_spend_kes, b.last_order_date,"
@@ -47039,7 +46978,8 @@ def store_profile_kpi_trend(store: str = Query(...)):
     sp_sales = _sp_scope_sql(store, "s.pos_location_name")
     sp_ff    = _sp_scope_sql(store, ff_canon_sql())
     sp_inv   = _sp_scope_sql(store, "i.pos_location_name", _SP_ALL_INV_PRED)
-    ck = f"store_profile:kpi_trend:{store_s}"
+    ck = (f"store_profile:kpi_trend:{store_s}:identity:"
+          + _customer_identity_snapshot_version())
     cv, cf = cache_get_swr(ck)
     if cv is not None:
         if not cf:
@@ -47058,18 +46998,7 @@ def store_profile_kpi_trend(store: str = Query(...)):
     vat = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 
     # ── Sales KPIs per month ──────────────────────────────────────────────────
-    # New/Returning must come from first-EVER purchase (canonical rollup), NOT
-    # stored customer_type: incremental Odoo sync writes 'registered' and rows
-    # only get reclassified to new/returning on full rebuilds, so recent months
-    # would always read 0% new.
-    _fp_cte_sp = (
-        "first_purchase AS (SELECT customer_id, first_purchase_date"
-        " FROM rollup_customer_first_purchase)"
-        if _rollup_fresh("customer_first_purchase")
-        else _unified_first_purchase_ctes()
-    )
     sales_rows = run_query(f"""
-        WITH {_fp_cte_sp}
         SELECT date_trunc('month', s.sale_date::date)::date AS month,
           SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
           ROUND(SUM(
@@ -47083,23 +47012,23 @@ def store_profile_kpi_trend(store: str = Query(...)):
           ROUND(SUM(COALESCE(s.gross_sales_kes::numeric,0)) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS gross_revenue,
           COUNT(DISTINCT s.order_id) FILTER (WHERE s.sale_kind IN ('sale','order')) AS transactions,
           COALESCE(SUM(COALESCE(s.returned_item_quantity,0)) FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS returned_qty,
-          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                               AND s.customer_id NOT IN ('None','null','')
-                               AND (fp.first_purchase_date IS NULL
-                                    OR date_trunc('month', fp.first_purchase_date)
-                                       = date_trunc('month', s.sale_date::date))
-                              THEN s.customer_id END) AS new_customers,
-          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                               AND s.customer_id NOT IN ('None','null','')
-                               AND fp.first_purchase_date IS NOT NULL
-                               AND date_trunc('month', fp.first_purchase_date)
-                                   < date_trunc('month', s.sale_date::date)
-                              THEN s.customer_id END) AS returning_customers,
-          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                               AND s.customer_id NOT IN ('None','null','')
-                              THEN s.customer_id END) AS total_customers
+          COUNT(DISTINCT CASE
+              WHEN ci.match_method <> 'pseudo'
+               AND date_trunc('month', cp.first_purchase)
+                   = date_trunc('month', s.sale_date::date)
+              THEN ci.person_id END) AS new_customers,
+          COUNT(DISTINCT CASE
+              WHEN ci.match_method <> 'pseudo'
+               AND date_trunc('month', cp.first_purchase)
+                   < date_trunc('month', s.sale_date::date)
+              THEN ci.person_id END) AS returning_customers,
+          COUNT(DISTINCT CASE WHEN ci.match_method <> 'pseudo'
+                              THEN ci.person_id END) AS total_customers
         FROM all_sales s
-        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
+        LEFT JOIN customer_identity ci
+          ON ci.source_customer_id=s.customer_id::text
+         AND ci.store_id=s.store_id
+        LEFT JOIN customer_people cp ON cp.person_id=ci.person_id
         WHERE s.sale_date::date >= '{window_start}'
           AND s.sale_date::date <= '{window_end}'
           AND {sp_sales}
@@ -47535,7 +47464,8 @@ def store_profile_targets(store: str = Query(...)):
     all_mode = _sp_all_stores(store)
     selected_names = _sp_store_values(store)
     sp_sales = _sp_scope_sql(store, "s.pos_location_name")
-    ck = f"store_profile:targets:{store_s}"
+    ck = (f"store_profile:targets:{store_s}:identity:"
+          + _customer_identity_snapshot_version())
     cv, cf = cache_get_swr(ck)
     if cv is not None:
         if not cf:
@@ -47568,17 +47498,7 @@ def store_profile_targets(store: str = Query(...)):
         )
         tgt = float(tgt_rows[0]["tgt"]) if tgt_rows else None
 
-    # MTD actuals. New/Returning come from first-EVER purchase (canonical
-    # rollup) — stored customer_type reads 'registered' on current-month rows
-    # until a full rebuild, which would make new% always 0 MTD.
-    _fp_cte_sa = (
-        "first_purchase AS (SELECT customer_id, first_purchase_date"
-        " FROM rollup_customer_first_purchase)"
-        if _rollup_fresh("customer_first_purchase")
-        else _unified_first_purchase_ctes()
-    )
     kpi_rows = run_query(f"""
-        WITH {_fp_cte_sa}
         SELECT
           SUM(CASE WHEN s.sale_kind IN ('sale','order') THEN s.ordered_item_quantity ELSE 0 END) AS units,
           ROUND(SUM(
@@ -47595,23 +47515,23 @@ def store_profile_targets(store: str = Query(...)):
                 FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS total_discounts,
           ROUND(SUM(COALESCE(s.gross_sales_kes::numeric,0))
                 FILTER (WHERE s.sale_kind IN ('sale','order')), 0) AS gross_revenue,
-          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                               AND s.customer_id NOT IN ('None','null','')
-                               AND (fp.first_purchase_date IS NULL
-                                    OR date_trunc('month', fp.first_purchase_date)
-                                       = date_trunc('month', s.sale_date::date))
-                              THEN s.customer_id END) AS new_customers,
-          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                               AND s.customer_id NOT IN ('None','null','')
-                               AND fp.first_purchase_date IS NOT NULL
-                               AND date_trunc('month', fp.first_purchase_date)
-                                   < date_trunc('month', s.sale_date::date)
-                              THEN s.customer_id END) AS returning_customers,
-          COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                               AND s.customer_id NOT IN ('None','null','')
-                              THEN s.customer_id END) AS total_customers
+          COUNT(DISTINCT CASE
+              WHEN ci.match_method <> 'pseudo'
+               AND date_trunc('month', cp.first_purchase)
+                   = date_trunc('month', s.sale_date::date)
+              THEN ci.person_id END) AS new_customers,
+          COUNT(DISTINCT CASE
+              WHEN ci.match_method <> 'pseudo'
+               AND date_trunc('month', cp.first_purchase)
+                   < date_trunc('month', s.sale_date::date)
+              THEN ci.person_id END) AS returning_customers,
+          COUNT(DISTINCT CASE WHEN ci.match_method <> 'pseudo'
+                              THEN ci.person_id END) AS total_customers
         FROM all_sales s
-        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
+        LEFT JOIN customer_identity ci
+          ON ci.source_customer_id=s.customer_id::text
+         AND ci.store_id=s.store_id
+        LEFT JOIN customer_people cp ON cp.person_id=ci.person_id
         WHERE s.sale_date::date >= '{mstart}'
           AND s.sale_date::date <= '{today}'
           AND {sp_sales}
@@ -47845,7 +47765,8 @@ def store_profile_performance_report(store: str = Query(...)):
     sp_sales = _sp_scope_sql(store, "s.pos_location_name")
     sp_ff    = _sp_scope_sql(store, ff_canon_sql())
     sp_inv   = _sp_scope_sql(store, "i.pos_location_name", _SP_ALL_INV_PRED)
-    ck = f"store_profile:perf_report:{store_s}"
+    ck = (f"store_profile:perf_report:{store_s}:identity:"
+          + _customer_identity_snapshot_version())
     cv, cf = cache_get_swr(ck)
     if cv is not None:
         if not cf:
@@ -47899,16 +47820,7 @@ def store_profile_performance_report(store: str = Query(...)):
         target_revenue = float(tgt_rows[0]["tgt"]) if tgt_rows else None
 
     # ── Sales data: MTD + prior year same month + 6m trailing ─────────────────
-    # New/Returning from first-EVER purchase (canonical rollup), not stored
-    # customer_type (current-month rows read 'registered' until full rebuild).
-    _fp_cte_pr = (
-        "first_purchase AS (SELECT customer_id, first_purchase_date"
-        " FROM rollup_customer_first_purchase)"
-        if _rollup_fresh("customer_first_purchase")
-        else _unified_first_purchase_ctes()
-    )
     sales_rows = run_query(f"""
-        WITH {_fp_cte_pr}
         SELECT
             CASE
                 WHEN s.sale_date::date >= '{cur_mstart}' THEN 'mtd'
@@ -47932,23 +47844,23 @@ def store_profile_performance_report(store: str = Query(...)):
                   FILTER (WHERE s.sale_kind IN ('sale','order')), 0)               AS gross_revenue,
             COALESCE(SUM(COALESCE(s.returned_item_quantity,0))
                      FILTER (WHERE s.sale_kind IN ('sale','order')), 0)            AS returned_qty,
-            COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                                 AND s.customer_id NOT IN ('None','null','')
-                                 AND (fp.first_purchase_date IS NULL
-                                      OR date_trunc('month', fp.first_purchase_date)
-                                         = date_trunc('month', s.sale_date::date))
-                                THEN s.customer_id END)                            AS new_customers,
-            COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                                 AND s.customer_id NOT IN ('None','null','')
-                                 AND fp.first_purchase_date IS NOT NULL
-                                 AND date_trunc('month', fp.first_purchase_date)
-                                     < date_trunc('month', s.sale_date::date)
-                                THEN s.customer_id END)                            AS returning_customers,
-            COUNT(DISTINCT CASE WHEN s.customer_id IS NOT NULL
-                                 AND s.customer_id NOT IN ('None','null','')
-                                THEN s.customer_id END)                            AS total_customers
+            COUNT(DISTINCT CASE
+                WHEN ci.match_method <> 'pseudo'
+                 AND date_trunc('month', cp.first_purchase)
+                     = date_trunc('month', s.sale_date::date)
+                THEN ci.person_id END) AS new_customers,
+            COUNT(DISTINCT CASE
+                WHEN ci.match_method <> 'pseudo'
+                 AND date_trunc('month', cp.first_purchase)
+                     < date_trunc('month', s.sale_date::date)
+                THEN ci.person_id END) AS returning_customers,
+            COUNT(DISTINCT CASE WHEN ci.match_method <> 'pseudo'
+                                THEN ci.person_id END) AS total_customers
         FROM all_sales s
-        LEFT JOIN first_purchase fp ON fp.customer_id = s.customer_id
+        LEFT JOIN customer_identity ci
+          ON ci.source_customer_id=s.customer_id::text
+         AND ci.store_id=s.store_id
+        LEFT JOIN customer_people cp ON cp.person_id=ci.person_id
         WHERE (
               (s.sale_date::date >= '{cur_mstart}' AND s.sale_date::date <= '{today}')
            OR (s.sale_date::date >= '{py_mstart}'  AND s.sale_date::date <= '{py_mend}')

@@ -108,6 +108,13 @@ def ensure_schema(cur):
     # constraint (we intentionally do not DROP tables, grants or review data).
     cur.execute("ALTER TABLE customer_identity DROP CONSTRAINT IF EXISTS customer_identity_pkey")
     cur.execute("CREATE UNIQUE INDEX IF NOT EXISTS customer_identity_source_key_uq ON customer_identity(source_key)")
+    # Every reader resolves a ledger customer through this *store-qualified*
+    # pair.  A bare Shopify id is not a customer key, and a sequential scan here
+    # makes the otherwise small identity map an expensive part of BI queries.
+    cur.execute("""CREATE UNIQUE INDEX IF NOT EXISTS customer_identity_store_customer_uq
+                   ON customer_identity(store_id, source_customer_id)""")
+    cur.execute("""CREATE INDEX IF NOT EXISTS customer_identity_person_idx
+                   ON customer_identity(person_id)""")
     # Seed registry for legacy persons before adding the FK.  Old IDs can then
     # remain valid instead of being renumbered during the additive migration.
     cur.execute("""INSERT INTO customer_person_registry(person_id)
@@ -300,9 +307,11 @@ def build_people(cur):
       sales AS (SELECT ci.person_id,
         count(DISTINCT (s.store_id,s.order_id)) orders,
         sum(s.total_sales_kes) spend,min(s.sale_date::date) first_purchase,max(s.sale_date::date) last_purchase
-        FROM all_sales s JOIN customer_identity ci ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id
-        AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END
-        WHERE s.sale_kind IN ('sale','order') GROUP BY ci.person_id)
+        FROM all_sales s JOIN customer_identity ci
+          ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id
+        WHERE s.sale_kind IN ('sale','order')
+          AND ci.match_method <> 'pseudo'
+        GROUP BY ci.person_id)
       SELECT a.*,coalesce(s.orders,0) total_orders,coalesce(s.spend,0) total_spend_kes,s.first_purchase,s.last_purchase,
        CASE WHEN coalesce(s.orders,0)>1 THEN 'Returning' WHEN coalesce(s.orders,0)=1 THEN 'New' ELSE 'No purchase' END customer_type,now() built_at
       FROM attrs a LEFT JOIN sales s USING(person_id)""")
@@ -326,8 +335,7 @@ def reconciliation(cur):
        count(*) FILTER (WHERE s.customer_id IS NOT NULL AND ci.person_id IS NULL),
        count(*) FILTER (WHERE ci.match_method='ambiguous_phone')
       FROM all_sales s LEFT JOIN customer_identity ci
-       ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id
-       AND ci.source_system=CASE WHEN s.store_id='vivofashiongroup' THEN 'odoo' ELSE 'shopify' END
+        ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id
       WHERE s.sale_kind IN ('sale','order') GROUP BY 1,2""")
     sales = {(a,b): dict(sales_orders=c, sales_spend=float(d), unmatched_sales=e,
                          ambiguous_sales=f) for a,b,c,d,e,f in cur.fetchall()}
@@ -346,6 +354,58 @@ def reconciliation(cur):
     return {"generated_at": datetime.now(timezone.utc).isoformat(), "markets": data, "totals": totals,
             "unmatched_sales_lines": totals["unmatched_sales_lines"],
             "ready": bool(data) and not any(x["ambiguous_sales"] for x in data)}
+
+
+def diagnostics(cur):
+    """Return publication freshness and reconciliation in one stable contract.
+
+    This intentionally does not attempt a new match or mutate state.  Operators
+    can distinguish an old known-good snapshot from a missing/failed publisher,
+    while BI readers retain the last atomically published customer_people view.
+    """
+    cur.execute("SELECT to_regclass('customer_identity_publish')")
+    if cur.fetchone()[0] is not None:
+        cur.execute("""SELECT status, published_at, source_rows,
+                              source_fingerprint, last_error
+                       FROM customer_identity_publish WHERE singleton=true""")
+        row = cur.fetchone()
+        publish = dict(
+            status=row[0] if row else "never",
+            published_at=row[1].isoformat() if row and row[1] else None,
+            source_rows=row[2] if row else 0,
+            source_fingerprint=row[3] if row else None,
+            last_error=row[4] if row else None,
+        )
+    else:
+        publish = dict(
+            status="compatibility_snapshot",
+            published_at=None,
+            source_rows=0,
+            source_fingerprint=None,
+            last_error="customer_identity_publish metadata is not installed",
+        )
+    cur.execute("""SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema=current_schema()
+          AND table_name='customer_people' AND column_name='built_at')""")
+    has_built_at = cur.fetchone()[0]
+    cur.execute(
+        "SELECT max(built_at), count(*) FROM customer_people"
+        if has_built_at else
+        "SELECT NULL::timestamptz, count(*) FROM customer_people"
+    )
+    people_built_at, people_count = cur.fetchone()
+    report = reconciliation(cur)
+    publish.update({
+        "people_built_at": people_built_at.isoformat() if people_built_at else None,
+        "people_count": people_count,
+        "reconciliation": report,
+        "fresh": publish["status"] == "ready"
+                 and publish["published_at"] is not None
+                 and people_built_at is not None
+                 and report["ready"],
+    })
+    return publish
 
 
 def main(argv=None):

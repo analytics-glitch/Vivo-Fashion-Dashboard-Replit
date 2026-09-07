@@ -43,6 +43,7 @@ const isTypingElement = (el) => {
   if (tag === "input" || tag === "textarea" || tag === "select") return true;
   return !!el.isContentEditable;
 };
+const personId = (row) => row?.person_id ?? row?.customer_id;
 
 const GlobalSearch = () => {
   const [open, setOpen] = useState(false);
@@ -216,7 +217,7 @@ const GlobalSearch = () => {
                               (item.phone || "—");
     return (
       <button
-        key={`${group}-${entry.idx}`}
+        key={group === "customers" ? `customers-${personId(item) || entry.idx}` : `${group}-${entry.idx}`}
         type="button"
         data-testid={`gs-item-${group}-${entry.idx}`}
         onMouseEnter={() => setActiveIdx(i)}

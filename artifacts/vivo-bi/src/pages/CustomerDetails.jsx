@@ -8,6 +8,9 @@ import { MERCH_CATEGORIES, subcategoriesFor } from "@/lib/productCategory";
 import { Users } from "@phosphor-icons/react";
 import { usePiiReveal, piiHeaders, maskPhone, maskEmail } from "@/lib/usePiiReveal";
 
+const personId = (row) => row?.person_id ?? row?.customer_id;
+const withPersonId = (row) => ({ ...row, person_id: personId(row) });
+
 /**
  * Customer Details — one row per identified customer with first / last
  * name, opt-in flags, contact info, lifetime stats, first / last order
@@ -49,7 +52,7 @@ const CustomerDetails = () => {
         headers: piiHeaders(revealToken),
         timeout: 240000,
       })
-      .then((r) => { if (!cancelled) setRows(r.data || []); })
+      .then((r) => { if (!cancelled) setRows((r.data || []).map(withPersonId)); })
       .catch((e) => { if (!cancelled) setError(e?.message || "Failed to load customers"); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
@@ -60,7 +63,7 @@ const CustomerDetails = () => {
     const q = search.trim().toLowerCase();
     if (!q) return rows;
     return rows.filter((r) => {
-      const hay = `${r.first_name || ""} ${r.last_name || ""} ${r.email || ""} ${r.mobile || ""} ${r.customer_id || ""}`.toLowerCase();
+      const hay = `${r.first_name || ""} ${r.last_name || ""} ${r.email || ""} ${r.mobile || ""} ${personId(r) || ""}`.toLowerCase();
       return hay.includes(q);
     });
   }, [rows, search]);
@@ -85,7 +88,7 @@ const CustomerDetails = () => {
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <p className="text-muted text-[13px]">
-            One row per identified customer. Walk-ins (no customer_id) are
+            One row per identified person. Walk-ins (no person ID) are
             excluded. Filter by category, subcategory, POS or date range
             using the global filter bar above.
           </p>
@@ -223,6 +226,9 @@ const CustomerDetails = () => {
                 render: (r) => fmtNum(r.total_orders) },
               { key: "first_order_date", label: "First Order", align: "left" },
               { key: "last_order_date", label: "Last Order", align: "left" },
+              { key: "person_id", label: "Person ID", align: "left",
+                render: (r) => <span className="font-mono text-[11px]">{personId(r) || "—"}</span>,
+                csv: (r) => personId(r) },
             ]}
             rows={filtered}
           />

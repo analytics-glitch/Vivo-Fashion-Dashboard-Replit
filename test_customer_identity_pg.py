@@ -7,7 +7,7 @@ from datetime import date
 
 import psycopg2
 
-from customer_identity import ensure_schema, publish, reconciliation
+from customer_identity import ensure_schema, publish, reconciliation, diagnostics
 
 
 URL = os.environ.get("TEST_DATABASE_URL")
@@ -155,6 +155,10 @@ class IdentityPG(unittest.TestCase):
         report = reconciliation(self.conn.cursor())
         self.assertEqual(report["totals"]["sales_spend"], 30.0)
         self.assertEqual(report["unmatched_sales_lines"], 0)
+        snapshot = diagnostics(self.conn.cursor())
+        self.assertTrue(snapshot["fresh"])
+        self.assertEqual(snapshot["people_count"], 2)
+        self.assertEqual(snapshot["reconciliation"]["unmatched_sales_lines"], 0)
         cur.execute(
             "SELECT person_id,total_orders,total_spend_kes,"
             "first_purchase,last_purchase "
@@ -183,6 +187,44 @@ class IdentityPG(unittest.TestCase):
             (updated[0], int(updated[1]), updated[2]),
             (2, 25, date(2024, 2, 3)),
         )
+
+    def test_cross_store_person_is_one_churn_and_acquisition_identity(self):
+        self.customers(
+            [
+                ("1", "vivo-uganda", "Ada", "", "", "254700"),
+                ("77", "vivo-rwanda", "Ada", "", "", "254700"),
+            ]
+        )
+        cur = self.conn.cursor()
+        cur.executemany(
+            "INSERT INTO all_sales VALUES(%s,%s,%s,%s,%s,%s)",
+            [
+                ("1", "vivo-uganda", "old-order", "2024-01-01", "sale", 10),
+                ("77", "vivo-rwanda", "new-store-order", "2026-01-15", "sale", 20),
+            ],
+        )
+        self.conn.commit()
+        publish(self.conn)
+
+        cur.execute(
+            "SELECT COUNT(*),MIN(first_purchase),MAX(last_purchase) "
+            "FROM customer_people WHERE is_pseudo IS NOT TRUE"
+        )
+        self.assertEqual(
+            cur.fetchone(),
+            (1, date(2024, 1, 1), date(2026, 1, 15)),
+        )
+        cur.execute(
+            "SELECT COUNT(DISTINCT ci.person_id) "
+            "FROM all_sales s JOIN customer_identity ci "
+            "ON ci.source_customer_id=s.customer_id "
+            "AND ci.store_id=s.store_id "
+            "WHERE s.sale_date BETWEEN '2026-01-01' AND '2026-01-31' "
+            "AND ci.person_id IN ("
+            " SELECT person_id FROM customer_people "
+            " WHERE first_purchase BETWEEN '2026-01-01' AND '2026-01-31')"
+        )
+        self.assertEqual(cur.fetchone()[0], 0)
 
     def test_regression_preserves_and_reader_only_sees_complete_snapshots(self):
         rows = [

@@ -41,7 +41,9 @@ interface FrequencyBucket {
 
 interface TopCustomer {
   rank: number;
-  customer_id: string;
+  person_id?: string;
+  /** Legacy API alias retained for deployments not yet returning person_id. */
+  customer_id?: string;
   customer_name: string;
   phone: string;
   email: string | null;
@@ -54,6 +56,8 @@ interface TopCustomer {
   last_purchase_date: string | null;
   first_purchase_date: string | null;
 }
+
+const personId = (customer: TopCustomer) => customer.person_id ?? customer.customer_id;
 
 interface LocationRow {
   pos_location_name: string;
@@ -263,13 +267,13 @@ export default function CustomersScreen() {
             ) : (
               <View style={styles.list}>
                 {top.map((r) => (
-                  <Card key={r.customer_id} style={styles.row}>
+                  <Card key={personId(r) || `customer-${r.rank}`} style={styles.row}>
                     <View style={styles.rowTop}>
                       <Text
                         style={[styles.name, { color: c.foreground }]}
                         numberOfLines={1}
                       >
-                        {r.customer_name?.trim() || r.customer_id}
+                        {r.customer_name?.trim() || personId(r) || "—"}
                       </Text>
                       <Text style={[styles.amount, { color: c.primary }]}>
                         {fmtKES(r.total_sales)}

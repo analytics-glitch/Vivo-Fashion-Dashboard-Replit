@@ -30,7 +30,9 @@ interface RfmSegment {
 }
 
 interface RfmCustomer {
-  customer_id: string;
+  person_id?: string;
+  /** Legacy API alias retained while older API responses are migrated. */
+  customer_id?: string;
   segment: string;
   recency_days: number;
   frequency: number;
@@ -39,6 +41,8 @@ interface RfmCustomer {
   f_score: number;
   m_score: number;
 }
+
+const personId = (customer: RfmCustomer) => customer.person_id ?? customer.customer_id;
 
 interface RfmResponse {
   summary: RfmSegment[];
@@ -191,13 +195,13 @@ export default function RfmScreen() {
             ) : (
               <MiniTable
                 columns={[
-                  { key: "customer_id", label: "Customer", flex: 1.4 },
+                  { key: "person_id", label: "Person", flex: 1.4 },
                   { key: "segment", label: "Segment", flex: 1.2 },
                   { key: "monetary", label: "Spend", align: "right", flex: 1.1 },
                   { key: "rfm", label: "RFM", align: "right", flex: 0.8 },
                 ]}
                 rows={customers.slice(0, 50).map((r) => ({
-                  customer_id: r.customer_id || "—",
+                  person_id: personId(r) || "—",
                   segment: r.segment,
                   monetary: fmtKES(r.monetary),
                   rfm: `${r.r_score}/${r.f_score}/${r.m_score}`,
