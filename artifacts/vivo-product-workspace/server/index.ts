@@ -3715,9 +3715,29 @@ async function ensureSchema() {
       status TEXT NOT NULL DEFAULT 'draft' CHECK (status IN ('draft','confirmed')),
       confirmed_at TIMESTAMPTZ,
       confirmed_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      locked_target_units INTEGER,
+      locked_target_styles INTEGER,
+      locked_planned_units INTEGER,
+      locked_planned_styles INTEGER,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       UNIQUE (iso_year, iso_week)
+    );
+    ALTER TABLE ${schema}.weekly_order_plans ADD COLUMN IF NOT EXISTS locked_target_units INTEGER;
+    ALTER TABLE ${schema}.weekly_order_plans ADD COLUMN IF NOT EXISTS locked_target_styles INTEGER;
+    ALTER TABLE ${schema}.weekly_order_plans ADD COLUMN IF NOT EXISTS locked_planned_units INTEGER;
+    ALTER TABLE ${schema}.weekly_order_plans ADD COLUMN IF NOT EXISTS locked_planned_styles INTEGER;
+    CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_plan_audit (
+      id BIGSERIAL PRIMARY KEY,
+      plan_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plans(id) ON DELETE CASCADE,
+      action TEXT NOT NULL CHECK (action IN ('confirmed','unlocked')),
+      target_units INTEGER,
+      target_styles INTEGER,
+      planned_units INTEGER,
+      planned_styles INTEGER,
+      actor_id INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      actor_name TEXT NOT NULL,
+      occurred_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
     CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_plan_lines (
       id SERIAL PRIMARY KEY,
@@ -12993,7 +13013,17 @@ const weeklyPlanPayload = (row: Record<string, unknown>) => ({
   isoWeek: Number(row.isoWeek),
   status: row.status,
   confirmedAt: row.confirmedAt ?? null,
+  confirmedBy: row.confirmedBy ?? null,
+  lockedTargetUnits: row.lockedTargetUnits == null ? null : Number(row.lockedTargetUnits),
+  lockedTargetStyles: row.lockedTargetStyles == null ? null : Number(row.lockedTargetStyles),
+  lockedPlannedUnits: row.lockedPlannedUnits == null ? null : Number(row.lockedPlannedUnits),
+  lockedPlannedStyles: row.lockedPlannedStyles == null ? null : Number(row.lockedPlannedStyles),
+  lastUnlockedAt: row.lastUnlockedAt ?? null,
+  lastUnlockedBy: row.lastUnlockedBy ?? null,
 });
+
+const canUnlockWeeklyPlan = (user?: UserRow) =>
+  user?.role === "Admin" || String(user?.role ?? "").trim().toUpperCase() === "CEO";
 
 const weeklyStyleIdentity = (row: Record<string, unknown>) => {
   const styleNumber = String(row.styleNumber ?? row.style_number ?? "").trim().toLowerCase();
@@ -13160,7 +13190,7 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
   }
 });
 
-router.get("/weekly-order-plan", async (req, res, next) => {
+router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
   try {
     const isoYear = Number(req.query.year ?? 2026);
     const isoWeek = Number(req.query.week ?? 36);
@@ -13179,8 +13209,19 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       [isoYear, isoWeek],
       ),
       pool.query(
-        `SELECT id,iso_year AS "isoYear",iso_week AS "isoWeek",status,confirmed_at AS "confirmedAt"
-         FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
+        `SELECT p.id,p.iso_year AS "isoYear",p.iso_week AS "isoWeek",p.status,
+           p.confirmed_at AS "confirmedAt",COALESCE(NULLIF(BTRIM(c.name),''),'Workspace user') AS "confirmedBy",
+           p.locked_target_units AS "lockedTargetUnits",p.locked_target_styles AS "lockedTargetStyles",
+           p.locked_planned_units AS "lockedPlannedUnits",p.locked_planned_styles AS "lockedPlannedStyles",
+           unlock.occurred_at AS "lastUnlockedAt",unlock.actor_name AS "lastUnlockedBy"
+         FROM ${schema}.weekly_order_plans p
+         LEFT JOIN ${schema}.users c ON c.id=p.confirmed_by
+         LEFT JOIN LATERAL (
+           SELECT a.occurred_at,a.actor_name FROM ${schema}.weekly_order_plan_audit a
+           WHERE a.plan_id=p.id AND a.action='unlocked'
+           ORDER BY a.occurred_at DESC,a.id DESC LIMIT 1
+         ) unlock ON TRUE
+         WHERE p.iso_year=$1 AND p.iso_week=$2`,
         [isoYear, isoWeek],
       ),
       pool.query(
@@ -13492,6 +13533,7 @@ router.get("/weekly-order-plan", async (req, res, next) => {
         derivedTargetUnits: derivedWeeklyTarget,
         updatedAt: weekTargetResult.rows[0]?.updatedAt ?? null,
       },
+      viewer: { canUnlockTarget: canUnlockWeeklyPlan(req.workspaceUser) },
       kpiTargets: kpiTargetResult.rows,
       kpis: weeklyKpis,
       lines: lines.rows,
@@ -13542,7 +13584,12 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
        RETURNING id,status`,
       [isoYear, isoWeek],
     );
-    if (plan.rows[0].status !== "draft") throw Object.assign(new Error("Confirmed weeks cannot be edited"), { status: 409 });
+    if (plan.rows[0].status !== "draft") {
+      throw Object.assign(
+        new Error(`Week ${isoWeek} target is confirmed and locked. Unlock target before adding styles.`),
+        { status: 409, code: "TARGET_LOCKED" },
+      );
+    }
     await client.query(`SELECT id FROM ${schema}.weekly_order_plans WHERE id=$1 FOR UPDATE`, [plan.rows[0].id]);
     const source = body.source === "catalogue" ? "catalogue" : "development";
     const biCatalogue = source === "catalogue" ? (await getBiWorkspaceSource()).styles.map(biStyle) : [];
@@ -13622,7 +13669,14 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
   } catch (error: any) {
     await client.query("ROLLBACK");
     if (error?.code === "23505") { res.status(409).json({ error: "This style is already in the week" }); return; }
-    if (error?.status) { res.status(error.status).json({ error: error.message }); return; }
+    if (error?.status) {
+      res.status(error.status).json({
+        error: error.message,
+        code: error.code,
+        canUnlock: error.code === "TARGET_LOCKED" && canUnlockWeeklyPlan(req.workspaceUser),
+      });
+      return;
+    }
     next(error);
   } finally {
     client.release();
@@ -13765,16 +13819,123 @@ router.delete("/weekly-order-plan/lines/:id", async (req, res, next) => {
 });
 
 router.post("/weekly-order-plan/confirm", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
   try {
-    const result = await pool.query(
-      `UPDATE ${schema}.weekly_order_plans SET status='confirmed',confirmed_at=NOW(),confirmed_by=$1,updated_at=NOW()
-       WHERE iso_year=$2 AND iso_week=$3 AND status='draft'
-       RETURNING id`,
-      [req.workspaceUser?.id ?? null, Number(req.body?.isoYear), Number(req.body?.isoWeek)],
+    const isoYear = Number(req.body?.isoYear);
+    const isoWeek = Number(req.body?.isoWeek);
+    const expectedTargetUnits = Number(req.body?.targetUnits);
+    const expectedTargetStyles = Number(req.body?.targetStyles);
+    const expectedPlannedUnits = Number(req.body?.plannedUnits);
+    const expectedPlannedStyles = Number(req.body?.plannedStyles);
+    if (![isoYear, isoWeek, expectedTargetUnits, expectedTargetStyles, expectedPlannedUnits, expectedPlannedStyles]
+      .every(Number.isInteger) || isoWeek < 1 || isoWeek > 53 || expectedTargetUnits < 0
+      || expectedTargetStyles < 0 || expectedPlannedUnits < 0 || expectedPlannedStyles < 0) {
+      res.status(400).json({ error: "The confirmation figures are incomplete" }); return;
+    }
+    await client.query("BEGIN");
+    const plan = await client.query(
+      `SELECT id,status FROM ${schema}.weekly_order_plans
+       WHERE iso_year=$1 AND iso_week=$2 FOR UPDATE`,
+      [isoYear, isoWeek],
     );
-    if (!result.rows.length) { res.status(409).json({ error: "Week is already confirmed or does not exist" }); return; }
+    if (!plan.rows.length || plan.rows[0].status !== "draft") {
+      await client.query("ROLLBACK");
+      res.status(409).json({ error: "This weekly target is already locked or no longer available" }); return;
+    }
+    const figures = await client.query(
+      `SELECT t.target_units::int AS "targetUnits",
+         COALESCE(k.target_value,0)::int AS "targetStyles",
+         COALESCE(SUM(l.estimated_quantity),0)::int AS "plannedUnits",
+         COUNT(l.id)::int AS "plannedStyles"
+       FROM ${schema}.weekly_order_week_targets t
+       LEFT JOIN ${schema}.weekly_order_kpi_targets k ON k.metric_key='new_styles'
+       LEFT JOIN ${schema}.weekly_order_plans p ON p.iso_year=t.iso_year AND p.iso_week=t.iso_week
+       LEFT JOIN ${schema}.weekly_order_plan_lines l ON l.plan_id=p.id
+       WHERE t.iso_year=$1 AND t.iso_week=$2
+       GROUP BY t.target_units,k.target_value`,
+      [isoYear, isoWeek],
+    );
+    if (!figures.rows.length) {
+      await client.query("ROLLBACK");
+      res.status(409).json({
+        error: "Enter and save a weekly unit target before confirming this week",
+        code: "TARGET_REQUIRED",
+      });
+      return;
+    }
+    const actual = figures.rows[0];
+    if (Number(actual.targetUnits) !== expectedTargetUnits
+      || Number(actual.targetStyles) !== expectedTargetStyles
+      || Number(actual.plannedUnits) !== expectedPlannedUnits
+      || Number(actual.plannedStyles) !== expectedPlannedStyles) {
+      await client.query("ROLLBACK");
+      res.status(409).json({ error: "The weekly figures changed. Review the refreshed totals before confirming." }); return;
+    }
+    await client.query(
+      `UPDATE ${schema}.weekly_order_plans
+       SET status='confirmed',confirmed_at=NOW(),confirmed_by=$1,
+         locked_target_units=$2,locked_target_styles=$3,
+         locked_planned_units=$4,locked_planned_styles=$5,updated_at=NOW()
+       WHERE id=$6`,
+      [req.workspaceUser?.id ?? null, expectedTargetUnits, expectedTargetStyles,
+        expectedPlannedUnits, expectedPlannedStyles, plan.rows[0].id],
+    );
+    await client.query(
+      `INSERT INTO ${schema}.weekly_order_plan_audit
+       (plan_id,action,target_units,target_styles,planned_units,planned_styles,actor_id,actor_name)
+       VALUES ($1,'confirmed',$2,$3,$4,$5,$6,$7)`,
+      [plan.rows[0].id, expectedTargetUnits, expectedTargetStyles, expectedPlannedUnits,
+        expectedPlannedStyles, req.workspaceUser?.id ?? null, req.workspaceUser?.name ?? "Workspace user"],
+    );
+    await client.query("COMMIT");
     res.json({ ok: true });
-  } catch (error) { next(error); }
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
+});
+
+router.post("/weekly-order-plan/unlock", async (req: AuthRequest, res, next) => {
+  const client = await pool.connect();
+  try {
+    if (!canUnlockWeeklyPlan(req.workspaceUser)) {
+      res.status(403).json({ error: "Only the CEO or a Workspace admin can unlock a confirmed target" }); return;
+    }
+    const isoYear = Number(req.body?.isoYear);
+    const isoWeek = Number(req.body?.isoWeek);
+    if (!Number.isInteger(isoYear) || !Number.isInteger(isoWeek) || isoWeek < 1 || isoWeek > 53) {
+      res.status(400).json({ error: "A valid week is required" }); return;
+    }
+    await client.query("BEGIN");
+    const result = await client.query(
+      `UPDATE ${schema}.weekly_order_plans SET status='draft',updated_at=NOW()
+       WHERE iso_year=$1 AND iso_week=$2 AND status='confirmed'
+       RETURNING id,locked_target_units,locked_target_styles,locked_planned_units,locked_planned_styles`,
+      [isoYear, isoWeek],
+    );
+    if (!result.rows.length) {
+      await client.query("ROLLBACK");
+      res.status(409).json({ error: "This weekly target is not locked" }); return;
+    }
+    const locked = result.rows[0];
+    await client.query(
+      `INSERT INTO ${schema}.weekly_order_plan_audit
+       (plan_id,action,target_units,target_styles,planned_units,planned_styles,actor_id,actor_name)
+       VALUES ($1,'unlocked',$2,$3,$4,$5,$6,$7)`,
+      [locked.id, locked.locked_target_units, locked.locked_target_styles,
+        locked.locked_planned_units, locked.locked_planned_styles,
+        req.workspaceUser?.id ?? null, req.workspaceUser?.name ?? "Workspace user"],
+    );
+    await client.query("COMMIT");
+    res.json({ ok: true });
+  } catch (error) {
+    await client.query("ROLLBACK");
+    next(error);
+  } finally {
+    client.release();
+  }
 });
 
 app.get("/api/l10/scorecard/live", requireUser, liveScorecardHandler);

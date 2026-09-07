@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import './WeeklyOrderPlanPage.css';
 import { AlertTriangle, ArrowRight, CalendarDays, CheckCircle2, ChevronLeft, ChevronRight, Clock3, History, Image as ImageIcon, Plus, Search, Trash2, X } from 'lucide-react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -28,7 +28,12 @@ type ActualOrder = {
   orderType: string | null; orderState: string | null; plannedLineId: number | null; unplanned: boolean;
 };
 type PlanPayload = {
-  plan: { id: number; isoYear: number; isoWeek: number; status: 'draft' | 'confirmed'; confirmedAt: string | null } | null;
+  plan: {
+    id: number; isoYear: number; isoWeek: number; status: 'draft' | 'confirmed'; confirmedAt: string | null;
+    confirmedBy: string | null; lockedTargetUnits: number | null; lockedTargetStyles: number | null;
+    lockedPlannedUnits: number | null; lockedPlannedStyles: number | null;
+    lastUnlockedAt: string | null; lastUnlockedBy: string | null;
+  } | null;
   week: { isoYear: number; isoWeek: number; startDate: string; endDate: string };
   weeklyTarget: {
     targetUnits: number; source: 'derived' | 'entered'; derivedTargetUnits: number; updatedAt: string | null;
@@ -38,6 +43,7 @@ type PlanPayload = {
     unit: 'units' | 'percent' | 'count'; available: boolean;
   }>;
   kpiTargets: Array<{ metricKey: string; label: string; targetValue: number; unit: string }>;
+  viewer: { canUnlockTarget: boolean };
   lines: PlanLine[];
   actualOrders: ActualOrder[];
   summary: {
@@ -58,10 +64,17 @@ type PlanPayload = {
 const stages = ['CAD Marker Making', 'Buying Requisition', 'Buying Production Order', 'Production Sample', 'Set Sampling', 'Set Sample Fitting', 'Approved for Production'];
 const orderTypes = ['New', 'Range Refreshed', 'Repeat'];
 
+type WorkspaceApiError = Error & { code?: string; canUnlock?: boolean };
+
 async function jsonFetch<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { credentials: 'include', ...init, headers: { 'Content-Type': 'application/json', ...init?.headers } });
   const body = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(body.error || `Request failed (${response.status})`);
+  if (!response.ok) {
+    const error = new Error(body.error || `Request failed (${response.status})`) as WorkspaceApiError;
+    error.code = body.code;
+    error.canUnlock = body.canUnlock;
+    throw error;
+  }
   return body;
 }
 
@@ -104,6 +117,16 @@ function SourcePicker({ year, week, onClose }: { year: number; week: number; onC
     }),
     onSuccess: () => { client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] }); onClose(); },
   });
+  const unlock = useMutation({
+    mutationFn: () => jsonFetch('/api/workspace/weekly-order-plan/unlock', {
+      method: 'POST', body: JSON.stringify({ isoYear: year, isoWeek: week }),
+    }),
+    onSuccess: () => {
+      add.reset();
+      client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] });
+    },
+  });
+  const addError = add.error as WorkspaceApiError | null;
   return <div className="weekly-modal-backdrop" onMouseDown={onClose}>
     <section className="weekly-picker" onMouseDown={(event) => event.stopPropagation()}>
       <header><div><span className="range-eyebrow">Add from a trusted source</span><h2>Select a style</h2><p>Style details are copied from the source record and cannot be edited here.</p></div><button className="icon-button" onClick={onClose}><X size={18} /></button></header>
@@ -127,7 +150,12 @@ function SourcePicker({ year, week, onClose }: { year: number; week: number; onC
             <label>Order stage<select value={orderStage} onChange={(event) => setOrderStage(event.target.value)}>{stages.map((value) => <option key={value}>{value}</option>)}</select></label>
             {selected.colourways.length ? <fieldset><legend>Colourways this week</legend>{selected.colourways.map((colour) => <label key={colour} className="weekly-check"><input type="checkbox" checked={colours.includes(colour)} onChange={() => setColours((current) => current.includes(colour) ? current.filter((item) => item !== colour) : [...current, colour])} />{colour}</label>)}</fieldset> : <p className="weekly-source-note">No saved catalogue colourways. Correct the source record if colourways are missing.</p>}
             <button className="button button-gold" disabled={add.isPending || !Number(quantity)} onClick={() => add.mutate()}><Plus size={15} />{add.isPending ? 'Adding…' : 'Add to week'}</button>
-            {add.error && <span className="form-error">{add.error.message}</span>}
+            {addError && <div className="weekly-add-error"><span className="form-error">{addError.message}</span>
+              {addError.code === 'TARGET_LOCKED' && (addError.canUnlock
+                ? <button className="button button-outline" disabled={unlock.isPending} onClick={() => unlock.mutate()}>{unlock.isPending ? 'Unlocking…' : 'Unlock target and continue'}</button>
+                : <small>Ask the CEO or a Workspace admin to unlock this target.</small>)}
+              {unlock.isError && <span className="form-error">{unlock.error.message}</span>}
+            </div>}
           </> : <div className="weekly-empty-selection"><Search size={24} /><p>Pick a source record to enter this week’s decisions.</p></div>}
         </aside>
       </div>
@@ -207,14 +235,36 @@ export default function WeeklyOrderPlanPage() {
   const { isoYear: year, isoWeek: week } = selectedWeek;
   const [pickerOpen, setPickerOpen] = useState(false);
   const [targetUnits, setTargetUnits] = useState('');
+  const [targetPrompt, setTargetPrompt] = useState('');
+  const [confirmationOpen, setConfirmationOpen] = useState(false);
+  const targetInputRef = useRef<HTMLInputElement>(null);
   const plan = useQuery<PlanPayload>({
     queryKey: ['weekly-order-plan', year, week],
     queryFn: () => jsonFetch(`/api/workspace/weekly-order-plan?year=${year}&week=${week}`),
     refetchInterval: 60_000,
   });
   const confirm = useMutation({
-    mutationFn: () => jsonFetch('/api/workspace/weekly-order-plan/confirm', { method: 'POST', body: JSON.stringify({ isoYear: year, isoWeek: week }) }),
-    onSuccess: () => { client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] }); client.invalidateQueries({ queryKey: ['workspace', 'range-plan'] }); },
+    mutationFn: () => jsonFetch('/api/workspace/weekly-order-plan/confirm', {
+      method: 'POST',
+      body: JSON.stringify({
+        isoYear: year, isoWeek: week,
+        targetUnits: data?.weeklyTarget.targetUnits,
+        targetStyles: data?.kpis.find((item) => item.metricKey === 'new_styles')?.target,
+        plannedUnits: data?.summary.units,
+        plannedStyles: data?.summary.styles,
+      }),
+    }),
+    onSuccess: () => {
+      setConfirmationOpen(false);
+      client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] });
+      client.invalidateQueries({ queryKey: ['workspace', 'range-plan'] });
+    },
+  });
+  const unlock = useMutation({
+    mutationFn: () => jsonFetch('/api/workspace/weekly-order-plan/unlock', {
+      method: 'POST', body: JSON.stringify({ isoYear: year, isoWeek: week }),
+    }),
+    onSuccess: () => client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] }),
   });
   const saveTarget = useMutation({
     mutationFn: () => jsonFetch('/api/workspace/weekly-order-plan/target', {
@@ -226,7 +276,10 @@ export default function WeeklyOrderPlanPage() {
   const data = plan.data;
   const locked = data?.plan?.status === 'confirmed';
   useEffect(() => {
-    if (data?.weeklyTarget) setTargetUnits(String(data.weeklyTarget.targetUnits));
+    if (data?.weeklyTarget) {
+      setTargetUnits(String(data.weeklyTarget.targetUnits));
+      setTargetPrompt('');
+    }
   }, [data?.weeklyTarget, year, week]);
   const underNewness = Boolean(data?.summary && data.summary.newnessShortfallUnits > 0);
   const newnessTargetDetail = data?.summary?.newnessTargetComponents
@@ -245,13 +298,26 @@ export default function WeeklyOrderPlanPage() {
       ? `${prefix}${value.toFixed(1)} pp`
       : `${prefix}${Math.round(value).toLocaleString()} ${unit === 'count' ? 'styles' : 'units'}`;
   };
+  const targetStyleCount = Math.round(data?.kpis.find((item) => item.metricKey === 'new_styles')?.target ?? 0);
+  const requestConfirmation = () => {
+    if (data?.weeklyTarget.source !== 'entered' || Number(targetUnits) !== data.weeklyTarget.targetUnits) {
+      setTargetPrompt(data?.weeklyTarget.source === 'entered'
+        ? 'Save the weekly unit target change before confirming.'
+        : 'Enter the weekly unit target, then select Save target before confirming.');
+      targetInputRef.current?.focus();
+      targetInputRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    setConfirmationOpen(true);
+  };
   return <section className="page weekly-order-page">
     <header className="weekly-header"><div><span className="range-eyebrow">Buying / {year} order calendar</span><h1>Weekly Order Plan</h1>{data?.week && <div className="weekly-date-range"><CalendarDays size={16} /><strong>Week {week}, {formatWeekRange(data.week)}</strong></div>}</div><div className="weekly-week-control"><button className="icon-button" onClick={() => setSelectedWeek((value) => adjacentIsoWeek(value, -1))}><ChevronLeft /></button><div><span>Order week</span><strong>Week {week}</strong></div><button className="icon-button" onClick={() => setSelectedWeek((value) => adjacentIsoWeek(value, 1))}><ChevronRight /></button></div></header>
     {plan.isLoading ? <div className="tracker-empty-state">Loading weekly plan…</div> : plan.isError ? <div className="empty-state error-state"><AlertTriangle /><h3>Could not load the weekly plan</h3><p>{plan.error.message}</p></div> : <>
       <div className="weekly-unit-target">
         <div><span className="range-eyebrow">Weekly planning input</span><label htmlFor="weekly-target-units">Target units for the week</label><small>{data?.weeklyTarget.source === 'entered' ? 'Saved specifically for this order week.' : `Seeded from the current monthly commitment share (${data?.weeklyTarget.derivedTargetUnits.toLocaleString()} units). Save to override it for this week.`}</small></div>
-        <div className="weekly-unit-target-control"><input id="weekly-target-units" type="number" min="0" step="1" disabled={locked} value={targetUnits} onChange={(event) => setTargetUnits(event.target.value)} /><button className="button button-dark" disabled={locked || saveTarget.isPending || !Number.isInteger(Number(targetUnits)) || Number(targetUnits) < 0 || Number(targetUnits) === data?.weeklyTarget.targetUnits} onClick={() => saveTarget.mutate()}>{saveTarget.isPending ? 'Saving…' : 'Save target'}</button></div>
+        <div className="weekly-unit-target-control"><input ref={targetInputRef} id="weekly-target-units" type="number" min="0" step="1" disabled={locked} value={targetUnits} onChange={(event) => { setTargetUnits(event.target.value); setTargetPrompt(''); }} /><button className="button button-dark" disabled={locked || saveTarget.isPending || !Number.isInteger(Number(targetUnits)) || Number(targetUnits) < 0 || (data?.weeklyTarget.source === 'entered' && Number(targetUnits) === data?.weeklyTarget.targetUnits)} onClick={() => saveTarget.mutate()}>{saveTarget.isPending ? 'Saving…' : 'Save target'}</button></div>
         {saveTarget.isError && <span className="form-error">{saveTarget.error.message}</span>}
+        {targetPrompt && <span className="form-error weekly-target-prompt">{targetPrompt}</span>}
       </div>
       <div className="weekly-kpi-grid">
         {data?.kpis.map((item) => <article key={item.metricKey} className={!item.available ? 'unavailable' : (item.variance ?? 0) >= 0 ? 'positive' : 'shortfall'}>
@@ -268,7 +334,8 @@ export default function WeeklyOrderPlanPage() {
         </article>)}
       </div>
       {underNewness && <div className="weekly-alert warning"><AlertTriangle size={18} /><div><strong>Weekly newness is short by {(data?.summary?.newnessShortfallUnits || 0).toLocaleString()} units</strong><span>Add {(data?.summary?.newnessShortfallStyles || 0).toLocaleString()} new style{data?.summary?.newnessShortfallStyles === 1 ? '' : 's'} at the default {(data?.summary?.newStyleOrderSizeUnits || 300).toLocaleString()}-unit order size to meet this week’s share of the monthly commitment.</span></div></div>}
-      <div className="weekly-actions"><div>{locked ? <span className="weekly-confirmed"><CheckCircle2 size={17} /> Weekly target confirmed and locked</span> : <span>Confirming locks the target. It never creates or dates an actual order.</span>}</div>{!locked && <><button className="button button-outline" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add style</button><button className="button button-dark" disabled={!data?.lines.length || confirm.isPending} onClick={() => { if (window.confirm(`Confirm Week ${week}? Its target styles and estimates will be locked. Actual orders will still appear from their real dates.`)) confirm.mutate(); }}>{confirm.isPending ? 'Confirming…' : 'Confirm target'}</button></>}</div>
+      <div className={`weekly-actions ${locked ? 'is-locked' : ''}`}><div>{locked ? <div className="weekly-locked-summary"><span className="weekly-confirmed"><CheckCircle2 size={17} /> Weekly target confirmed and locked</span><strong>{Number(data?.plan?.lockedTargetUnits ?? 0).toLocaleString()} target units · {Number(data?.plan?.lockedTargetStyles ?? 0).toLocaleString()} target styles</strong><small>Confirmed by {data?.plan?.confirmedBy || 'Workspace user'} on {data?.plan?.confirmedAt ? new Date(data.plan.confirmedAt).toLocaleString('en-GB') : '—'} · Planned when locked: {Number(data?.plan?.lockedPlannedUnits ?? 0).toLocaleString()} units across {Number(data?.plan?.lockedPlannedStyles ?? 0).toLocaleString()} styles</small></div> : <span>Confirming locks the target. It never creates or dates an actual order.</span>}</div>{locked ? data?.viewer.canUnlockTarget && <button className="button button-outline" disabled={unlock.isPending} onClick={() => { if (window.confirm(`Unlock Week ${week} target for editing? Existing style lines will not be changed.`)) unlock.mutate(); }}>{unlock.isPending ? 'Unlocking…' : 'Unlock target'}</button> : <><button className="button button-outline" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add style</button><button className="button button-dark" disabled={!data?.lines.length || confirm.isPending} onClick={requestConfirmation}>{confirm.isPending ? 'Confirming…' : 'Confirm target'}</button></>}</div>
+      {unlock.isError && <span className="form-error">{unlock.error.message}</span>}
       <div className="weekly-section-heading"><div><span className="range-eyebrow">Target</span><h2>Styles intended for Week {week}</h2></div><p>Order status follows the first real dated order, even when it is raised in a later week.</p></div>
        <div className="weekly-table-wrap"><table className="weekly-table"><thead><tr><th>Plan #</th><th>Source style</th><th>Range</th><th>Fabric</th><th>Target units</th><th>Colourways</th><th>Raised status</th><th>Order type</th><th>Stage</th><th>Move / history</th></tr></thead><tbody>{data?.lines.map((line) => <EditableLine key={line.id} line={line} locked={locked} year={year} week={week} startDate={data.week.startDate} endDate={data.week.endDate} />)}{!data?.lines.length && <tr><td colSpan={10}><div className="weekly-no-lines"><strong>No target styles in Week {week}</strong><p>Real dated orders will still appear below, flagged as unplanned.</p>{!locked && <button className="button button-gold" onClick={() => setPickerOpen(true)}><Plus size={15} /> Add first style</button>}</div></td></tr>}</tbody></table></div>
       <div className="weekly-section-heading weekly-actual-heading"><div><span className="range-eyebrow">Actual record</span><h2>Orders raised from {formatWeekRange(data?.week)}</h2></div><p>Each row is assigned here by its order date, never by the target week.</p></div>
@@ -279,5 +346,18 @@ export default function WeeklyOrderPlanPage() {
       </div>
     </>}
     {pickerOpen && <SourcePicker year={year} week={week} onClose={() => setPickerOpen(false)} />}
+    {confirmationOpen && data && <div className="weekly-modal-backdrop" onMouseDown={() => setConfirmationOpen(false)}>
+      <section className="weekly-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="weekly-confirm-title" onMouseDown={(event) => event.stopPropagation()}>
+        <header><div><span className="range-eyebrow">Final review</span><h2 id="weekly-confirm-title">Confirm Week {week} target?</h2></div><button className="icon-button" onClick={() => setConfirmationOpen(false)}><X size={18} /></button></header>
+        <p>These exact figures will be locked. This does not create or date an actual order.</p>
+        <dl>
+          <div><dt>Weekly target</dt><dd>{data.weeklyTarget.targetUnits.toLocaleString()} units</dd></div>
+          <div><dt>Target styles</dt><dd>{targetStyleCount.toLocaleString()} styles</dd></div>
+          <div><dt>Currently planned</dt><dd>{data.summary.units.toLocaleString()} units across {data.summary.styles.toLocaleString()} styles</dd></div>
+        </dl>
+        {confirm.isError && <span className="form-error">{confirm.error.message}</span>}
+        <footer><button className="button button-outline" onClick={() => setConfirmationOpen(false)}>Keep editing</button><button className="button button-dark" disabled={confirm.isPending} onClick={() => confirm.mutate()}>{confirm.isPending ? 'Confirming…' : `Confirm and lock ${data.weeklyTarget.targetUnits.toLocaleString()} units`}</button></footer>
+      </section>
+    </div>}
   </section>;
 }
