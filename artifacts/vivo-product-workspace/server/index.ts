@@ -1,7 +1,7 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
-import { actualOrderCountForStyle, computeReorderSignal, weeksSinceFirstSale, type FabricAvailability, type LifecycleRules } from "./assortment-signal.js";
+import { actualOrderHistoryForStyle, computeReorderSignal, weeksSinceFirstSale, type FabricAvailability, type LifecycleRules } from "./assortment-signal.js";
 import { Readable } from "node:stream";
 import express, {
   type NextFunction,
@@ -60,6 +60,7 @@ import {
   isNewnessOrderType,
   weeklyNewnessTarget,
 } from "./range-plan-newness.js";
+import { loadProductionPipelineByStyle } from "./production-pipeline.js";
 
 const { Pool } = pg;
 const databaseUrl = process.env.VIVO_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -7372,20 +7373,34 @@ function assortmentStylePayload(row: Record<string, unknown>) {
 
 async function assortmentPlanData(quarter: string, activeOnly = false, source?: BiWorkspaceSource) {
   const bi = source ?? await biWorkspaceSource();
-  const membership = await pool.query(
-    `SELECT LOWER(BTRIM(style_id)) AS style_key,'excluded' AS intent
-       FROM ${schema}.assortment_exclusions
-      WHERE season=$1 AND source='all_products_clean'
-     UNION ALL
-     SELECT LOWER(BTRIM(style_key)) AS style_key,'member' AS intent
-       FROM ${schema}.assortment_plan_styles
-      WHERE season=$1 AND source='all_products_clean'`,
-    [quarter],
-  );
+  const [membership, pipelineByStyle] = await Promise.all([
+    pool.query(
+      `SELECT LOWER(BTRIM(style_id)) AS style_key,'excluded' AS intent
+         FROM ${schema}.assortment_exclusions
+        WHERE season=$1 AND source='all_products_clean'
+       UNION ALL
+       SELECT LOWER(BTRIM(style_key)) AS style_key,'member' AS intent
+         FROM ${schema}.assortment_plan_styles
+        WHERE season=$1 AND source='all_products_clean'`,
+      [quarter],
+    ),
+    loadProductionPipelineByStyle(pool),
+  ]);
   const intent = new Map(membership.rows.map((row) => [String(row.style_key), String(row.intent)]));
   const styles = bi.styles.map(biStyle)
     .filter((style) => style.styleNumber && (activeOnly ? style.status.toLowerCase() === "active" : ["active", "retired"].includes(style.status.toLowerCase())))
-    .map((style) => ({ ...style, season: quarter, excluded: intent.get(style.styleNumber.toLowerCase()) === "excluded" && intent.get(style.styleNumber.toLowerCase()) !== "member" }));
+    .map((style) => {
+      const styleKey = style.styleNumber.toLowerCase();
+      const styleNameKey = `name:${style.name.trim().toLowerCase()}`;
+      const wipUnits = pipelineByStyle.get(styleKey) ?? pipelineByStyle.get(styleNameKey) ?? 0;
+      return {
+        ...style,
+        season: quarter,
+        excluded: intent.get(styleKey) === "excluded" && intent.get(styleKey) !== "member",
+        wipUnits,
+        awaitingDelivery: Number(style.stockUnits ?? 0) === 0 && wipUnits > 0,
+      };
+    });
   const breakdown = (field: "category" | "stage") => Object.entries(styles.reduce((counts: Record<string, number>, row) => {
     const value = String(row[field] ?? "Uncategorised"); counts[value] = (counts[value] ?? 0) + 1; return counts;
   }, {})).map(([name, count]) => ({ name, count })).sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
@@ -8217,7 +8232,9 @@ router.get("/assortment-plan", async (_req, res, next) => {
       const sellableCoverWeeks = coverAvailable && weeklyAvg > 0 ? sellableStockUnits / weeklyAvg : null;
       const planningCoverWeeks = coverAvailable && weeklyAvg > 0 ? stockPlusPipelineUnits / weeklyAvg : null;
       const fabricConsumptionMetresPerUnit = fabricRates.get(String(style.subCategory ?? "").trim().toLowerCase()) ?? null;
-      const orderCount = actualOrderCountForStyle(style.styleNumber, style.name, actualOrders);
+      const orderHistory = actualOrderHistoryForStyle(style.styleNumber, style.name, actualOrders);
+      const orderCount = orderHistory.count;
+      const lastOrderDate = orderHistory.lastOrderDate ?? style.lastOrderDate;
       const reorderSignal = computeReorderSignal({
         tier: style.tier,
         sellThroughPct: style.lifetimeSellThroughPct == null ? null : Number(style.lifetimeSellThroughPct),
@@ -8241,8 +8258,9 @@ router.get("/assortment-plan", async (_req, res, next) => {
         sellableCoverWeeks,
         planningCoverWeeks,
         weeksSinceFirstSale: weeksSinceFirstSale(style.firstSaleDate),
-        weeksSinceLastOrder: weeksSinceFirstSale(style.lastOrderDate),
         orderCount,
+        lastOrderDate,
+        weeksSinceLastOrder: weeksSinceFirstSale(lastOrderDate),
         fabricConsumptionMetresPerUnit,
         reorderSignal,
         image: style.styleNumber
@@ -8294,14 +8312,17 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
     }
     const result = await pool.query(
       `SELECT i.image_512 AS image
-       FROM public.all_products_clean p
-       JOIN public.product_image_map m ON m.sku=p.sku
+       FROM public.raw_odoo_products p
+       JOIN public.product_image_map m ON m.product_id=p.id
        JOIN public.product_images i ON i.tmpl_id=m.tmpl_id
-       WHERE ${allowedBrand("p")}
-         AND LOWER(COALESCE(p.status,'')) IN ('active','retired')
-          AND LOWER(COALESCE(NULLIF(TRIM(p.style_number),''),NULLIF(TRIM(p.sku),'')))=LOWER($1)
+       LEFT JOIN (
+         SELECT sku,SUM(available)::float AS stock
+         FROM public.all_inventory
+         GROUP BY sku
+       ) inv ON inv.sku=m.sku
+       WHERE LOWER(BTRIM(COALESCE(p.style_number,'')))=LOWER(BTRIM($1))
          AND i.image_512 IS NOT NULL AND i.image_512 <> ''
-       ORDER BY p.sku
+       ORDER BY (COALESCE(inv.stock,0)>0) DESC,p.default_code
        LIMIT 1`,
       [styleNumber],
     );

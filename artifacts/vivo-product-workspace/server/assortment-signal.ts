@@ -60,14 +60,27 @@ export function actualOrderCountForStyle(
   styleName: string | null | undefined,
   orders: Array<{ orderRef: string; styleNumber: string; styleName: string; quantity: number }>,
 ) {
+  return actualOrderHistoryForStyle(styleNumber, styleName, orders).count;
+}
+
+export function actualOrderHistoryForStyle(
+  styleNumber: string | null | undefined,
+  styleName: string | null | undefined,
+  orders: Array<{ orderRef: string; orderDate?: string; styleNumber: string; styleName: string; quantity: number }>,
+) {
   const numberKey = String(styleNumber ?? "").trim().toLowerCase();
   const nameKey = String(styleName ?? "").trim().toLowerCase();
-  return new Set(orders
+  const matching = orders
     .filter((order) => order.quantity > 0 && (
       (numberKey !== "" && order.styleNumber.trim().toLowerCase() === numberKey)
       || (nameKey !== "" && order.styleName.trim().toLowerCase() === nameKey)
-    ))
-    .map((order) => order.orderRef)).size;
+    ));
+  const dated = matching.map((order) => String(order.orderDate ?? "").slice(0, 10))
+    .filter((value) => /^\d{4}-\d{2}-\d{2}$/.test(value)).sort();
+  return {
+    count: new Set(matching.map((order) => order.orderRef)).size,
+    lastOrderDate: dated.at(-1) ?? null,
+  };
 }
 
 export function fabricCheck(
@@ -134,6 +147,12 @@ export function computeReorderSignal(input: SignalInput): ReorderSignal {
     const hardStop = matches("week_16_retire");
     if (ageWeeks >= 16) {
       if (applies(hardStop)) return result("grey", hardStop!.label, "RETIRE");
+      const sellablePass = input.sellableCoverWeeks !== null && input.sellableCoverWeeks <= gate.maxCoverWeeks;
+      const pipelinePass = input.planningCoverWeeks !== null && input.planningCoverWeeks <= gate.maxCoverWeeks;
+      if (fullPricePass && tradingFresh && pipelinePass) return withReorderFabric("Reorder candidate");
+      if (fullPricePass && tradingFresh && sellablePass && !pipelinePass) {
+        return graduationSignal ?? result("amber", "Order in production");
+      }
       return graduationSignal ?? result("grey", "No action");
     }
     if (ageWeeks < 2) return graduationSignal ?? result("grey", `Too early · week ${ageWeeks + 1}`);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { actualOrderCountForStyle, computeReorderSignal } from "./assortment-signal.js";
+import { actualOrderCountForStyle, actualOrderHistoryForStyle, computeReorderSignal } from "./assortment-signal.js";
 
 const rules = {
   tier4: [
@@ -137,6 +137,29 @@ test("actual order count ignores pipeline and zero-quantity drafts", () => {
     { orderRef: "BO00330", styleNumber: "", styleName: "Vivo Long Sleeve Wrap Dress in Satin", quantity: 0 },
     { orderRef: "BO00328", styleNumber: "V0426032", styleName: "Vivo Long Sleeve Wrap Dress in Satin", quantity: 307 },
   ]), 1);
+});
+
+test("order history includes the first order and returns its latest date", () => {
+  const history = actualOrderHistoryForStyle("V0226020", "Dalia", [
+    { orderRef: "CT-1", orderDate: "2026-02-20", styleNumber: "V0226020", styleName: "Dalia", quantity: 579 },
+  ]);
+  assert.deepEqual(history, { count: 1, lastOrderDate: "2026-02-20" });
+});
+
+test("Tier 4 styles past week 16 remain eligible for reorder", () => {
+  const signal = computeReorderSignal({
+    ...base,
+    tier: "Tier 4 · New",
+    firstSaleDate: "2026-03-09",
+    sellThroughPct: 84.3,
+    fullPricePct: 97.3,
+    daysSinceLastSale: 4,
+    sellableCoverWeeks: 5,
+    planningCoverWeeks: 5,
+    orderCount: 1,
+    today: new Date("2026-09-07T00:00:00Z"),
+  });
+  assert.equal(signal.action, "REORDER");
 });
 
 test("Tier 1-3 reorder gate does not depend on sell-through", () => {

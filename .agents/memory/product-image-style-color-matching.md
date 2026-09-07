@@ -13,3 +13,9 @@ Both image endpoints (`/api/product-images/{sku}` Shopify gallery, `/api/product
 - Fallback chains stay: gallery (non-empty) → Odoo single → placeholder.
 - Keep both lookups deterministic: `_style_color_skus` ends with `ORDER BY sku`, and the Odoo single-image query tie-breaks `ORDER BY (m.sku = %s) DESC, m.sku ASC` — without these, the same style+colour can resolve different Odoo images across sizes/calls.
 - Expansion only triggers when both style_name and color_print are non-blank; otherwise it falls back to `[sku]` (original per-SKU behaviour), so it never over-broadens on missing catalog data.
+
+For Assortment Plan style-level images, Odoo photos must be extracted from **every product variant**, not one arbitrary representative variant. Prefer a photographed in-stock variant, then use stable SKU order.
+
+**Why:** some templates' initially selected variants have no image even though most sibling variants are photographed; representative-only extraction creates false placeholders.
+
+**How to apply:** keep the image cache populated from all variants and make style-level lookup exact on Odoo style number, stock-first, then SKU.

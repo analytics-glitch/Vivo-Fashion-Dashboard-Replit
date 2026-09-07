@@ -22,9 +22,13 @@ export type AssortmentSortableStyle = AssortmentFilterableStyle & {
   launchDate?: string | null;
   price?: number | null;
   stockUnits?: number | null;
+  stockPlusPipelineUnits?: number | null;
   weeksOfCover?: number | null;
+  planningCoverWeeks?: number | null;
   sellThroughPct?: number | null;
+  lifetimeSellThroughPct?: number | null;
   daysSinceLastSale?: number | null;
+  lastOrderDate?: string | null;
   reorderSignal?: { actionPriority?: number | null } | null;
 };
 
@@ -65,14 +69,22 @@ export type AssortmentSearchableStyle = {
 export type AssortmentSortKey =
   | 'units_desc'
   | 'revenue_desc'
+  | 'revenue_asc'
   | 'sor_desc'
   | 'newest'
   | 'oldest'
   | 'price_desc'
   | 'price_asc'
   | 'stock_desc'
+  | 'stock_asc'
+  | 'stock_pipeline_desc'
+  | 'stock_pipeline_asc'
   | 'weeks_of_cover_asc'
+  | 'weeks_of_cover_desc'
   | 'sell_through_desc'
+  | 'sell_through_asc'
+  | 'last_order_asc'
+  | 'last_order_desc'
   | 'days_since_last_sale_desc'
   | 'name_asc'
   | 'name_desc';
@@ -153,14 +165,22 @@ export function sortAssortmentStyles<Style extends AssortmentSortableStyle>(
     switch (sort) {
       case 'units_desc': primary = compareNullable(finite(left.unitsSold), finite(right.unitsSold), -1); break;
       case 'revenue_desc': primary = compareNullable(finite(left.revenueKes), finite(right.revenueKes), -1); break;
+      case 'revenue_asc': primary = compareNullable(finite(left.revenueKes), finite(right.revenueKes), 1); break;
       case 'sor_desc': primary = compareNullable(finite(left.sorPct), finite(right.sorPct), -1); break;
       case 'newest': primary = compareNullable(dateValue(left.launchDate), dateValue(right.launchDate), -1); break;
       case 'oldest': primary = compareNullable(dateValue(left.launchDate), dateValue(right.launchDate), 1); break;
       case 'price_desc': primary = compareNullable(finite(left.price), finite(right.price), -1); break;
       case 'price_asc': primary = compareNullable(finite(left.price), finite(right.price), 1); break;
       case 'stock_desc': primary = compareNullable(finite(left.stockUnits), finite(right.stockUnits), -1); break;
-      case 'weeks_of_cover_asc': primary = compareNullable(finite(left.weeksOfCover), finite(right.weeksOfCover), 1); break;
-      case 'sell_through_desc': primary = compareNullable(finite(left.sellThroughPct), finite(right.sellThroughPct), -1); break;
+      case 'stock_asc': primary = compareNullable(finite(left.stockUnits), finite(right.stockUnits), 1); break;
+      case 'stock_pipeline_desc': primary = compareNullable(finite(left.stockPlusPipelineUnits), finite(right.stockPlusPipelineUnits), -1); break;
+      case 'stock_pipeline_asc': primary = compareNullable(finite(left.stockPlusPipelineUnits), finite(right.stockPlusPipelineUnits), 1); break;
+      case 'weeks_of_cover_asc': primary = compareNullable(finite(left.planningCoverWeeks ?? left.weeksOfCover), finite(right.planningCoverWeeks ?? right.weeksOfCover), 1); break;
+      case 'weeks_of_cover_desc': primary = compareNullable(finite(left.planningCoverWeeks ?? left.weeksOfCover), finite(right.planningCoverWeeks ?? right.weeksOfCover), -1); break;
+      case 'sell_through_desc': primary = compareNullable(finite(left.lifetimeSellThroughPct ?? left.sellThroughPct), finite(right.lifetimeSellThroughPct ?? right.sellThroughPct), -1); break;
+      case 'sell_through_asc': primary = compareNullable(finite(left.lifetimeSellThroughPct ?? left.sellThroughPct), finite(right.lifetimeSellThroughPct ?? right.sellThroughPct), 1); break;
+      case 'last_order_asc': primary = compareNullable(dateValue(left.lastOrderDate), dateValue(right.lastOrderDate), 1); break;
+      case 'last_order_desc': primary = compareNullable(dateValue(left.lastOrderDate), dateValue(right.lastOrderDate), -1); break;
       case 'days_since_last_sale_desc': primary = compareNullable(finite(left.daysSinceLastSale), finite(right.daysSinceLastSale), -1); break;
       case 'name_asc': primary = collator.compare(left.name ?? '', right.name ?? ''); break;
       case 'name_desc': primary = collator.compare(right.name ?? '', left.name ?? ''); break;

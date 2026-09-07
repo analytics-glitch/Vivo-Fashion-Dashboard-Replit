@@ -6692,6 +6692,37 @@ def register_merch_routes(app, api_pg_module):
             ORDER BY po.date_ordered DESC, po.order_ref
         """
         raw = _db_exec(sql, {"date_from": date_from, "date_to": date_to}, fetch=True)
+        # production_orders is the newer operational feed and does not contain
+        # the full historical buying-order ledger.  Fill its gaps from the
+        # four-year Central Tracker mirror, de-duplicating rows already present.
+        historic = _db_exec("""
+            SELECT style_number,style_name,order_date,order_qty,source_year
+            FROM central_tracker_orders
+            WHERE (%(date_from)s IS NULL OR order_date >= %(date_from)s::date)
+              AND (%(date_to)s IS NULL OR order_date <= %(date_to)s::date)
+            ORDER BY order_date,style_number,style_name,order_qty
+        """, {"date_from": date_from, "date_to": date_to}, fetch=True) or []
+        def _order_key(row):
+            identity = str(row.get("style_number") or row.get("style_name") or "").strip().lower()
+            ordered = str(row.get("date_ordered") or row.get("order_date") or "")[:10]
+            return identity, ordered, float(row.get("order_qty") or 0)
+        seen = {_order_key(row) for row in (raw or [])}
+        for index, row in enumerate(historic):
+            if _order_key(row) in seen:
+                continue
+            raw.append({
+                "source": "central_tracker",
+                "reference": f"central:{row.get('source_year')}:{row.get('style_number')}:{row.get('order_date')}:{index}",
+                "style_number": row.get("style_number"),
+                "style_name": row.get("style_name"),
+                "category": None,
+                "subcategory": None,
+                "order_qty": row.get("order_qty"),
+                "date_ordered": row.get("order_date"),
+                "unit_cost": None,
+                "selling_price": None,
+            })
+            seen.add(_order_key(row))
         return [{
             "source": r.get("source"), "reference": r.get("reference"),
             "style_number": r.get("style_number"), "style_name": r.get("style_name"),

@@ -153,3 +153,4 @@
 - [Stock to sales planning evidence](stock-sales-planning-evidence.md) — archive frozen monthly reports separately from live BI; attach one snapshot to the monthly plan it informed.
 - [Product Workspace calendar dates](product-workspace-calendar-dates.md) — serialize DATE values from local calendar parts, validate before SQL, and isolate unreadable legacy text.
 - [Exact BI benchmark parity](exact-bi-benchmark-parity.md) — compare against an immutable historical window or frozen snapshot; live ingestion can change valid outputs between runs.
+- [Assortment pipeline source](assortment-pipeline-current-stage.md) — use current Tracker stages, not order quantity; live Odoo replaces 3 ledger stages, Warehouse is excluded.
