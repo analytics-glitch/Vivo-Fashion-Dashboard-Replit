@@ -139,6 +139,9 @@ export default function MerchColourDetail({ item, period, onClose }) {
   const fabric = card?.fabric && Object.keys(card.fabric).length ? card.fabric : null;
   const fabricRows = fabric
     ? [
+        ["Fabric barcode", fabric.fabric_barcode],
+        ["Fabric style name", fabric.fabric_style_name],
+        ["Fabric colour style name", fabric.fabric_colour_style_name],
         ["Structure", fabric.fabric_structure],
         ["Fabric category", fabric.fabric_category],
         ["Fibre content", fabric.fiber_content],

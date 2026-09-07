@@ -9162,7 +9162,8 @@ def get_gallery_style_card(
             "       COALESCE(source_country,'') AS source_country, "
             "       COALESCE(source_city,'') AS source_city, "
             "       COALESCE(supplier_fabric_code,'') AS supplier_fabric_code, "
-            "       COALESCE(noos_fabric,'') AS noos_fabric "
+             "       COALESCE(noos_fabric,'') AS noos_fabric, "
+             "       fabric_product_id, COALESCE(fabric_barcode,'') AS fabric_barcode "
             "FROM all_products_clean WHERE sku = ANY(%s) ORDER BY sku",
             (siblings,),
         )
@@ -9174,6 +9175,30 @@ def get_gallery_style_card(
         prows = [p for p in prows if "third party" not in (p.get("brand") or "").lower()]
         if not prows:
             raise HTTPException(status_code=404, detail="product not found")
+        requested_rep = next((p for p in prows if p["sku"] == s), prows[0])
+        fabric_identity = {}
+        if requested_rep.get("fabric_product_id") or requested_rep.get("fabric_barcode"):
+            cur.execute(
+                "SELECT COALESCE(barcode,''), COALESCE(fabric_name,''), COALESCE(name,'') "
+                "FROM raw_fabric_products "
+                "WHERE (%s IS NOT NULL AND id=%s) "
+                "   OR (NULLIF(%s,'') IS NOT NULL AND barcode=%s) "
+                "ORDER BY (id=%s) DESC LIMIT 1",
+                (
+                    requested_rep.get("fabric_product_id"),
+                    requested_rep.get("fabric_product_id"),
+                    requested_rep.get("fabric_barcode"),
+                    requested_rep.get("fabric_barcode"),
+                    requested_rep.get("fabric_product_id"),
+                ),
+            )
+            frow = cur.fetchone()
+            if frow:
+                fabric_identity = {
+                    "fabric_barcode": frow[0] or requested_rep.get("fabric_barcode") or "",
+                    "fabric_style_name": frow[1] or "",
+                    "fabric_colour_style_name": frow[2] or "",
+                }
         # Stock + sales metadata must use the FILTERED SKU set, or a mixed-brand
         # style+colour would leak third-party sales history into launch/first/
         # last-sale fields on an own-brand popup.
@@ -9265,6 +9290,7 @@ def get_gallery_style_card(
             "source_city", "supplier_fabric_code", "noos_fabric",
         ) if (rep.get(k) or "").strip()
     }
+    fabric.update({k: v for k, v in fabric_identity.items() if (v or "").strip()})
     today = date.today()
     last_d = date.fromisoformat(last_sale) if last_sale else None
     return {
