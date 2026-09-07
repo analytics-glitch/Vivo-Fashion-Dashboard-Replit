@@ -532,6 +532,7 @@ _LAST_ATTENDANCE_SYNC = None
 # daily refresh is the floor; hourly keeps them comfortably inside the read-path
 # freshness gate. None on boot so the first cycle bootstraps immediately.
 _LAST_ROLLUP_REFRESH = None
+_LAST_ROLLUP_FULL = None   # weekly full rebuild (trues up units_fp mode-price drift on old rows)
 # Guards the product image extract (extract_product_images.py — base64 512px
 # product photos from Odoo, feeding the /gallery thumbnails) to once per 24h
 # even though main() runs every 60s. Product photos change rarely and this is
@@ -3401,19 +3402,34 @@ def main():
         _LAST_ROLLUP_REFRESH is None
         or (now_utc - _LAST_ROLLUP_REFRESH).total_seconds() >= 3600
     )
-    if not rollup_table_missing and (rollup_empty or rollup_due):
+        if not rollup_table_missing and (rollup_empty or rollup_due):
         # Stamp the attempt time up front so a transient failure waits an hour
         # (when still empty, the rollup_empty branch retries on the next cycle).
         _LAST_ROLLUP_REFRESH = now_utc
+        global _LAST_ROLLUP_FULL
+        # Weekly FULL rebuild (force) to true-up units_fp drift from catalog
+        # mode-price changes on old rows. Runs only in the off-peak hour window
+        # (00:00–05:00 UTC = 03:00–08:00 EAT) so the one heavy 37-min rebuild
+        # never lands during business hours. All other cycles use the fast
+        # incremental (Path 2) path. Bootstrap (empty) also does a full build.
+        _eat_hour = (now_utc.hour)
+        full_due = (
+            rollup_empty
+            or _LAST_ROLLUP_FULL is None
+            or (now_utc - _LAST_ROLLUP_FULL).total_seconds() >= 604800  # 7 days
+        )
+        run_full = full_due and (0 <= _eat_hour < 5 or rollup_empty
+                                 or _LAST_ROLLUP_FULL is None)
         try:
             import subprocess, sys
-
-            log.info("Refreshing BI sales rollups (bootstrap=%s)...", rollup_empty)
-            subprocess.run(
-                [sys.executable, "/home/runner/workspace/build_sales_rollups.py"],
-                check=True,
-            )
-            log.info("✅ BI sales rollups refreshed")
+            cmd = [sys.executable, "/home/runner/workspace/build_sales_rollups.py"]
+            if run_full:
+                cmd.append("--force")
+                _LAST_ROLLUP_FULL = now_utc
+            log.info("Refreshing BI sales rollups (bootstrap=%s, full=%s)...",
+                     rollup_empty, run_full)
+            subprocess.run(cmd, check=True)
+            log.info("✅ BI sales rollups refreshed (full=%s)", run_full)
         except Exception as e:
             log.error("BI sales rollup refresh error: %s", e)
 
