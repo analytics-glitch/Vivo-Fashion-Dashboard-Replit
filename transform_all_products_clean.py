@@ -324,16 +324,30 @@ def _run_rebuild():
     # ── Idempotent schema migration ───────────────────────────────────────────
     # ADD COLUMN IF NOT EXISTS is safe to run on every extract so new environments
     # and database restores get the columns automatically, without a manual step.
+    # Guard: ADD COLUMN IF NOT EXISTS still takes an ACCESS EXCLUSIVE lock even when
+    # the columns already exist, which jams behind long-running report reads and can
+    # freeze the dashboard. So only run the ALTER when a column is genuinely missing.
+    _required_cols = ['standard_cost_kes', 'standard_cost_date', 'last_order_date',
+                      'range_tier', 'fabric_product_id', 'fabric_barcode']
     cur.execute("""
-        ALTER TABLE all_products_clean
-        ADD COLUMN IF NOT EXISTS standard_cost_kes NUMERIC DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS standard_cost_date DATE DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS range_tier TEXT DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS fabric_product_id BIGINT DEFAULT NULL,
-        ADD COLUMN IF NOT EXISTS fabric_barcode TEXT DEFAULT NULL
+        SELECT column_name FROM information_schema.columns
+        WHERE table_name = 'all_products_clean'
     """)
-    log.info("Schema: standard costs, last order date and range tier columns ensured")
+    _existing = {r[0] for r in cur.fetchall()}
+    _missing = [c for c in _required_cols if c not in _existing]
+    if _missing:
+        cur.execute("""
+            ALTER TABLE all_products_clean
+            ADD COLUMN IF NOT EXISTS standard_cost_kes NUMERIC DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS standard_cost_date DATE DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS last_order_date DATE DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS range_tier TEXT DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS fabric_product_id BIGINT DEFAULT NULL,
+            ADD COLUMN IF NOT EXISTS fabric_barcode TEXT DEFAULT NULL
+        """)
+        log.info("Schema: added missing columns %s", _missing)
+    else:
+        log.info("Schema: all columns present, skipping ALTER (no lock taken)")
 
     # The entire staged build and publish is one transaction. This xact lock is
     # safe through transaction-mode poolers and prevents concurrent rebuilds.
