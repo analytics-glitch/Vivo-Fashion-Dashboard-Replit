@@ -827,8 +827,6 @@ def main():
     signal.signal(signal.SIGTERM, shutdown)
     signal.signal(signal.SIGINT, shutdown)
 
-    ensure_table()
-
     # Pre-flight code-health gate: byte-compile every backend Python file before
     # anything else starts. A syntactically broken backend (e.g. a botched edit
     # that leaves a file unparseable) must never be brought up: in a deployment
@@ -864,20 +862,6 @@ def main():
                   "(failing closed). Fix the cause and republish.", e)
         sys.exit(1)
 
-    # Apply any pending schema migrations BEFORE the API or sync start, so the
-    # database structure is current on every deploy. Runs against DATABASE_URL
-    # (= Neon in the deployment). Idempotent; logs and continues on failure so a
-    # migration issue stays observable without taking the whole service down.
-    try:
-        log.info("Applying schema migrations…")
-        r = subprocess.run([sys.executable, os.path.join(ROOT, "migrate.py")],
-                           cwd=ROOT, timeout=600)
-        if r.returncode == 0:
-            log.info("Schema migrations up to date")
-        else:
-            log.error("migrate.py exited %s — continuing startup; check schema", r.returncode)
-    except Exception as e:
-        log.error("Migration run failed: %s — continuing startup", e)
     log.info("Watchdog starting (manage_api=%s, api_port=%s)", MANAGE_API, API_PORT)
 
     if MANAGE_API:
@@ -901,6 +885,29 @@ def main():
         else:
             log.warning("API port %s still not open after 60s — proceeding "
                         "anyway (supervision will keep restarting it)", API_PORT)
+
+    # Never put database reconciliation ahead of the API port bind. DDL may wait
+    # on a concurrent migration or schema lock; doing that before spawn("api")
+    # makes the artifact miss its startup window and takes every routed surface
+    # down even though the application code itself is healthy.
+    try:
+        ensure_table()
+    except Exception as e:
+        log.error("Watchdog table setup failed — continuing startup: %s", e)
+
+    # Apply pending schema migrations after the API is reachable but before the
+    # sync process starts. The API owns its own idempotent deferred startup DDL,
+    # so it can safely serve health/auth routes while this reconciliation waits.
+    try:
+        log.info("Applying schema migrations…")
+        r = subprocess.run([sys.executable, os.path.join(ROOT, "migrate.py")],
+                           cwd=ROOT, timeout=600)
+        if r.returncode == 0:
+            log.info("Schema migrations up to date")
+        else:
+            log.error("migrate.py exited %s — continuing startup; check schema", r.returncode)
+    except Exception as e:
+        log.error("Migration run failed: %s — continuing startup", e)
 
     if REBUILD_ON_BOOT:
         # The API is up (so the deployment startup health check can pass); run
