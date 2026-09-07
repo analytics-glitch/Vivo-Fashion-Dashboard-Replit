@@ -14,6 +14,10 @@ export function fabricStyleBase(name: unknown) {
   return String(name ?? "").split(/\s+-\s+/, 1)[0].trim();
 }
 
+export function canonicalFabricStyle(fabricName: unknown, productName: unknown) {
+  return String(fabricName ?? "").trim() || fabricStyleBase(productName);
+}
+
 export function normalizeFabricStyle(value: unknown) {
   return String(value ?? "")
     .normalize("NFKD")
@@ -26,6 +30,10 @@ export function normalizeFabricStyle(value: unknown) {
 
 function compactFabricStyle(value: unknown) {
   return normalizeFabricStyle(value).replace(/\s+/g, "");
+}
+
+function supplierCodeRoot(value: unknown) {
+  return compactFabricStyle(value).replace(/(\d)[a-z]$/, "$1");
 }
 
 function categorySuffix(candidate: FabricStyleCandidate, suffix: string) {
@@ -52,6 +60,12 @@ export function certainFabricStyleMatch(styleName: unknown, candidates: FabricSt
   const unique = [...byKey.values()];
   const exact = unique.filter((candidate) => compactFabricStyle(candidate.fabricStyle) === compactNeedle);
   if (exact.length === 1) return { status: "resolved" as const, fabricStyleKey: exact[0].fabricStyleKey, candidates: exact };
+  const supplierCode = unique.filter((candidate) => {
+    const candidateCompact = compactFabricStyle(candidate.fabricStyle);
+    return /\d[a-z]$/.test(compactNeedle)
+      && supplierCodeRoot(compactNeedle) === candidateCompact;
+  });
+  if (supplierCode.length === 1) return { status: "resolved" as const, fabricStyleKey: supplierCode[0].fabricStyleKey, candidates: supplierCode };
   const prefix = unique.filter((candidate) => {
     const base = compactFabricStyle(candidate.fabricStyle);
     return compactNeedle.startsWith(base) && categorySuffix(candidate, compactNeedle.slice(base.length));

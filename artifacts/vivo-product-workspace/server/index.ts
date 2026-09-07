@@ -56,7 +56,7 @@ import {
   rangePlanAosDefaultMigrationSql,
 } from "./range-plan-defaults.js";
 import { calendarDate, legacyCalendarDate, styleDateInput } from "./calendar-date.js";
-import { certainFabricStyleMatch, fabricStyleBase, normalizeFabricStyle, type FabricStyleCandidate } from "./fabric-style-linking.js";
+import { canonicalFabricStyle, certainFabricStyleMatch, normalizeFabricStyle, type FabricStyleCandidate } from "./fabric-style-linking.js";
 import {
   DEFAULT_NEW_STYLE_ORDER_UNITS,
   calculateNewnessCommitment,
@@ -6437,14 +6437,13 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
 }
 
 /**
- * Read-only Fabric BI Level 3 candidates.  A Level 3 key is deliberately
- * derived from the name before its ` - colour` suffix; it is never persisted
- * back to Fabric BI.  JSON access keeps this adapter compatible with older
- * source snapshots whose optional fabric attributes have not been migrated.
+ * Read-only Fabric BI Level 3 candidates. raw_fabric_products.fabric_name is
+ * authoritative; deriving from the Level 4 product name is only a fallback
+ * for older/incomplete source rows.
  */
 async function liveFabricStyleCandidates(client: { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, any>> }> }) {
   const result = await client.query(
-    `SELECT DISTINCT BTRIM(split_part(p.name,' - ',1)) AS "fabricStyle",
+    `SELECT DISTINCT COALESCE(NULLIF(BTRIM(p.fabric_name),''),BTRIM(split_part(p.name,' - ',1))) AS "fabricStyle",
        NULLIF(BTRIM(p.fabric_category),'') AS category,
        NULLIF(BTRIM(p.fabric_subcategory),'') AS subcategory,
        NULLIF(BTRIM(p.fabric_subcategory),'') AS "subCategory",
@@ -6477,6 +6476,7 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
   // reservations are deliberately subtracted once, after kg→metre conversion.
   const result = await client.query(`WITH inventory AS (
     SELECT i.product_id,
+      COALESCE(SUM(i.quantity) FILTER (WHERE i.location_name='RMAT/Stock'),0) on_hand_kg,
       COALESCE(SUM(i.available) FILTER (WHERE i.location_name='RMAT/Stock'),0) available_kg,
       COALESCE(SUM(COALESCE((to_jsonb(i)->>'reserved_qty')::numeric,0)) FILTER (WHERE i.location_name='RMAT/Stock'),0) inventory_reserved_kg
     FROM public.raw_fabric_inventory i GROUP BY i.product_id
@@ -6488,7 +6488,7 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
     GROUP BY r.product_id
   ) SELECT p.id::text product_id,
     COALESCE(to_jsonb(p)->>'barcode',to_jsonb(p)->>'default_code',p.id::text) barcode,
-    p.name, BTRIM(split_part(p.name,' - ',1)) fabric_style,
+    p.name, p.fabric_name, BTRIM(split_part(p.name,' - ',1)) product_name_base,
     NULLIF(BTRIM(p.fabric_category),'') category,
     NULLIF(BTRIM(p.fabric_subcategory),'') subcategory,
     NULLIF(BTRIM(p.plain_print),'') plain_print,
@@ -6497,7 +6497,7 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
     COALESCE(NULLIF(BTRIM(p.fabric_supplier_name),''),NULLIF(BTRIM(p.supplier),'')) supplier,
     NULLIF(BTRIM(p.fiber_content),'') fibre_composition,
     p.fabric_color colour, (p.standard_price*p.kg_per_mtr_eff)::float cost_per_metre,
-    (COALESCE(inventory.available_kg,0)/NULLIF(p.kg_per_mtr_eff,0))::float available_metres,
+    (COALESCE(inventory.on_hand_kg,0)/NULLIF(p.kg_per_mtr_eff,0))::float available_metres,
     ((COALESCE(inventory.inventory_reserved_kg,0)+COALESCE(team.team_reserved_kg,0))/NULLIF(p.kg_per_mtr_eff,0))::float reserved_metres,
     ((COALESCE(inventory.available_kg,0)-COALESCE(team.team_reserved_kg,0))/NULLIF(p.kg_per_mtr_eff,0))::float free_metres
     FROM public.raw_fabric_products p
@@ -6506,7 +6506,7 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
     ORDER BY p.name`);
   const groups = new Map<string, any>();
   for (const row of result.rows) {
-    const fabricStyle = fabricStyleBase(row.fabric_style);
+    const fabricStyle = canonicalFabricStyle(row.fabric_name, row.product_name_base);
     const fabricStyleKey = normalizeFabricStyle(fabricStyle);
     if (!fabricStyleKey) continue;
     const level4: FabricLevel4 = { productId: Number(row.product_id), barcode: row.barcode, productName: row.name,
@@ -6516,57 +6516,68 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
       availableMetres: Number(row.available_metres ?? 0), reservedMetres: Number(row.reserved_metres ?? 0), freeMetres: Number(row.free_metres ?? 0) };
     const group = groups.get(fabricStyleKey) ?? { fabricStyleKey, fabricStyle, category: row.category, subcategory: row.subcategory,
       patternPlainPrint: row.plain_print, structure: row.structure, width: row.width, gsm: row.gsm, supplier: row.supplier,
-      fibreComposition: row.fibre_composition, level4: [] as FabricLevel4[] };
+      fibreComposition: row.fibre_composition, aliases: new Set<string>(), level4: [] as FabricLevel4[] };
+    group.aliases.add(fabricStyle);
+    const productNameBase = canonicalFabricStyle("", row.product_name_base);
+    if (productNameBase) group.aliases.add(productNameBase);
     group.level4.push(level4); groups.set(fabricStyleKey, group);
   }
-  return [...groups.values()].map((group) => ({ ...group,
-    totalAvailableMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.availableMetres, 0),
-    totalReservedMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.reservedMetres, 0),
-    totalFreeMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.freeMetres, 0),
-    weightedCostPerMetre: (() => {
+  return [...groups.values()].map((group) => {
+    const aliases = [...group.aliases] as string[];
+    return { ...group, aliases,
+      totalAvailableMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.availableMetres, 0),
+      totalReservedMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.reservedMetres, 0),
+      totalFreeMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.freeMetres, 0),
+      weightedCostPerMetre: (() => {
       const stocked = group.level4.filter((x: FabricLevel4) => x.freeMetres > 0 && x.costPerMetre > 0);
       const metres = stocked.reduce((n: number, x: FabricLevel4) => n + x.freeMetres, 0);
       if (metres > 0) return stocked.reduce((n: number, x: FabricLevel4) => n + x.freeMetres * x.costPerMetre, 0) / metres;
       const costed = group.level4.filter((x: FabricLevel4) => x.costPerMetre > 0);
       return costed.length ? costed.reduce((n: number, x: FabricLevel4) => n + x.costPerMetre, 0) / costed.length : null;
-    })(),
-  }));
+      })(),
+    };
+  });
+}
+
+function fabricStyleMatchCandidates(groups: Array<Record<string, any>>): FabricStyleCandidate[] {
+  return groups.flatMap((group) => (group.aliases ?? [group.fabricStyle]).map((alias: string) => ({
+    fabricStyleKey: group.fabricStyleKey,
+    fabricStyle: alias,
+    category: group.category,
+    subcategory: group.subcategory,
+  })));
 }
 
 async function backfillCertainFabricStyleLinks() {
   const [groups, trackers] = await Promise.all([
     liveFabricStyleProjection(pool),
-    pool.query(`SELECT id,fabric FROM ${schema}.style_development_tracker WHERE fabric_style_key IS NULL`),
+    pool.query(`SELECT id,fabric,fabric_style_key FROM ${schema}.style_development_tracker`),
   ]);
-  const candidates: FabricStyleCandidate[] = groups.map((group) => ({
-    fabricStyleKey: group.fabricStyleKey, fabricStyle: group.fabricStyle,
-    category: group.category, subcategory: group.subcategory,
-  }));
+  const candidates = fabricStyleMatchCandidates(groups);
   for (const tracker of trackers.rows) {
     const match = certainFabricStyleMatch(tracker.fabric, candidates);
-    if (match.status === "resolved") {
+    if (match.status === "resolved" && match.fabricStyleKey !== tracker.fabric_style_key) {
       await pool.query(`UPDATE ${schema}.style_development_tracker SET fabric_style_key=$1,updated_at=NOW()
-        WHERE id=$2 AND fabric_style_key IS NULL`, [match.fabricStyleKey, tracker.id]);
+        WHERE id=$2`, [match.fabricStyleKey, tracker.id]);
     }
   }
   await pool.query(
     `UPDATE ${schema}.weekly_order_plan_lines w
         SET fabric_style_key=t.fabric_style_key
        FROM ${schema}.style_development_tracker t
-      WHERE w.fabric_style_key IS NULL
-        AND w.source='development'
+      WHERE w.source='development'
         AND w.source_id=t.id::text
         AND t.fabric_style_key IS NOT NULL`,
   );
   const weekly = await pool.query(
-    `SELECT id,fabric FROM ${schema}.weekly_order_plan_lines WHERE fabric_style_key IS NULL`,
+    `SELECT id,fabric,fabric_style_key FROM ${schema}.weekly_order_plan_lines`,
   );
   for (const line of weekly.rows) {
     const match = certainFabricStyleMatch(line.fabric, candidates);
-    if (match.status === "resolved") {
+    if (match.status === "resolved" && match.fabricStyleKey !== line.fabric_style_key) {
       await pool.query(
         `UPDATE ${schema}.weekly_order_plan_lines SET fabric_style_key=$1,updated_at=NOW()
-          WHERE id=$2 AND fabric_style_key IS NULL`,
+          WHERE id=$2`,
         [match.fabricStyleKey, line.id],
       );
     }
@@ -6763,8 +6774,7 @@ router.get("/style-development-tracker/fabric-link-reconciliation", requireUser,
       liveFabricStyleProjection(pool),
       pool.query(`SELECT id,style_number,style_name,fabric,fabric_style_key FROM ${schema}.style_development_tracker ORDER BY id`),
     ]);
-    const candidates: FabricStyleCandidate[] = groups.map((group) => ({ fabricStyleKey: group.fabricStyleKey,
-      fabricStyle: group.fabricStyle, category: group.category, subcategory: group.subcategory }));
+    const candidates = fabricStyleMatchCandidates(groups);
     const rows = trackers.rows.map((tracker) => {
       const match = certainFabricStyleMatch(tracker.fabric, candidates);
       const stored = tracker.fabric_style_key ? String(tracker.fabric_style_key) : null;
