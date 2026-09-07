@@ -18,8 +18,8 @@ const emptyFilters = (): AssortmentFilterState => ({
   category: [],
   subCategory: [],
   fabricCategory: [],
+  fabricSubCategory: [],
   brand: [],
-  primaryColour: [],
   edit: [],
   proposedAction: [],
 });
@@ -30,8 +30,8 @@ const activeStyle: AssortmentFilterableStyle = {
   category: 'Dresses',
   subCategory: 'Maxi Dresses',
   fabricCategory: 'Knit',
+  fabricSubCategory: 'Jersey',
   brand: 'Vivo',
-  primaryColour: 'Blue',
   edit: 'Essentials',
   proposedAction: 'Reorder',
 };
@@ -42,8 +42,8 @@ const retiredStyle: AssortmentFilterableStyle = {
   category: 'Tops',
   subCategory: 'Blouses',
   fabricCategory: 'Woven',
+  fabricSubCategory: 'Poplin',
   brand: 'Safari',
-  primaryColour: 'Red',
   edit: 'Archive',
   proposedAction: 'Retire',
 };

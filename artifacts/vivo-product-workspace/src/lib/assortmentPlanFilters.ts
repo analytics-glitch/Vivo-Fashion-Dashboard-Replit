@@ -5,7 +5,7 @@ export const assortmentFilterKeys = [
   'subCategory',
   'fabricCategory',
   'brand',
-  'primaryColour',
+  'fabricSubCategory',
   'edit',
   'proposedAction',
 ] as const;
@@ -68,6 +68,7 @@ export type AssortmentSearchableStyle = {
 };
 export type AssortmentSortKey =
   | 'units_desc'
+  | 'units_asc'
   | 'revenue_desc'
   | 'revenue_asc'
   | 'sor_desc'
@@ -164,6 +165,7 @@ export function sortAssortmentStyles<Style extends AssortmentSortableStyle>(
     let primary = 0;
     switch (sort) {
       case 'units_desc': primary = compareNullable(finite(left.unitsSold), finite(right.unitsSold), -1); break;
+      case 'units_asc': primary = compareNullable(finite(left.unitsSold), finite(right.unitsSold), 1); break;
       case 'revenue_desc': primary = compareNullable(finite(left.revenueKes), finite(right.revenueKes), -1); break;
       case 'revenue_asc': primary = compareNullable(finite(left.revenueKes), finite(right.revenueKes), 1); break;
       case 'sor_desc': primary = compareNullable(finite(left.sorPct), finite(right.sorPct), -1); break;

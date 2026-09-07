@@ -152,7 +152,7 @@ class BiSourceUnavailable extends Error {
   status = 503;
   constructor(message = "BI source unavailable") { super(message); }
 }
-function biRequest<T>(url: string, method: "GET" | "POST", body?: unknown): Promise<T> {
+function biRequest<T>(url: string, method: "GET" | "POST", body?: unknown, timeoutMs = 60_000): Promise<T> {
   return new Promise((resolve, reject) => {
     const request = http.request(url, {
       method,
@@ -163,7 +163,7 @@ function biRequest<T>(url: string, method: "GET" | "POST", body?: unknown): Prom
       // The canonical Merch source can take tens of seconds on a cold cache.
       // Wait for that authoritative answer rather than falling back to local
       // replica-table calculations.
-      timeout: 60_000,
+      timeout: timeoutMs,
     }, (response) => {
       const chunks: Buffer[] = [];
       response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
@@ -255,17 +255,29 @@ async function biWorkspaceSource() {
 }
 // Named export point for Workspace facts.  Do not bypass this adapter.
 const getBiWorkspaceSource = biWorkspaceSource;
-let productionPipelineCache: { value: Map<string, number>; expiresAt: number } | null = null;
+let freshAssortmentBiFlight: Promise<BiWorkspaceSource> | null = null;
+async function freshAssortmentBiWorkspaceSource() {
+  // An action proposal is a live decision, not a snapshot report. Do not use
+  // the durable BI cache here: SOH and sales can change between page loads.
+  // Coalesce only concurrent requests. A completed result is never retained.
+  if (!freshAssortmentBiFlight) {
+    freshAssortmentBiFlight = biRequest<BiWorkspaceSource>(
+      biWorkspaceUrl(),
+      "GET",
+      undefined,
+      180_000,
+    ).then((value) => validateWorkspaceBiSource(value) as BiWorkspaceSource)
+      .finally(() => { freshAssortmentBiFlight = null; });
+  }
+  return freshAssortmentBiFlight;
+}
 let productionPipelineFlight: Promise<Map<string, number>> | null = null;
 async function currentProductionPipelineByStyle() {
-  const now = Date.now();
-  if (productionPipelineCache && productionPipelineCache.expiresAt > now) return productionPipelineCache.value;
+  // Assortment proposals must use the inventory/production state at request
+  // time. Keep only an in-flight coalescer; it never serves a completed,
+  // stale pipeline calculation.
   if (!productionPipelineFlight) {
     productionPipelineFlight = loadProductionPipelineByStyle(pool)
-      .then((value) => {
-        productionPipelineCache = { value, expiresAt: Date.now() + 30_000 };
-        return value;
-      })
       .finally(() => { productionPipelineFlight = null; });
   }
   return productionPipelineFlight;
@@ -298,6 +310,7 @@ function biStyle(style: Record<string, any>) {
     category: String(biValue(style, "category") ?? "Uncategorised"),
     subCategory: String(biValue(style, "subCategory", "subcategory", "sub_category", "productType", "product_type") ?? ""),
     fabricCategory: String(biValue(style, "fabricCategory", "fabric_category") ?? ""),
+    fabricSubCategory: String(biValue(style, "fabricSubCategory", "fabric_subcategory") ?? ""),
     brand: String(biValue(style, "brand") ?? ""), primaryColour: String(biValue(style, "primaryColour", "primary_colour", "colorPrint", "color_print") ?? ""),
     edit: String(biValue(style, "edit", "collection") ?? ""), stage: "Carry-over", designer: String(biValue(style, "designer", "designOwner", "design_owner", "owner") ?? "Merchandising"),
     season: "", rangeTier: tier || null,
@@ -3722,6 +3735,8 @@ async function ensureSchema() {
       brand TEXT,
       fabric TEXT,
       fabric_product_id BIGINT,
+      pattern_type TEXT,
+      fabric_structure TEXT,
       target_order_week TEXT,
       image_url TEXT,
       available_colourways TEXT[] NOT NULL DEFAULT '{}',
@@ -3737,6 +3752,34 @@ async function ensureSchema() {
       UNIQUE (plan_id, source, source_id),
       UNIQUE (plan_id, sequence_no)
     );
+    ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS pattern_type TEXT;
+    ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS fabric_structure TEXT;
+    CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_week_targets (
+      iso_year INTEGER NOT NULL,
+      iso_week INTEGER NOT NULL CHECK (iso_week BETWEEN 1 AND 53),
+      target_units INTEGER NOT NULL CHECK (target_units >= 0),
+      updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (iso_year, iso_week)
+    );
+    CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_kpi_targets (
+      metric_key TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      target_value NUMERIC NOT NULL CHECK (target_value >= 0),
+      unit TEXT NOT NULL CHECK (unit IN ('units','percent','count')),
+      updated_by INTEGER REFERENCES ${schema}.users(id) ON DELETE SET NULL,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO ${schema}.weekly_order_kpi_targets (metric_key,label,target_value,unit) VALUES
+      ('total_units','Total units',0,'units'),
+      ('print_pct','% Print',30,'percent'),
+      ('knit_pct','% Knit',35,'percent'),
+      ('new_pct','% New',35,'percent'),
+      ('dresses_pct','% Dresses',35,'percent'),
+      ('average_order_size','Average order size',400,'units'),
+      ('new_styles','Number of new styles',7,'count')
+    ON CONFLICT (metric_key) DO NOTHING;
     CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_plan_line_moves (
       id BIGSERIAL PRIMARY KEY,
       line_id INTEGER NOT NULL REFERENCES ${schema}.weekly_order_plan_lines(id) ON DELETE CASCADE,
@@ -7481,6 +7524,7 @@ function assortmentStylePayload(row: Record<string, unknown>) {
     category: String(row.category ?? "Uncategorised"),
     subCategory: String(row.subCategory ?? ""),
     fabricCategory: String(row.fabricCategory ?? ""),
+    fabricSubCategory: String(row.fabricSubCategory ?? ""),
     brand: String(row.brand ?? ""),
     primaryColour: String(row.primaryColour ?? ""),
     edit: String(row.edit ?? ""),
@@ -7512,6 +7556,41 @@ function assortmentStylePayload(row: Record<string, unknown>) {
   };
 }
 
+async function enrichAssortmentCatalogueFields<T extends {
+  styleNumber: string; category: string; subCategory: string; fabricCategory: string; fabricSubCategory: string;
+}>(styles: T[]) {
+  const keys = [...new Set(styles.map((style) => style.styleNumber.trim().toLowerCase()).filter(Boolean))];
+  if (!keys.length) return styles;
+  // BI is the commercial authority, while the product master fills product
+  // descriptors that are intentionally absent from its trading projection.
+  // This also retains fabric classification for styles whose variants carry it.
+  const result = await pool.query<{
+    styleKey: string; category: string | null; subCategory: string | null; fabricCategory: string | null; fabricSubCategory: string | null;
+  }>(
+    `SELECT LOWER(BTRIM(style_number)) AS "styleKey",
+       MAX(NULLIF(BTRIM(category),'')) AS category,
+       MAX(NULLIF(BTRIM(product_type),'')) AS "subCategory",
+       MAX(NULLIF(BTRIM(fabric_category),'')) AS "fabricCategory",
+       MAX(NULLIF(BTRIM(fabric_subcategory),'')) AS "fabricSubCategory"
+     FROM public.all_products_clean
+     WHERE LOWER(BTRIM(style_number))=ANY($1::text[])
+     GROUP BY LOWER(BTRIM(style_number))`,
+    [keys],
+  );
+  const catalogue = new Map(result.rows.map((row) => [row.styleKey, row]));
+  return styles.map((style) => {
+    const fallback = catalogue.get(style.styleNumber.trim().toLowerCase());
+    if (!fallback) return style;
+    return {
+      ...style,
+      category: style.category && style.category !== "Uncategorised" ? style.category : (fallback.category ?? "Uncategorised"),
+      subCategory: style.subCategory || fallback.subCategory || "",
+      fabricCategory: style.fabricCategory || fallback.fabricCategory || fallback.fabricSubCategory || "",
+      fabricSubCategory: style.fabricSubCategory || fallback.fabricSubCategory || "",
+    };
+  });
+}
+
 async function assortmentPlanData(quarter: string, activeOnly = false, source?: BiWorkspaceSource) {
   const bi = source ?? await biWorkspaceSource();
   const [membership, pipelineByStyle] = await Promise.all([
@@ -7528,9 +7607,9 @@ async function assortmentPlanData(quarter: string, activeOnly = false, source?: 
     currentProductionPipelineByStyle(),
   ]);
   const intent = new Map(membership.rows.map((row) => [String(row.style_key), String(row.intent)]));
-  const styles = bi.styles.map(biStyle)
-    .filter((style) => style.styleNumber && (activeOnly ? style.status.toLowerCase() === "active" : ["active", "retired"].includes(style.status.toLowerCase())))
-    .map((style) => {
+  const baseStyles = await enrichAssortmentCatalogueFields(bi.styles.map(biStyle)
+    .filter((style) => style.styleNumber && (activeOnly ? style.status.toLowerCase() === "active" : ["active", "retired"].includes(style.status.toLowerCase()))));
+  const styles = baseStyles.map((style) => {
       const styleKey = style.styleNumber.toLowerCase();
       const styleNameKey = `name:${style.name.trim().toLowerCase()}`;
       const wipUnits = pipelineByStyle.get(styleKey) ?? pipelineByStyle.get(styleNameKey) ?? 0;
@@ -7551,7 +7630,7 @@ async function assortmentPlanData(quarter: string, activeOnly = false, source?: 
     styles, carryOverStyles: styles, newStyles: [], total: styles.length,
     counts: { total: styles.length, tier1: countTier("Tier 1 · NOOS"), tier2: countTier("Tier 2 · Core"), tier3: countTier("Tier 3 · Recent"), tier4: countTier("Tier 4 · New"), retired: countTier("Retired"), noos: countTier("Tier 1 · NOOS"), core: countTier("Tier 2 · Core"), recent: countTier("Tier 3 · Recent"), newTest: countTier("Tier 4 · New") },
     categoryBreakdown: breakdown("category"), stageBreakdown: breakdown("stage"),
-    filterOptions: { tier: [...ASSORTMENT_TIER_FILTERS], status: activeOnly ? ["Active"] : ["Active", "Retired"], category: options("category"), subCategory: options("subCategory"), fabricCategory: options("fabricCategory"), brand: options("brand"), primaryColour: options("primaryColour"), edit: options("edit") },
+    filterOptions: { tier: [...ASSORTMENT_TIER_FILTERS], status: activeOnly ? ["Active"] : ["Active", "Retired"], category: options("category"), subCategory: options("subCategory"), fabricCategory: options("fabricCategory"), fabricSubCategory: options("fabricSubCategory"), brand: options("brand"), primaryColour: options("primaryColour"), edit: options("edit") },
   };
   /*
   const catalogueResult = await pool.query(
@@ -8312,7 +8391,7 @@ router.get("/assortment-plan", async (_req, res, next) => {
     let biMs = 0;
     const biPromise = (async () => {
       const startedAt = performance.now();
-      const value = await biWorkspaceSource();
+       const value = await freshAssortmentBiWorkspaceSource();
       biMs = performance.now() - startedAt;
       return value;
     })();
@@ -8429,7 +8508,13 @@ router.get("/assortment-plan", async (_req, res, next) => {
       weeklyDestinations: weeklyDestinationsResult.rows,
       reconciliations: Array.isArray(bi.reconciliations) ? bi.reconciliations : [],
       sourceStatus: Array.isArray(bi.sourceStatus) ? bi.sourceStatus : [],
-      snapshot: biWorkspaceCache?.meta ?? null,
+      snapshot: {
+        generatedAt: bi.generatedAt ?? null,
+        refreshedAt: new Date().toISOString(),
+        refreshFailedAt: null,
+        refreshError: null,
+        version: BI_SNAPSHOT_VERSION,
+      },
     };
     const serializationStartedAt = performance.now();
     const serialized = JSON.stringify(payload);
@@ -8461,18 +8546,23 @@ router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next)
       return;
     }
     const result = await pool.query(
-      `SELECT i.image_512 AS image
-       FROM public.raw_odoo_products p
-       JOIN public.product_image_map m ON m.product_id=p.id
+       `SELECT i.image_512 AS image
+        FROM public.all_products_clean catalogue_variant
+        LEFT JOIN public.raw_odoo_products product_variant
+          ON product_variant.id=catalogue_variant.product_id
+        JOIN public.product_image_map m
+          ON m.sku=catalogue_variant.sku
+          OR m.product_id=catalogue_variant.product_id
+          OR m.product_id=product_variant.id
        JOIN public.product_images i ON i.tmpl_id=m.tmpl_id
        LEFT JOIN (
          SELECT sku,SUM(available)::float AS stock
          FROM public.all_inventory
          GROUP BY sku
        ) inv ON inv.sku=m.sku
-       WHERE LOWER(BTRIM(COALESCE(p.style_number,'')))=LOWER(BTRIM($1))
+        WHERE LOWER(BTRIM(COALESCE(catalogue_variant.style_number,product_variant.style_number,'')))=LOWER(BTRIM($1))
          AND i.image_512 IS NOT NULL AND i.image_512 <> ''
-       ORDER BY (COALESCE(inv.stock,0)>0) DESC,p.default_code
+        ORDER BY (COALESCE(inv.stock,0)>0) DESC,product_variant.default_code,catalogue_variant.sku
        LIMIT 1`,
       [styleNumber],
     );
@@ -12912,6 +13002,76 @@ const weeklyStyleIdentity = (row: Record<string, unknown>) => {
     : `name:${String(row.styleName ?? row.style_name ?? "").trim().toLowerCase()}`;
 };
 
+router.get("/weekly-order-kpi-targets", async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT metric_key AS "metricKey",label,target_value::float AS "targetValue",unit,
+         updated_at AS "updatedAt",COALESCE(NULLIF(BTRIM(u.name),''),'Workspace default') AS "updatedBy"
+       FROM ${schema}.weekly_order_kpi_targets t
+       LEFT JOIN ${schema}.users u ON u.id=t.updated_by
+       ORDER BY CASE t.metric_key
+         WHEN 'total_units' THEN 1 WHEN 'print_pct' THEN 2 WHEN 'knit_pct' THEN 3
+         WHEN 'new_pct' THEN 4 WHEN 'dresses_pct' THEN 5
+         WHEN 'average_order_size' THEN 6 WHEN 'new_styles' THEN 7 ELSE 99 END`,
+    );
+    res.json({ items: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.patch("/weekly-order-kpi-targets/:key", async (req: AuthRequest, res, next) => {
+  try {
+    const value = Number(req.body?.targetValue);
+    if (!Number.isFinite(value) || value < 0) {
+      res.status(400).json({ error: "Target must be zero or greater" }); return;
+    }
+    const result = await pool.query(
+      `UPDATE ${schema}.weekly_order_kpi_targets
+       SET target_value=$1,updated_by=$2,updated_at=NOW()
+       WHERE metric_key=$3 RETURNING metric_key`,
+      [value, req.workspaceUser?.id ?? null, String(req.params.key)],
+    );
+    if (!result.rows.length) {
+      res.status(404).json({ error: "Weekly KPI target was not found" }); return;
+    }
+    res.json({ ok: true });
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.put("/weekly-order-plan/target", async (req: AuthRequest, res, next) => {
+  try {
+    const isoYear = Number(req.body?.isoYear);
+    const isoWeek = Number(req.body?.isoWeek);
+    const targetUnits = Number(req.body?.targetUnits);
+    if (!Number.isInteger(isoYear) || !Number.isInteger(isoWeek) || isoWeek < 1 || isoWeek > 53
+      || !Number.isInteger(targetUnits) || targetUnits < 0) {
+      res.status(400).json({ error: "A valid week and whole-number target are required" }); return;
+    }
+    const locked = await pool.query(
+      `SELECT 1 FROM ${schema}.weekly_order_plans
+       WHERE iso_year=$1 AND iso_week=$2 AND status='confirmed'`,
+      [isoYear, isoWeek],
+    );
+    if (locked.rows.length) {
+      res.status(409).json({ error: "Confirmed weeks cannot be edited" }); return;
+    }
+    await pool.query(
+      `INSERT INTO ${schema}.weekly_order_week_targets
+         (iso_year,iso_week,target_units,updated_by)
+       VALUES ($1,$2,$3,$4)
+       ON CONFLICT (iso_year,iso_week) DO UPDATE
+       SET target_units=EXCLUDED.target_units,updated_by=EXCLUDED.updated_by,updated_at=NOW()`,
+      [isoYear, isoWeek, targetUnits, req.workspaceUser?.id ?? null],
+    );
+    res.json({ ok: true, targetUnits });
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/weekly-order-plan/sources", async (req, res, next) => {
   try {
     const search = String(req.query.search ?? "").trim();
@@ -13006,8 +13166,8 @@ router.get("/weekly-order-plan", async (req, res, next) => {
     const isoWeek = Number(req.query.week ?? 36);
     // Calendar and saved-plan reads are independent. Start the BI lookup here
     // too; a transient BI miss must not delay or hide the saved plan.
-    res.locals.workspaceQueryCount += 3;
-    const [[datesResult, fallbackStart, planResult], sourceResult] = await Promise.all([
+    res.locals.workspaceQueryCount += 5;
+    const [[datesResult, fallbackStart, planResult, weekTargetResult, kpiTargetResult], sourceResult] = await Promise.all([
       timedEndpointPhase(res, "db", () => Promise.all([
       pool.query(
       `SELECT start_date::text AS "startDate",end_date::text AS "endDate"
@@ -13022,6 +13182,15 @@ router.get("/weekly-order-plan", async (req, res, next) => {
         `SELECT id,iso_year AS "isoYear",iso_week AS "isoWeek",status,confirmed_at AS "confirmedAt"
          FROM ${schema}.weekly_order_plans WHERE iso_year=$1 AND iso_week=$2`,
         [isoYear, isoWeek],
+      ),
+      pool.query(
+        `SELECT target_units AS "targetUnits",updated_at AS "updatedAt"
+         FROM ${schema}.weekly_order_week_targets WHERE iso_year=$1 AND iso_week=$2`,
+        [isoYear, isoWeek],
+      ),
+      pool.query(
+        `SELECT metric_key AS "metricKey",label,target_value::float AS "targetValue",unit
+         FROM ${schema}.weekly_order_kpi_targets`,
       ),
        ])),
       timedEndpointPhase(res, "bi", () => getBiWorkspaceSource()).catch((error) => {
@@ -13058,6 +13227,8 @@ router.get("/weekly-order-plan", async (req, res, next) => {
           CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END || '/' ||
           encode(LOWER(BTRIM(l.style_number))::bytea,'escape') END AS "imageUrl",
         l.available_colourways AS "availableColourways",l.selected_colourways AS "selectedColourways",
+         COALESCE(NULLIF(BTRIM(l.pattern_type),''),fa.pattern_type) AS "patternType",
+         COALESCE(NULLIF(BTRIM(l.fabric_structure),''),fa.fabric_structure) AS "fabricStructure",
         l.data_quality_flags AS "dataQualityFlags",
         l.estimated_quantity AS "estimatedQuantity",l.order_type AS "orderType",l.order_stage AS "orderStage",
         COALESCE(fm.metres,0)::float AS "availableMetres",
@@ -13075,6 +13246,23 @@ router.get("/weekly-order-plan", async (req, res, next) => {
          LEFT JOIN LATERAL (
            SELECT NULL::date AS first_order_date,0::numeric AS actual_quantity,'[]'::json AS orders
          ) ao ON TRUE
+          LEFT JOIN LATERAL (
+            SELECT
+              CASE WHEN COUNT(DISTINCT LOWER(BTRIM(fp.plain_print)))
+                       FILTER (WHERE NULLIF(BTRIM(fp.plain_print),'') IS NOT NULL)=1
+                THEN MAX(NULLIF(BTRIM(fp.plain_print),'')) END AS pattern_type,
+              CASE WHEN COUNT(DISTINCT LOWER(BTRIM(fp.fabric_structure)))
+                       FILTER (WHERE NULLIF(BTRIM(fp.fabric_structure),'') IS NOT NULL)=1
+                THEN MAX(NULLIF(BTRIM(fp.fabric_structure),'')) END AS fabric_structure
+            FROM (
+              SELECT l.fabric_product_id AS fabric_product_id
+              UNION
+              SELECT a.fabric_product_id
+              FROM public.all_products_clean a
+              WHERE LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,''))))=LOWER(BTRIM(l.style_number))
+            ) linked
+            JOIN public.raw_fabric_products fp ON fp.id=linked.fabric_product_id
+          ) fa ON TRUE
          LEFT JOIN move_history mv ON mv.line_id=l.id
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
@@ -13169,6 +13357,18 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       monthLabel: String(row.monthLabel),
       targetUnits: Number(row.targetUnits),
     })));
+    const kpiTargets = new Map<string, number>(
+      kpiTargetResult.rows.map((row) => [String(row.metricKey), Number(row.targetValue)]),
+    );
+    const storedWeeklyTarget = weekTargetResult.rows[0] ? Number(weekTargetResult.rows[0].targetUnits) : null;
+    const derivedWeeklyTarget = weeklyNewness.targetUnits > 0
+      ? weeklyNewness.targetUnits
+      : Number(kpiTargets.get("total_units") ?? 0);
+    const weeklyTargetUnits = storedWeeklyTarget ?? derivedWeeklyTarget;
+    const newPctTarget = Number(kpiTargets.get("new_pct") ?? 35);
+    const effectiveNewnessTargetUnits = storedWeeklyTarget == null
+      ? weeklyNewness.targetUnits
+      : Math.round(weeklyTargetUnits * newPctTarget / 100);
     const actualNewUnits = actualOrders.rows
       .filter((order) => isNewnessOrderType(order.orderType))
       .reduce((sum, order) => sum + Number(order.quantity ?? 0), 0);
@@ -13176,7 +13376,40 @@ router.get("/weekly-order-plan", async (req, res, next) => {
       .filter((line) => !line.firstOrderDate && isNewnessOrderType(line.orderType))
       .reduce((sum, line) => sum + Number(line.estimatedQuantity ?? 0), 0);
     const committedNewUnits = actualNewUnits + pendingNewUnits;
-    const newnessShortfallUnits = Math.max(0, weeklyNewness.targetUnits - committedNewUnits);
+    const newnessShortfallUnits = Math.max(0, effectiveNewnessTargetUnits - committedNewUnits);
+    const totalPlannedUnits = summary.units;
+    const percentOfUnits = (units: number) => totalPlannedUnits ? 100 * units / totalPlannedUnits : 0;
+    const patternComplete = lines.rows.every((line) =>
+      ["print", "plain"].includes(String(line.patternType ?? "").trim().toLowerCase()));
+    const constructionComplete = lines.rows.every((line) =>
+      ["knit", "woven", "non-woven", "non woven"].includes(String(line.fabricStructure ?? "").trim().toLowerCase()));
+    const printUnits = lines.rows
+      .filter((line) => String(line.patternType ?? "").trim().toLowerCase() === "print")
+      .reduce((sum, line) => sum + Number(line.estimatedQuantity), 0);
+    const knitUnits = lines.rows
+      .filter((line) => String(line.fabricStructure ?? "").trim().toLowerCase() === "knit")
+      .reduce((sum, line) => sum + Number(line.estimatedQuantity), 0);
+    const dressesUnits = lines.rows
+      .filter((line) => String(line.subCategory ?? "").trim().toLowerCase().includes("dress"))
+      .reduce((sum, line) => sum + Number(line.estimatedQuantity), 0);
+    const newStyleLines = lines.rows.filter((line) => isNewnessOrderType(line.orderType)).length;
+    const kpi = (metricKey: string, actual: number | null, target: number, unit: string, available = true) => ({
+      metricKey,
+      actual: available ? actual : null,
+      target,
+      variance: available && actual != null ? actual - target : null,
+      unit,
+      available,
+    });
+    const weeklyKpis = [
+      kpi("total_units", totalPlannedUnits, weeklyTargetUnits, "units"),
+      kpi("print_pct", percentOfUnits(printUnits), Number(kpiTargets.get("print_pct") ?? 30), "percent", patternComplete),
+      kpi("knit_pct", percentOfUnits(knitUnits), Number(kpiTargets.get("knit_pct") ?? 35), "percent", constructionComplete),
+      kpi("new_pct", percentOfUnits(summary.newUnits), newPctTarget, "percent"),
+      kpi("dresses_pct", percentOfUnits(dressesUnits), Number(kpiTargets.get("dresses_pct") ?? 35), "percent"),
+      kpi("average_order_size", lines.rows.length ? totalPlannedUnits / lines.rows.length : 0, Number(kpiTargets.get("average_order_size") ?? 400), "units"),
+      kpi("new_styles", newStyleLines, Number(kpiTargets.get("new_styles") ?? 7), "count"),
+    ];
     const fabricSummary = Array.from(lines.rows.reduce((map, line) => {
       const key = String(line.fabric || "Fabric pending");
       const current = map.get(key) ?? { fabric: key, units: 0, styles: 0, availableMetres: Number(line.availableMetres || 0) };
@@ -13253,6 +13486,14 @@ router.get("/weekly-order-plan", async (req, res, next) => {
     res.json({
       plan: plan ? weeklyPlanPayload(plan) : null,
       week: { isoYear, isoWeek, startDate, endDate },
+      weeklyTarget: {
+        targetUnits: weeklyTargetUnits,
+        source: storedWeeklyTarget == null ? "derived" : "entered",
+        derivedTargetUnits: derivedWeeklyTarget,
+        updatedAt: weekTargetResult.rows[0]?.updatedAt ?? null,
+      },
+      kpiTargets: kpiTargetResult.rows,
+      kpis: weeklyKpis,
       lines: lines.rows,
       actualOrders: actualOrders.rows.map((order) => ({ ...order, unplanned: order.plannedLineId == null })),
       summary: {
@@ -13261,8 +13502,8 @@ router.get("/weekly-order-plan", async (req, res, next) => {
         newUnitsCommitted: committedNewUnits,
         actualNewUnits,
         pendingNewUnits,
-        newnessTargetUnits: weeklyNewness.targetUnits,
-        newnessTargetComponents: weeklyNewness.components,
+        newnessTargetUnits: effectiveNewnessTargetUnits,
+        newnessTargetComponents: storedWeeklyTarget == null ? weeklyNewness.components : [],
         newnessShortfallUnits,
         newnessShortfallStyles: Math.ceil(newnessShortfallUnits / DEFAULT_NEW_STYLE_ORDER_UNITS),
         newStyleOrderSizeUnits: DEFAULT_NEW_STYLE_ORDER_UNITS,
@@ -13309,7 +13550,9 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
       ? await client.query(
         `SELECT id::text AS source_id,style_number,style_name,style_type,tier,category,sub_category,brand,
           COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
-          sample_fabric_product_id AS fabric_product_id,target_order_week,
+           sample_fabric_product_id AS fabric_product_id,target_order_week,
+           NULLIF(BTRIM(fp.plain_print),'') AS pattern_type,
+           NULLIF(BTRIM(fp.fabric_structure),'') AS fabric_structure,
           ARRAY[]::text[] AS colourways
          FROM ${schema}.style_development_tracker t LEFT JOIN public.raw_fabric_products fp ON fp.id=t.sample_fabric_product_id
          WHERE t.id=$1 AND t.style_number_status='confirmed' AND NULLIF(BTRIM(t.style_number),'') IS NOT NULL`,
@@ -13338,6 +13581,25 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     if (!style?.style_number || !style?.style_name) {
       await client.query("ROLLBACK"); res.status(404).json({ error: "The source style no longer exists" }); return;
     }
+    if (source === "catalogue") {
+      const fabricAttributes = await client.query(
+        `SELECT
+           CASE WHEN COUNT(DISTINCT LOWER(BTRIM(fp.plain_print)))
+                      FILTER (WHERE NULLIF(BTRIM(fp.plain_print),'') IS NOT NULL)=1
+             THEN MAX(NULLIF(BTRIM(fp.plain_print),'')) END AS pattern_type,
+           CASE WHEN COUNT(DISTINCT LOWER(BTRIM(fp.fabric_structure)))
+                      FILTER (WHERE NULLIF(BTRIM(fp.fabric_structure),'') IS NOT NULL)=1
+             THEN MAX(NULLIF(BTRIM(fp.fabric_structure),'')) END AS fabric_structure,
+           CASE WHEN COUNT(DISTINCT a.fabric_product_id)
+                      FILTER (WHERE a.fabric_product_id IS NOT NULL)=1
+             THEN MAX(a.fabric_product_id) END AS fabric_product_id
+         FROM public.all_products_clean a
+         LEFT JOIN public.raw_fabric_products fp ON fp.id=a.fabric_product_id
+         WHERE LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,''))))=LOWER(BTRIM($1))`,
+        [style.style_number],
+      );
+      Object.assign(style, fabricAttributes.rows[0] ?? {});
+    }
     const seqResult = await client.query(`SELECT COALESCE(MAX(sequence_no),0)+1 AS seq FROM ${schema}.weekly_order_plan_lines WHERE plan_id=$1`, [plan.rows[0].id]);
     const sequence = Number(seqResult.rows[0].seq);
     const selected = Array.isArray(body.selectedColourways)
@@ -13346,12 +13608,12 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const inserted = await client.query(
       `INSERT INTO ${schema}.weekly_order_plan_lines
        (plan_id,sequence_no,order_number,source,source_id,style_number,style_name,style_type,tier,category,sub_category,
-        brand,fabric,fabric_product_id,target_order_week,image_url,available_colourways,selected_colourways,
-        estimated_quantity,order_type,order_stage,created_by)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22) RETURNING id`,
+         brand,fabric,fabric_product_id,pattern_type,fabric_structure,target_order_week,image_url,available_colourways,
+         selected_colourways,estimated_quantity,order_type,order_stage,created_by)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24) RETURNING id`,
       [plan.rows[0].id, sequence, `W${isoWeek}${String(sequence).padStart(3, "0")}`, source, style.source_id,
         style.style_number, style.style_name, style.style_type, style.tier, style.category, style.sub_category, style.brand,
-        style.fabric, style.fabric_product_id, style.target_order_week,
+        style.fabric, style.fabric_product_id, style.pattern_type, style.fabric_structure, style.target_order_week,
         `/api/workspace/garment-images/${source === "development" ? "workspace" : "catalogue"}/${encodeURIComponent(style.style_number)}`,
         style.colourways ?? [], selected, quantity, body.orderType, body.orderStage, req.workspaceUser?.id ?? null],
     );

@@ -1,12 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { CheckSquare, ChevronDown, RefreshCw, Search, Target, X } from 'lucide-react';
+import { CheckSquare, ChevronDown, Printer, RefreshCw, Search, Target, X } from 'lucide-react';
+import { createPortal } from 'react-dom';
 import CatalogueSortControl, { type CatalogueSortKey } from '../components/CatalogueSortControl';
 import MultiSelectFilter from '../components/MultiSelectFilter';
 import GarmentImage from '../components/GarmentImage';
-import { countAssortmentStyles, matchesAssortmentFilters, matchesStyleCatalogueSearch, proposedActionForStyle, proposedActionOptions, sortAssortmentStylesByAction, type AssortmentFilterState } from '../lib/assortmentPlanFilters';
+import { countAssortmentStyles, matchesAssortmentFilters, matchesStyleCatalogueSearch, proposedActionForStyle, proposedActionOptions, sortAssortmentStyles, sortAssortmentStylesByAction, type AssortmentFilterState } from '../lib/assortmentPlanFilters';
 
-type FilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'primaryColour' | 'edit' | 'proposedAction';
+type FilterKey = 'tier' | 'status' | 'category' | 'subCategory' | 'fabricCategory' | 'brand' | 'fabricSubCategory' | 'edit' | 'proposedAction';
 type Destination = { type: 'range'; seasonId: number } | { type: 'week'; isoYear: number; isoWeek: number };
 type Season = { id: number; seasonName: string; status: string };
 type Week = { isoYear: number; isoWeek: number; label: string; status: string; isCurrent?: boolean };
@@ -39,8 +40,8 @@ const actionGroups = [
   { key: 'No action', label: 'No action', description: 'No lifecycle action currently proposed' },
 ] as const;
 
-const filterDefinitions: Array<{ key: FilterKey; label: string }> = [{ key: 'tier', label: 'Tier' }, { key: 'status', label: 'Status' }, { key: 'proposedAction', label: 'Proposed Action' }, { key: 'category', label: 'Category' }, { key: 'subCategory', label: 'Sub-category' }, { key: 'fabricCategory', label: 'Fabric Category' }, { key: 'brand', label: 'Brand' }, { key: 'primaryColour', label: 'Primary Colour' }, { key: 'edit', label: 'Edit' }];
-const emptyFilters: AssortmentFilterState = { tier: [], status: ['Active'], category: [], subCategory: [], fabricCategory: [], brand: [], primaryColour: [], edit: [], proposedAction: [] };
+const filterDefinitions: Array<{ key: FilterKey; label: string }> = [{ key: 'tier', label: 'Tier' }, { key: 'status', label: 'Status' }, { key: 'proposedAction', label: 'Proposed Action' }, { key: 'category', label: 'Category' }, { key: 'subCategory', label: 'Sub-category' }, { key: 'fabricCategory', label: 'Fabric Category' }, { key: 'brand', label: 'Brand' }, { key: 'fabricSubCategory', label: 'Fabric Sub-category' }, { key: 'edit', label: 'Edit' }];
+const emptyFilters: AssortmentFilterState = { tier: [], status: ['Active'], category: [], subCategory: [], fabricCategory: [], brand: [], fabricSubCategory: [], edit: [], proposedAction: [] };
 const emptyStyles: Style[] = [];
 const n = (value: number | null | undefined, digits = 0) => value == null || !Number.isFinite(Number(value)) ? '—' : new Intl.NumberFormat('en-KE', { maximumFractionDigits: digits }).format(Number(value));
 const pct = (value: number | null | undefined) => value == null ? '—' : `${n(value, 1)}%`;
@@ -77,15 +78,72 @@ function DestinationPicker({ seasons, weeks, disabled, onPick }: { seasons: Seas
   </div>;
 }
 
-function StyleCard({ style, selected, onSelect, action, expanded, onToggle }: { style: Style; selected: boolean; onSelect: () => void; action: React.ReactNode; expanded: boolean; onToggle: () => void }) {
+function StyleModal({ style, onClose }: { style: Style; onClose: () => void }) {
   const signal = style.reorderSignal ?? { tone: 'grey' as const, label: 'No action', action: null, actionPriority: 5, fabricChecked: false, fabricNote: 'Fabric could not be checked' };
-  const fabricRows = (style.fabricByColour ?? []).filter((row) => Number(row.exactMetres ?? 0) > 0 || Number(row.otherColourMetres ?? 0) > 0 || row.fabricBarcode);
-  const fabricNames = [...new Set(fabricRows.map((row) => row.fabricName?.trim()).filter(Boolean) as string[])];
+  const allFabricRows = style.fabricByColour ?? [];
+  const fabricRows = allFabricRows.filter((row) => Number(row.exactMetres ?? 0) > 0);
+  const fabricNames = [...new Set(allFabricRows.map((row) => row.fabricName?.trim()).filter(Boolean) as string[])];
   const fabricName = fabricNames.length === 1 ? fabricNames[0] : fabricNames.length > 1 ? `${fabricNames[0]} + ${fabricNames.length - 1} more` : style.fabric && style.fabric !== 'Fabric pending' ? style.fabric : 'Fabric name not assigned';
-  const fabricTotalMetres = fabricRows.reduce((highest, row) => Math.max(highest, Number(row.exactMetres ?? 0) + Number(row.otherColourMetres ?? 0)), 0);
+  const fabricTotalMetres = allFabricRows.reduce((highest, row) => Math.max(highest, Number(row.exactMetres ?? 0) + Number(row.otherColourMetres ?? 0)), 0);
   const producibleUnits = fabricTotalMetres > 0 && Number(style.fabricConsumptionMetresPerUnit ?? 0) > 0
     ? Math.round(fabricTotalMetres / Number(style.fabricConsumptionMetresPerUnit))
     : null;
+
+  useEffect(() => {
+    const onEscape = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.addEventListener('keydown', onEscape);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onEscape);
+    };
+  }, [onClose]);
+
+  return createPortal(<div className="assortment-modal-backdrop" onClick={onClose}>
+    <div className="assortment-modal" onClick={e => e.stopPropagation()} role="dialog" aria-modal="true" aria-labelledby={`modal-title-${style.id}`}>
+      <div className="assortment-modal-header">
+        <div>
+          <span className="assortment-tier-badge">{style.tier ?? 'Unclassified'}</span>
+          <h2 id={`modal-title-${style.id}`}>{style.name || 'Unnamed style'} <span className="assortment-style-number">{style.styleNumber}</span></h2>
+        </div>
+        <div className="assortment-modal-actions">
+           <button className="icon-button" onClick={() => window.print()} title="Print" aria-label="Print style details">
+              <Printer size={18} />
+          </button>
+          <a href={`/merchandising?tab=merch-deepdive&style=${style.styleNumber}`} target="_blank" rel="noopener noreferrer" className="button button-gold button-sm">View full analysis</a>
+          <button className="icon-button" onClick={onClose} aria-label="Close modal">
+            <X size={20} />
+          </button>
+        </div>
+      </div>
+      <div className="assortment-modal-content">
+        <div className="assortment-modal-image">
+          <GarmentImage source="catalogue" styleKey={style.styleNumber} image={style.image} alt={style.name} />
+        </div>
+        <div className="assortment-modal-details">
+          <div className="assortment-detail-metrics">
+            <span><small>Lifetime sell-through</small><strong>{pct(style.lifetimeSellThroughPct)}</strong></span>
+            <span><small>Cover (SOH + Pipeline)</small><strong>{style.coverAvailable ? `${n(style.planningCoverWeeks, 1)} wks` : 'Not available'}</strong>{!style.coverAvailable && style.coverUnavailableReason && <em>{style.coverUnavailableReason}</em>}</span>
+            <span><small>Full price</small><strong>{pct(style.fullPricePct)}</strong></span>
+            <span><small>Days since last sale</small><strong>{n(style.daysSinceLastSale)}</strong></span>
+            <span><small>Lifetime units sold</small><strong>{n(style.lifetimeUnitsSold)}</strong></span>
+            <span><small>Orders</small><strong>{n(style.orderCount)}</strong></span>
+            <span><small>Weeks since last order</small><strong>{n(style.weeksSinceLastOrder)}</strong></span>
+            <span><small>Week since launch</small><strong>{style.weeksSinceFirstSale == null ? '—' : n(style.weeksSinceFirstSale + 1)}</strong></span>
+          </div>
+          <div className="assortment-detail-section"><b>Stock split</b><span>Stores {n(Math.max(Number(style.sohStores ?? 0) - Number(style.sohOnline ?? 0), 0))} · Online {n(style.sohOnline)} · Warehouse {n(style.sohWarehouse)} · Pipeline {n(style.pipelineUnits)} {style.awaitingDelivery ? '· Awaiting delivery' : ''}</span></div>
+          <div className="assortment-detail-section"><b>Product</b><span>KES {n(style.price)} · {n(style.activeColourwayCount)} of {n(style.colourwayCount)} active colourways · {style.category || 'Uncategorised'} / {style.subCategory || 'Uncategorised'} · {style.fabricCategory || 'Fabric category pending'} / {style.fabricSubCategory || 'Fabric sub-category pending'}</span></div>
+          <div className="assortment-detail-section"><b>Fabric availability by colourway</b><div className="assortment-fabric-summary"><strong>{fabricName}</strong><span>{n(fabricTotalMetres)}m across the whole fabric type · {n(allFabricRows.length)} colourways · {n(fabricRows.length)} with stock{producibleUnits != null ? ` · approx ${n(producibleUnits)} units at ${n(style.fabricConsumptionMetresPerUnit, 2)}m` : ''}</span></div>{fabricRows.length ? <ul className="assortment-fabric-list">{fabricRows.map((row, index) => <li key={`${row.colour}-${index}`}><span>{row.colour || 'Colour pending'}</span><small>{row.fabricBarcode || 'No fabric barcode assigned'}</small><strong>{n(row.exactMetres)}m</strong></li>)}</ul> : <span>No colourway currently has stock. For printed fabric, this is normal until the base cloth is printed.</span>}</div>
+        </div>
+      </div>
+    </div>
+  </div>, document.body);
+}
+
+function StyleCard({ style, selected, onSelect, action, onViewDetail }: { style: Style; selected: boolean; onSelect: () => void; action: React.ReactNode; onViewDetail: () => void }) {
+  const signal = style.reorderSignal ?? { tone: 'grey' as const, label: 'No action', action: null, actionPriority: 5, fabricChecked: false, fabricNote: 'Fabric could not be checked' };
+
   return <article className={`assortment-style-card consolidated ${selected ? 'selected' : ''}`}>
     <label className="assortment-select-card"><input type="checkbox" checked={selected} onChange={onSelect} disabled={!isBiStyle(style)} aria-label={`Select ${style.name}`} data-testid={`checkbox-select-style-${style.id}`} /></label>
     <GarmentImage className="assortment-style-image" source="catalogue" styleKey={style.styleNumber} image={style.image} alt={style.name} />
@@ -93,35 +151,20 @@ function StyleCard({ style, selected, onSelect, action, expanded, onToggle }: { 
       <div className="assortment-style-topline"><span className="assortment-tier-badge">{style.tier ?? 'Unclassified'}</span><span className={`assortment-reorder-signal ${signal.tone} action-${(signal.action ?? 'none').toLowerCase()}`}><i />{signal.action && <b>{signal.action}</b>}{signal.label}{!signal.fabricChecked && signal.action === 'REORDER' && <small>Fabric not checked</small>}</span></div>
       <h3>{style.name || 'Unnamed style'}</h3><span className="assortment-style-number">{style.styleNumber}</span>
       <div className="assortment-stock-total">
-        <div><span>SOH + Pipeline</span><strong>{n(style.stockPlusPipelineUnits)}</strong><small>{n(style.sellableStockUnits)} sellable + {n(style.pipelineUnits)} pipeline</small></div>
-        <div><span>Lifetime SOR</span><strong>{pct(style.lifetimeSellThroughPct)}</strong><small>{n(style.weeksSinceFirstSale)} weeks since launch</small></div>
+        <div><span>Stock + pipeline</span><strong>{n(style.stockPlusPipelineUnits)}</strong><small>{n(style.sellableStockUnits)} sellable<br />{n(style.pipelineUnits)} pipeline</small></div>
+        <div><span>Lifetime SOR</span><strong>{pct(style.lifetimeSellThroughPct)}</strong><small>{style.weeksSinceFirstSale != null ? `Week ${n(style.weeksSinceFirstSale + 1)} since launch` : 'Launch date unavailable'}</small></div>
       </div>
-      <button type="button" className="assortment-details-toggle" onClick={onToggle} aria-expanded={expanded} data-testid={`button-style-details-${style.id}`}>{expanded ? 'Hide detail' : 'View detail'}</button>
-      {expanded && <div className="assortment-card-details">
-        <div className="assortment-detail-metrics">
-          <span><small>Lifetime sell-through</small><strong>{pct(style.lifetimeSellThroughPct)}</strong></span>
-          <span><small>Cover (SOH + Pipeline)</small><strong>{style.coverAvailable ? `${n(style.planningCoverWeeks, 1)} wks` : 'Not available'}</strong>{!style.coverAvailable && style.coverUnavailableReason && <em>{style.coverUnavailableReason}</em>}</span>
-          <span><small>Full price</small><strong>{pct(style.fullPricePct)}</strong></span>
-          <span><small>Days since last sale</small><strong>{n(style.daysSinceLastSale)}</strong></span>
-          <span><small>Lifetime units sold</small><strong>{n(style.lifetimeUnitsSold)}</strong></span>
-          <span><small>Orders</small><strong>{n(style.orderCount)}</strong></span>
-          <span><small>Weeks since last order</small><strong>{n(style.weeksSinceLastOrder)}</strong></span>
-          <span><small>Weeks since launch</small><strong>{n(style.weeksSinceFirstSale)}</strong></span>
-        </div>
-        <div><b>Stock split</b><span>Stores {n(Math.max(Number(style.sohStores ?? 0) - Number(style.sohOnline ?? 0), 0))} · Online {n(style.sohOnline)} · Warehouse {n(style.sohWarehouse)} · Pipeline {n(style.pipelineUnits)} {style.awaitingDelivery ? '· Awaiting delivery' : ''}</span></div>
-        <div><b>Product</b><span>KES {n(style.price)} · {n(style.activeColourwayCount)} of {n(style.colourwayCount)} active colourways · {style.category || 'Uncategorised'} / {style.subCategory || 'Uncategorised'}</span></div>
-        <div><b>Fabric availability by colourway</b>{fabricRows.length ? <><div className="assortment-fabric-summary"><strong>{fabricName}</strong><span>{n(fabricTotalMetres)}m total available{producibleUnits != null ? ` · approx ${n(producibleUnits)} units at ${n(style.fabricConsumptionMetresPerUnit, 2)}m` : ''}</span></div><ul className="assortment-fabric-list">{fabricRows.map((row, index) => <li key={`${row.colour}-${index}`}><span>{row.colour || 'Colour pending'}</span><small>{row.fabricBarcode || 'No fabric barcode assigned'}</small><strong>{n(row.exactMetres)}m</strong></li>)}</ul></> : <span>{signal.fabricNote}</span>}</div>
-      </div>}
+      <button type="button" className="assortment-details-toggle" onClick={onViewDetail} data-testid={`button-style-details-${style.id}`}>View detail</button>
       <div className="assortment-card-action">{action}</div>
     </div>
   </article>;
 }
-
 export default function AssortmentPlanPage() {
   const client = useQueryClient();
   const [filters, setFilters] = useState<AssortmentFilterState>(emptyFilters);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState<CatalogueSortKey>('units_desc');
+  const [groupByAction, setGroupByAction] = useState(true);
   const [selected, setSelected] = useState<string[]>([]);
   const [expandedStyleId, setExpandedStyleId] = useState<string | null>(null);
   const [toast, setToast] = useState('');
@@ -158,11 +201,9 @@ export default function AssortmentPlanPage() {
     proposedActionOptions.map((option) => [option, `${option} ${proposedActionCounts[option]}`]),
   ), [proposedActionCounts]);
   const styles = useMemo(() => {
-    return sortAssortmentStylesByAction(
-      assortmentStyles.filter((style) => matchesAssortmentFilters(style, filters) && matchesStyleCatalogueSearch(style, search)),
-      sort,
-    );
-  }, [assortmentStyles, filters, search, sort]);
+    const filtered = assortmentStyles.filter((style) => matchesAssortmentFilters(style, filters) && matchesStyleCatalogueSearch(style, search));
+    return groupByAction ? sortAssortmentStylesByAction(filtered, sort) : sortAssortmentStyles(filtered, sort);
+  }, [assortmentStyles, filters, search, sort, groupByAction]);
   useEffect(() => {
     if (expandedStyleId && !styles.some((style) => style.id === expandedStyleId)) setExpandedStyleId(null);
   }, [expandedStyleId, styles]);
@@ -175,10 +216,15 @@ export default function AssortmentPlanPage() {
     [filters, search],
   );
   const assortmentCounts = useMemo(() => countAssortmentStyles(styles), [styles]);
-  const groupedStyles = useMemo(() => actionGroups.map((group) => ({
-    ...group,
-    styles: styles.filter((style) => style.proposedAction === group.key),
-  })).filter((group) => group.styles.length > 0), [styles]);
+  const groupedStyles = useMemo(() => {
+    if (!groupByAction) {
+      return [{ key: 'All', label: 'All Styles', description: 'All styles matching your filters.', styles }];
+    }
+    return actionGroups.map((group) => ({
+      ...group,
+      styles: styles.filter((style) => style.proposedAction === group.key),
+    })).filter((group) => group.styles.length > 0);
+  }, [styles, groupByAction]);
   useEffect(() => { setVisibleCardLimit(CARD_BATCH_SIZE); }, [filters, search, sort]);
   useEffect(() => {
     const marker = loadMoreRef.current;
@@ -212,11 +258,16 @@ export default function AssortmentPlanPage() {
     <header className="assortment-plan-hero"><div><span className="range-eyebrow">Merchandising / Store edit</span><h1>Assortment Plan <span className="assortment-bi-badge hero">BI source</span></h1><p>Make range decisions with trading, stock and product context in one working view.</p></div><div className="assortment-plan-hero-mark">V</div></header>
     {(data.reconciliations ?? []).filter(reconciliationFailed).length > 0 && <div className="assortment-reconciliation-failure" role="alert" data-testid="status-assortment-reconciliation-failure"><Target size={18} /><div><strong>BI reconciliation failed — headline assortment figures are not trusted</strong><span>{(data.reconciliations ?? []).filter(reconciliationFailed).map((item) => item.name ?? item.metric ?? item.label ?? item.error ?? item.message).join(' · ')}</span></div></div>}
     {data.snapshot && <div className="assortment-current-count" data-testid="status-assortment-snapshot"><span>Commercial snapshot</span><strong>{data.snapshot.generatedAt ? new Date(data.snapshot.generatedAt).toLocaleString() : 'Time unavailable'}</strong>{data.snapshot.refreshFailedAt && <small>Latest refresh failed; showing the last verified snapshot.</small>}</div>}
-    <div className="assortment-current-count" data-testid="text-assortment-filtered-count"><strong>{n(styles.length)}</strong><span>styles matching filters</span><small>Proposed action is the primary grouping. Your selected sort applies within each group.</small></div>
-    <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter assortment</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div><label className="assortment-search-field"><Search size={16} aria-hidden="true" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search style, number or designer…" data-assortment-search data-testid="input-assortment-search" /></label>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={key === 'proposedAction' ? [...proposedActionOptions] : [...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} optionLabels={key === 'proposedAction' ? proposedActionLabels : undefined} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><button type="button" className="assortment-clear-filters" onClick={() => { setSearch(''); setFilters(emptyFilters); }} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
+    <div className="assortment-current-count" data-testid="text-assortment-filtered-count"><strong>{n(styles.length)}</strong><span>styles matching filters</span><small>{groupByAction ? 'Proposed action is the primary grouping. Your selected sort applies within each group.' : 'Styles are shown as a single flat list, using your selected sort.'}</small></div>
+    <div className="assortment-filter-toolbar"><div className="assortment-filter-intro"><span>Filter assortment</span>{activeCount ? <strong>{activeCount} active</strong> : <small>All styles</small>}</div><label className="assortment-search-field"><Search size={16} aria-hidden="true" /><input type="search" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search style, number or designer…" data-assortment-search data-testid="input-assortment-search" /></label>{filterDefinitions.map(({ key, label }) => <MultiSelectFilter key={key} label={label} options={key === 'proposedAction' ? [...proposedActionOptions] : [...new Set((options[key] ?? []).map(String))]} values={filters[key]} onChange={(values) => setFilters((current) => ({ ...current, [key]: values }))} optionLabels={key === 'proposedAction' ? proposedActionLabels : undefined} testId={`assortment-filter-${key}`} variant="catalogue" alwaysShowCount />)}<CatalogueSortControl value={sort} onChange={setSort} testId="select-assortment-sort" /><label className="assortment-group-toggle"><input type="checkbox" checked={groupByAction} onChange={(e) => setGroupByAction(e.target.checked)} data-testid="checkbox-group-action" /> Group by action</label><button type="button" className="assortment-clear-filters" onClick={() => { setSearch(''); setFilters(emptyFilters); }} disabled={!activeCount} data-testid="button-clear-assortment-filters"><X size={13} /> Clear all</button></div>
     <div className="assortment-summary-bar"><div className="assortment-summary-lead"><Target size={17} /><span>Styles shown</span><strong>{n(styles.length)}</strong></div>{Object.entries(assortmentCounts).slice(1).map(([key, value]) => <div className="assortment-summary-item" key={key}><span>{key}</span><strong>{n(value)}</strong></div>)}</div>
-    <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter((style) => isBiStyle(style) && visibleStyleIds.has(style.id)).map((style) => style.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div>{visibleGroups.map((group) => { const slug = group.key.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, ''); return <section className={`assortment-action-group action-${slug}`} key={group.key} data-testid={`assortment-action-group-${slug}`}><header><div><span>Proposed action</span><h2>{group.label}</h2><p>{group.description}</p></div><strong>{n(group.total)}</strong></header><div className="assortment-card-grid">{group.styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} expanded={expandedStyleId === style.id} onToggle={() => setExpandedStyleId((current) => current === style.id ? null : style.id)} />)}</div></section>; })}{visibleCardLimit < styles.length && <div ref={loadMoreRef} className="assortment-empty">Loading more styles…</div>}</> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>
+    <section className="assortment-style-section">{styles.length ? <><div className="assortment-selection-tools"><button type="button" onClick={() => setSelected(styles.filter((style) => isBiStyle(style) && visibleStyleIds.has(style.id)).map((style) => style.id))} data-testid="button-select-visible">Select visible</button><button type="button" onClick={() => setSelected([])} disabled={!selected.length} data-testid="button-clear-selection">Clear selection</button></div>{visibleGroups.map((group) => { const slug = group.key.toLowerCase().replace(/[^a-z]+/g, '-').replace(/^-|-$/g, ''); return <section className={`assortment-action-group action-${slug}`} key={group.key} data-testid={`assortment-action-group-${slug}`}><header><div><span>Proposed action</span><h2>{group.label}</h2><p>{group.description}</p></div><strong>{n(group.total)}</strong></header><div className="assortment-card-grid">{group.styles.map((style) => <StyleCard key={style.id} style={style} selected={selected.includes(style.id)} onSelect={() => toggle(style.id)} action={cardAction(style)} onViewDetail={() => setExpandedStyleId((current) => current === style.id ? null : style.id)} />)}</div></section>; })}{visibleCardLimit < styles.length && <div ref={loadMoreRef} className="assortment-empty">Loading more styles…</div>}</> : <div className="assortment-empty">No styles match the selected filters.</div>}</section>
     {selectedStyles.length > 0 && <aside className="assortment-bulk-bar"><CheckSquare size={18} /><strong>{selectedStyles.length} selected</strong><DestinationPicker seasons={data.seasons ?? []} weeks={data.weeklyDestinations ?? []} disabled={add.isPending} onPick={(destination) => add.mutate({ styles: selectedStyles, destination })} /><button type="button" onClick={() => setSelected([])} data-testid="button-clear-bulk-selection">Clear</button></aside>}
+
     {toast && <div className="assortment-toast" role="status" data-testid="status-assortment-add">{toast}</div>}{(exclude.isError || add.isError) && <div className="form-error">{add.error instanceof Error ? add.error.message : 'That assortment change could not be saved.'}</div>}
+    {expandedStyleId && styles.some((s) => s.id === expandedStyleId) && (
+      <StyleModal style={styles.find((s) => s.id === expandedStyleId)!} onClose={() => setExpandedStyleId(null)} />
+    )}
   </section>;
+
 }

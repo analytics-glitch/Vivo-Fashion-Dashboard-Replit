@@ -19,6 +19,10 @@ type FabricRate = {
 };
 type LifecycleItem = Record<string, string | number | null> & { ruleKey: string; updatedAt: string; updatedBy: string };
 type LifecyclePayload = { tier4: LifecycleItem[]; graduation: LifecycleItem[]; reorderGate: LifecycleItem[] };
+type WeeklyKpiTarget = {
+  metricKey: string; label: string; targetValue: number; unit: 'units' | 'percent' | 'count';
+  updatedAt: string; updatedBy: string;
+};
 
 const text = (value: unknown, fallback: string) => typeof value === 'string' && value.trim() ? value : fallback;
 const passes = (item: Reconciliation) => item.passed === true || ['pass', 'passed', 'ok', 'trusted', 'success'].includes(String(item.status).toLowerCase());
@@ -101,6 +105,33 @@ function LifecycleRuleRow({ group, item, fields }: { group: string; item: Lifecy
   </tr>;
 }
 
+function WeeklyKpiTargetRow({ item }: { item: WeeklyKpiTarget }) {
+  const queryClient = useQueryClient();
+  const [value, setValue] = useState(String(item.targetValue));
+  useEffect(() => setValue(String(item.targetValue)), [item]);
+  const update = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/workspace/weekly-order-kpi-targets/${encodeURIComponent(item.metricKey)}`, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ targetValue: Number(value) }),
+      });
+      if (!response.ok) throw new Error((await response.json()).error || 'Target could not be saved');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['workspace', 'weekly-order-kpi-targets'] });
+      queryClient.invalidateQueries({ queryKey: ['weekly-order-plan'] });
+    },
+  });
+  const unitLabel = item.unit === 'percent' ? '%' : item.unit === 'count' ? 'styles' : 'units';
+  return <tr>
+    <td><strong>{item.label}</strong>{item.metricKey === 'total_units' && <small>Fallback only; each order week starts from its monthly share and can be overridden on the Weekly Order Plan.</small>}</td>
+    <td><input type="number" min="0" step={item.unit === 'percent' ? '0.1' : '1'} value={value} onChange={(event) => setValue(event.target.value)} aria-label={`${item.label} target`} /></td>
+    <td>{unitLabel}</td>
+    <td><span>{item.updatedBy}</span><small>{` · ${new Date(item.updatedAt).toLocaleString('en-GB')}`}</small></td>
+    <td><button className="icon-button" type="button" disabled={update.isPending || value === String(item.targetValue) || !Number.isFinite(Number(value)) || Number(value) < 0} onClick={() => update.mutate()} aria-label={`Save ${item.label}`}><Save size={16} /></button>{update.isError && <small className="fabric-rate-error">{update.error.message}</small>}</td>
+  </tr>;
+}
+
 export default function DefinitionsPage() {
   const trust = useQuery({
     queryKey: ['workspace', 'range-plan', 'definitions'],
@@ -127,6 +158,14 @@ export default function DefinitionsPage() {
       return response.json() as Promise<LifecyclePayload>;
     },
   });
+  const weeklyKpis = useQuery({
+    queryKey: ['workspace', 'weekly-order-kpi-targets'],
+    queryFn: async () => {
+      const response = await fetch('/api/workspace/weekly-order-kpi-targets', { credentials: 'include' });
+      if (!response.ok) throw new Error(`Weekly KPI targets request failed (${response.status})`);
+      return response.json() as Promise<{ items: WeeklyKpiTarget[] }>;
+    },
+  });
   const definitions = trust.data?.definitions ?? [];
   const reconciliations = trust.data?.reconciliations ?? [];
   const sources = trust.data?.sourceStatus ?? [];
@@ -134,6 +173,11 @@ export default function DefinitionsPage() {
   return <section className="page definitions-page">
     <header className="definitions-hero"><div><span className="range-eyebrow">Data governance / Single source rule</span><h1>Definitions &amp; data trust</h1><p>Shared metrics are owned by BI. Workspace planning references and Style Development remain operational exceptions.</p></div><div className="definitions-hero-icon"><ShieldCheck size={30} /></div></header>
     {failed.length > 0 && <div className="definitions-blocked" role="alert"><AlertTriangle size={22} /><div><strong>{failed.length} reconciliation {failed.length === 1 ? 'has' : 'have'} failed — BI headline figures are not trusted</strong><p>Resolve the failures below before using BI-owned metrics in planning decisions.</p></div></div>}
+    <section className="definitions-section">
+      <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Planning reference / Workspace-owned</span><h2>Weekly Order Plan KPI targets</h2><p>Percentage targets are measured on planned units. New includes New and Range Refreshed order types.</p></div></div>
+      {weeklyKpis.isLoading ? <div className="definitions-empty">Loading weekly KPI targets…</div> : weeklyKpis.isError ? <div className="definitions-empty">Weekly KPI targets could not be loaded. <button className="button" onClick={() => weeklyKpis.refetch()}>Try again</button></div> :
+        <div className="fabric-rate-table-wrap"><table className="fabric-rate-table weekly-kpi-target-table"><thead><tr><th>Metric</th><th>Target</th><th>Unit</th><th>Last changed</th><th /></tr></thead><tbody>{weeklyKpis.data?.items.map((item) => <WeeklyKpiTargetRow key={item.metricKey} item={item} />)}</tbody></table></div>}
+    </section>
     <section className="definitions-section">
       <div className="definitions-heading"><Database size={18} /><div><span className="range-eyebrow">Planning reference / Workspace-owned</span><h2>Expected fabric consumption by subcategory</h2><p>Maintained reference metres per finished unit. These values are not yet used in calculations or validation.</p></div></div>
       {rates.isLoading ? <div className="definitions-empty">Loading fabric references…</div> : rates.isError ? <div className="definitions-empty">Fabric references could not be loaded. <button className="button" onClick={() => rates.refetch()}>Try again</button></div> :

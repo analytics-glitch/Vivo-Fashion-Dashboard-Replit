@@ -16,6 +16,7 @@ export type LedgerPipelineRow = {
   stage: PipelineStage;
   sku: string | null;
   qty: number;
+  boState?: string | null;
 };
 
 export type LivePipelineRow = {
@@ -44,7 +45,17 @@ type Queryable = {
   query(sql: string, params?: unknown[]): Promise<{ rows: Array<Record<string, unknown>> }>;
 };
 
+// Pipeline is deliberately a whitelist.  A balance can be present in the
+// ledger before a newly introduced terminal stage is classified, and treating
+// every unknown stage as WIP would make sellable stock look like supply.
+const ACTIVE_LEDGER_STAGES = new Set(["buying_order", "cutting", "washing", "repairs"]);
 const LIVE_STAGES = new Set(["waiting_sewing", "sewing", "finishing"]);
+const TERMINAL_LEDGER_STAGES = new Set(["warehouse", "received"]);
+const LIVE_STAGE_RANK: Record<LivePipelineRow["stage"], number> = {
+  waiting_sewing: 1,
+  sewing: 2,
+  finishing: 3,
+};
 
 const numeric = (value: unknown) => {
   const parsed = Number(value);
@@ -66,9 +77,10 @@ type AllocatedLiveRow = {
 
 /**
  * Reproduces the Production Tracker's current-stage source:
- * - ledger balances own Buying Order, Cutting, Washing, Repairs and Defects;
+ * - ledger balances own Buying Order, Cutting, Washing and Repairs;
  * - live Odoo locations replace ledger Waiting Sewing, Sewing and Finishing;
- * - Warehouse is terminal/sellable stock and is never pipeline.
+ * - Warehouse, received stock, and every unclassified/terminal stage are
+ *   never pipeline.
  */
 export function productionPipelineByStyle(input: {
   ledger: LedgerPipelineRow[];
@@ -82,14 +94,15 @@ export function productionPipelineByStyle(input: {
     if (!key || qty <= 0) return;
     result.set(key, (result.get(key) ?? 0) + qty);
   };
-
-  for (const row of input.ledger) {
-    if (row.stage === "warehouse" || LIVE_STAGES.has(row.stage)) continue;
-    add(row.styleKey, Math.max(row.qty, 0));
-  }
+  const terminalOrders = new Set(
+    input.ledger
+      .filter((row) => TERMINAL_LEDGER_STAGES.has(row.stage))
+      .map((row) => row.orderRef),
+  );
 
   const variantsBySku = new Map<string, ProductionVariantRow[]>();
   const caps = new Map<string, number>();
+  const orderedQtyByOrder = new Map<string, number>();
   for (const row of input.variants) {
     if (!row.sku) continue;
     const rows = variantsBySku.get(row.sku) ?? [];
@@ -97,6 +110,7 @@ export function productionPipelineByStyle(input: {
     variantsBySku.set(row.sku, rows);
     const key = orderSkuKey(row.orderRef, row.sku);
     caps.set(key, (caps.get(key) ?? 0) + Math.max(row.qty, 0));
+    orderedQtyByOrder.set(row.orderRef, (orderedQtyByOrder.get(row.orderRef) ?? 0) + Math.max(row.qty, 0));
   }
   for (const rows of variantsBySku.values()) {
     rows.sort((left, right) => {
@@ -107,8 +121,12 @@ export function productionPipelineByStyle(input: {
 
   const allocated: AllocatedLiveRow[] = [];
   for (const row of input.live) {
+    if (!LIVE_STAGES.has(row.stage)) continue;
     let remaining = Math.max(row.qty, 0);
     if (remaining <= 0) continue;
+    // An order can be partially received while a small physical balance is
+    // still in manufacturing. Warehouse units themselves are excluded, but
+    // their presence must not erase genuine live WIP for the same order.
     const candidates = variantsBySku.get(row.sku) ?? [];
     const seenOrders = new Set<string>();
     for (const candidate of candidates) {
@@ -141,12 +159,47 @@ export function productionPipelineByStyle(input: {
     }
   }
 
-  // Odoo may still show units at Finished Goods Production after the tracker
-  // moved them into Washing/Repairs/Defects. Remove that overlap before totals.
+  const furthestLiveStageByOrder = new Map<string, number>();
+  for (const row of allocated) {
+    if (!row.orderRef || row.qty <= 0) continue;
+    furthestLiveStageByOrder.set(
+      row.orderRef,
+      Math.max(furthestLiveStageByOrder.get(row.orderRef) ?? 0, LIVE_STAGE_RANK[row.stage]),
+    );
+  }
+  const buyingOrderQtyByOrder = new Map<string, number>();
+  for (const row of input.ledger) {
+    if (row.stage !== "buying_order") continue;
+    buyingOrderQtyByOrder.set(
+      row.orderRef,
+      (buyingOrderQtyByOrder.get(row.orderRef) ?? 0) + Math.max(row.qty, 0),
+    );
+  }
+  for (const row of input.ledger) {
+    const isEarlyLedgerStage = row.stage === "buying_order" || row.stage === "cutting";
+    // Match the Production Tracker's canonical coexistence rule: a draft BO
+    // can have a real residual Buying Order cohort alongside physical WIP.
+    // Once the BO is no longer draft, its ledger Buying Order row is stale and
+    // the live physical stage is authoritative.
+    const orderedQty = orderedQtyByOrder.get(row.orderRef) ?? 0;
+    const buyingOrderQty = buyingOrderQtyByOrder.get(row.orderRef) ?? 0;
+    const isStaleBuyingOrder = row.stage === "buying_order"
+      && normalizedKey(row.boState) !== "draft"
+      && furthestLiveStageByOrder.has(row.orderRef)
+      && orderedQty > 0
+      && buyingOrderQty / orderedQty >= 0.9;
+    if (!ACTIVE_LEDGER_STAGES.has(row.stage)
+      || (terminalOrders.has(row.orderRef) && isEarlyLedgerStage)
+      || isStaleBuyingOrder) continue;
+    add(row.styleKey, Math.max(row.qty, 0));
+  }
+
+  // Washing and Repairs balances are current ledger-owned WIP. The same units
+  // can remain visible in Finished Goods Production, so remove that overlap
+  // from live Finishing before adding both sources.
   const offsets = new Map<string, number>();
   for (const row of input.offsets) {
-    const sku = row.sku ?? "";
-    const key = orderSkuKey(row.orderRef, sku);
+    const key = orderSkuKey(row.orderRef, row.sku ?? "");
     offsets.set(key, (offsets.get(key) ?? 0) + Math.max(row.qty, 0));
   }
   allocated.sort((left, right) =>
@@ -154,6 +207,10 @@ export function productionPipelineByStyle(input: {
     || left.sku.localeCompare(right.sku)
     || (left.sewingLine ?? "").localeCompare(right.sewingLine ?? ""));
   for (const row of allocated) {
+    // An order has one current stage. If the same order appears in multiple
+    // live locations, retain only its furthest manufacturing stage instead of
+    // counting earlier-stage representations as additional supply.
+    if (row.orderRef && LIVE_STAGE_RANK[row.stage] !== furthestLiveStageByOrder.get(row.orderRef)) continue;
     if (row.stage === "finishing" && row.orderRef) {
       for (const sku of [row.sku, ""]) {
         const key = orderSkuKey(row.orderRef, sku);
@@ -185,12 +242,12 @@ export async function loadProductionPipelineByStyle(db: Queryable) {
     db.query(`
       SELECT b.order_ref AS "orderRef",${styleKey("po")} AS "styleKey",
         po.style_name AS "styleName",
-        b.stage,b.sku,SUM(b.qty_here)::float AS qty
+        po.bo_state AS "boState",b.stage,b.sku,SUM(b.qty_here)::float AS qty
       FROM public.v_stage_sku_balances b
       JOIN public.production_orders po ON po.order_ref=b.order_ref
       WHERE ${apparelWhere("po")}
-        AND b.stage NOT IN ('waiting_sewing','sewing','finishing','warehouse')
-      GROUP BY b.order_ref,${styleKey("po")},po.style_name,b.stage,b.sku`),
+        AND b.stage IN ('buying_order','cutting','washing','repairs','warehouse','received')
+      GROUP BY b.order_ref,${styleKey("po")},po.style_name,po.bo_state,b.stage,b.sku`),
     db.query(`
       SELECT i.sku,MAX(NULLIF(BTRIM(i.style_name),'')) AS "styleName",
         CASE WHEN i.pos_location_name='Fabric Trimming' THEN 'waiting_sewing'
@@ -202,7 +259,7 @@ export async function loadProductionPipelineByStyle(db: Queryable) {
       FROM public.all_inventory i
       WHERE i.pos_location_name IN (
         'Fabric Trimming','Sew/Stock/A','Sew/Stock/B','Sew/Stock/C',
-        'Sew/Stock/D','Sew/Stock/E','Finished Goods Production'
+         'Sew/Stock/D','Sew/Stock/E','Finished Goods Production'
       )
         AND (
           LEFT(UPPER(BTRIM(COALESCE(i.sku,''))),1) IN ('S','V','Z')
@@ -224,7 +281,7 @@ export async function loadProductionPipelineByStyle(db: Queryable) {
       SELECT b.order_ref AS "orderRef",b.sku,SUM(b.qty_here)::float AS qty
       FROM public.v_stage_sku_balances b
       JOIN public.production_orders po ON po.order_ref=b.order_ref
-      WHERE b.stage IN ('washing','repairs','defects') AND ${apparelWhere("po")}
+      WHERE b.stage IN ('washing','repairs') AND ${apparelWhere("po")}
       GROUP BY b.order_ref,b.sku`),
   ]);
 
@@ -240,6 +297,7 @@ export async function loadProductionPipelineByStyle(db: Queryable) {
       stage: String(row.stage),
       sku: row.sku == null ? null : String(row.sku),
       qty: numeric(row.qty),
+      boState: row.boState == null ? null : String(row.boState),
     })),
     live: liveResult.rows.map((row) => ({
       sku: String(row.sku),

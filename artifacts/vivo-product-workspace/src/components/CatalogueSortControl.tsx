@@ -1,8 +1,9 @@
 import { ChevronDown } from 'lucide-react';
 
 export const CATALOGUE_SORT_OPTIONS = [
-  { value: 'units_desc', label: 'Best Sellers — Units' },
-  { value: 'revenue_desc', label: 'Best Sellers — Revenue' },
+  { value: 'units_desc', label: 'Total Units — High to Low' },
+  { value: 'units_asc', label: 'Total Units — Low to High' },
+  { value: 'revenue_desc', label: 'Revenue — High to Low' },
   { value: 'revenue_asc', label: 'Revenue — Low to High' },
   { value: 'sell_through_desc', label: 'Sell-through — High to Low' },
   { value: 'sell_through_asc', label: 'Sell-through — Low to High' },
