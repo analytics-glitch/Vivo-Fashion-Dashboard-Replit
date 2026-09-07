@@ -6198,10 +6198,25 @@ def run_sales_rollup_refresh(only=None, force=False):
                 if name == "merch_style_day":
                     wm_str = src_wm.isoformat() if src_wm else "1970-01-01 00:00:00"
                     cur.execute("SELECT set_config('merch.build_wm', %s, TRUE)", (wm_str,))
-                cur.execute("INSERT INTO " + stage + " " + select_sql)
-                cur.execute("TRUNCATE " + table)
-                cur.execute("INSERT INTO " + table + " SELECT * FROM " + stage)
-                cur.execute("DROP TABLE " + stage)
+                if name == "merch_style_day" and not force:
+                    # Path 2 incremental: recompute only the recent window in place.
+                    # Old rows (sale_day < today-95) are stable and left untouched,
+                    # turning a ~37-min full rebuild into a ~30s recent-window refresh.
+                    # NOTE: units_fp on OLD rows can drift when a SKU's catalog
+                    # mode-price changes; the weekly force=True full rebuild trues
+                    # that up. All other columns are exact under incremental.
+                    _recent_sql = select_sql.replace(
+                        "GROUP BY p.style_name",
+                        "AND s.sale_date::date >= (CURRENT_DATE - 95)\n        GROUP BY p.style_name",
+                        1)
+                    cur.execute("DROP TABLE IF EXISTS " + stage)
+                    cur.execute("DELETE FROM " + table + " WHERE sale_day >= (CURRENT_DATE - 95)")
+                    cur.execute("INSERT INTO " + table + " " + _recent_sql)
+                else:
+                    cur.execute("INSERT INTO " + stage + " " + select_sql)
+                    cur.execute("TRUNCATE " + table)
+                    cur.execute("INSERT INTO " + table + " SELECT * FROM " + stage)
+                    cur.execute("DROP TABLE " + stage)
                 cur.execute("SELECT COUNT(*) FROM " + table)
                 n = cur.fetchone()[0]
                 cur.execute(
