@@ -13595,7 +13595,7 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const biCatalogue = source === "catalogue" ? (await getBiWorkspaceSource()).styles.map(biStyle) : [];
     const sourceResult = source === "development"
       ? await client.query(
-        `SELECT id::text AS source_id,style_number,style_name,style_type,tier,category,sub_category,brand,
+        `SELECT t.id::text AS source_id,t.style_number,t.style_name,t.style_type,t.tier,t.category,t.sub_category,t.brand,
           COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
            sample_fabric_product_id AS fabric_product_id,target_order_week,
            NULLIF(BTRIM(fp.plain_print),'') AS pattern_type,

@@ -3402,7 +3402,7 @@ def main():
         _LAST_ROLLUP_REFRESH is None
         or (now_utc - _LAST_ROLLUP_REFRESH).total_seconds() >= 3600
     )
-        if not rollup_table_missing and (rollup_empty or rollup_due):
+    if not rollup_table_missing and (rollup_empty or rollup_due):
         # Stamp the attempt time up front so a transient failure waits an hour
         # (when still empty, the rollup_empty branch retries on the next cycle).
         _LAST_ROLLUP_REFRESH = now_utc
