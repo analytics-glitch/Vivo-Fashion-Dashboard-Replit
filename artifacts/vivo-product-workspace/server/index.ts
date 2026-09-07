@@ -6496,13 +6496,14 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
     p.width_m::text width, p.gsm::text gsm,
     COALESCE(NULLIF(BTRIM(p.fabric_supplier_name),''),NULLIF(BTRIM(p.supplier),'')) supplier,
     NULLIF(BTRIM(p.fiber_content),'') fibre_composition,
-    p.fabric_color colour, (p.standard_price*p.kg_per_mtr_eff)::float cost_per_metre,
+    p.fabric_color colour, (p.kg_per_mtr_eff>0) AS metre_conversion_available,
+    (p.standard_price*p.kg_per_mtr_eff)::float cost_per_metre,
     (COALESCE(inventory.on_hand_kg,0)/NULLIF(p.kg_per_mtr_eff,0))::float available_metres,
     ((COALESCE(inventory.inventory_reserved_kg,0)+COALESCE(team.team_reserved_kg,0))/NULLIF(p.kg_per_mtr_eff,0))::float reserved_metres,
     ((COALESCE(inventory.available_kg,0)-COALESCE(team.team_reserved_kg,0))/NULLIF(p.kg_per_mtr_eff,0))::float free_metres
     FROM public.raw_fabric_products p
     LEFT JOIN inventory ON inventory.product_id=p.id LEFT JOIN team ON team.product_id=p.id::text
-    WHERE p.category='Fabric' AND p.kg_per_mtr_eff>0 AND NULLIF(BTRIM(p.name),'') IS NOT NULL
+    WHERE p.category='Fabric' AND NULLIF(BTRIM(p.name),'') IS NOT NULL
     ORDER BY p.name`);
   const groups = new Map<string, any>();
   for (const row of result.rows) {
@@ -6513,6 +6514,7 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
       colour: row.colour ?? "Unspecified", category: row.category, subcategory: row.subcategory,
       patternPlainPrint: row.plain_print, structure: row.structure, width: row.width, gsm: row.gsm,
       supplier: row.supplier, fibreComposition: row.fibre_composition, costPerMetre: Number(row.cost_per_metre ?? 0),
+      metreConversionAvailable: Boolean(row.metre_conversion_available),
       availableMetres: Number(row.available_metres ?? 0), reservedMetres: Number(row.reserved_metres ?? 0), freeMetres: Number(row.free_metres ?? 0) };
     const group = groups.get(fabricStyleKey) ?? { fabricStyleKey, fabricStyle, category: row.category, subcategory: row.subcategory,
       patternPlainPrint: row.plain_print, structure: row.structure, width: row.width, gsm: row.gsm, supplier: row.supplier,
