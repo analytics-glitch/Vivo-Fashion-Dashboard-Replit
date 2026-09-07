@@ -22,5 +22,8 @@ export function weeklyClassificationSummary(lines: WeeklyClassificationLine[]) {
 }
 
 export function minimumColourwayCount(patternType: unknown) {
-  return String(patternType ?? "").trim().toLowerCase() === "plain" ? 4 : 2;
+  const value = String(patternType ?? "").trim().toLowerCase();
+  if (value === "plain") return 4;
+  if (value === "print") return 2;
+  return null;
 }

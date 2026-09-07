@@ -11,11 +11,16 @@ type SourceStyle = {
   imageUrl: string | null; colourways: string[]; availableMetres: number;
   patternType: 'Print' | 'Plain' | null; fabricStructure: 'Knit' | 'Woven' | null;
   fabricConsumptionMetresPerUnit: number | null;
+  derivedPatternType?: 'Print' | 'Plain' | null; derivedFabricStructure?: 'Knit' | 'Woven' | null;
 };
 type PlanLine = SourceStyle & {
   id: number; orderNumber: string; availableColourways: string[]; selectedColourways: string[];
   estimatedQuantity: number; orderType: string; orderStage: string;
-  colourwayAllocations: Array<{ name: string; units: number }>;
+  colourwayAllocations: Array<{ name: string; productId: number | null; barcode: string; units: number; availableMetres: number; freeMetres: number; requiredMetres: number | null; shortageWarning: boolean; costPerMetre: number }>;
+  colourOptions: Array<{ productId: number; productName: string; barcode: string; colour: string; availableMetres: number; freeMetres: number; costPerMetre: number }>;
+  totalFabricCost: number | null; fabricCostPerUnit: number | null; weightedFabricCostPerMetre: number | null;
+  derivedPatternType?: 'Print' | 'Plain' | null; derivedFabricStructure?: 'Knit' | 'Woven' | null;
+  patternTypeSource?: 'derived' | 'override' | 'manual'; fabricStructureSource?: 'derived' | 'override' | 'manual';
   dataQualityFlags: string[];
   firstOrderDate: string | null; actualQuantity: number;
   actualOrders: { orderRef: string; orderDate: string; quantity: number }[];
@@ -202,7 +207,7 @@ function EditableLine({ line, locked, year, week, startDate, endDate }: { line: 
   const save = useMutation({
     mutationFn: (override: Partial<{
       patternType: string; fabricStructure: string;
-      colourwayAllocations: Array<{ name: string; units: number }>;
+      colourwayAllocations: PlanLine['colourwayAllocations'];
     }> = {}) => jsonFetch(`/api/workspace/weekly-order-plan/lines/${line.id}`, {
       method: 'PATCH',
       body: JSON.stringify({
@@ -236,7 +241,7 @@ function EditableLine({ line, locked, year, week, startDate, endDate }: { line: 
   const uniqueOrders = Array.from(new Map(line.actualOrders.map((order) => [order.orderRef, order])).values());
   const orderedUnits = uniqueOrders.reduce((sum, order) => sum + Number(order.quantity || 0), 0);
   const firstHeldOrderDate = uniqueOrders.map((order) => dateOnly(order.orderDate)).filter(Boolean).sort()[0] || null;
-  const colourwayMinimum = patternType === 'Plain' ? 4 : 2;
+  const colourwayMinimum = patternType === 'Plain' ? 4 : patternType === 'Print' ? 2 : null;
   const colourwayUnits = colourwayAllocations.reduce((sum, item) => sum + Number(item.units || 0), 0);
   const requiredMetres = line.fabricConsumptionMetresPerUnit == null
     ? null : Math.ceil(Number(quantity) * line.fabricConsumptionMetresPerUnit);
@@ -248,10 +253,10 @@ function EditableLine({ line, locked, year, week, startDate, endDate }: { line: 
     <td><input className="weekly-qty" type="number" min="1" disabled={locked} value={quantity} onChange={(event) => setQuantity(event.target.value)} onBlur={() => Number(quantity) !== line.estimatedQuantity && save.mutate({})} /></td>
     <td>
       <div className="weekly-classification">
-        <label>Knit / Woven<select value={fabricStructure} onChange={(event) => {
+        <label>Knit / Woven {line.fabricStructureSource === 'override' && <em>Override</em>}<select value={fabricStructure} onChange={(event) => {
           const value = event.target.value; setFabricStructure(value); save.mutate({ fabricStructure: value });
         }}><option value="">Select…</option><option>Knit</option><option>Woven</option></select></label>
-        <label>Print / Plain<select value={patternType} onChange={(event) => {
+        <label>Print / Plain {line.patternTypeSource === 'override' && <em>Override</em>}<select value={patternType} onChange={(event) => {
           const value = event.target.value; setPatternType(value); save.mutate({ patternType: value });
         }}><option value="">Select…</option><option>Print</option><option>Plain</option></select></label>
       </div>
@@ -261,15 +266,37 @@ function EditableLine({ line, locked, year, week, startDate, endDate }: { line: 
         <summary>{colourwayAllocations.length ? `${colourwayAllocations.length} colourways` : 'Colourways pending'}</summary>
         <div>
           {colourwayAllocations.map((allocation, index) => <div className="weekly-colourway-row" key={`${index}-${allocation.name}`}>
-            <input aria-label="Colour or print" placeholder="Colour or print" value={allocation.name} onChange={(event) => setColourwayAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, name: event.target.value } : item))} />
-            <input aria-label="Planned colourway units" type="number" min="1" value={allocation.units} onChange={(event) => setColourwayAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, units: Number(event.target.value) } : item))} />
+            <select
+              aria-label="Colour or print"
+              value={allocation.productId ? `id:${allocation.productId}` : allocation.barcode ? `barcode:${allocation.barcode}` : allocation.name}
+              onChange={(event) => {
+                const val = event.target.value;
+                if (val.startsWith('id:')) {
+                  const opt = line.colourOptions?.find(o => o.productId === Number(val.slice(3)));
+                  if (opt) setColourwayAllocations(c => c.map((item, i) => i === index ? { ...item, name: opt.colour, productId: opt.productId, barcode: opt.barcode, availableMetres: opt.availableMetres, freeMetres: opt.freeMetres, costPerMetre: opt.costPerMetre } : item));
+                } else if (val.startsWith('barcode:')) {
+                  const opt = line.colourOptions?.find(o => o.barcode === val.slice(8));
+                  if (opt) setColourwayAllocations(c => c.map((item, i) => i === index ? { ...item, name: opt.colour, productId: opt.productId, barcode: opt.barcode, availableMetres: opt.availableMetres, freeMetres: opt.freeMetres, costPerMetre: opt.costPerMetre } : item));
+                }
+              }}
+            >
+              <option value="" disabled>Select colour…</option>
+              {line.colourOptions?.map(opt => (
+                <option key={`${opt.productId || opt.barcode}`} value={opt.productId ? `id:${opt.productId}` : `barcode:${opt.barcode}`}>
+                  {opt.colour} · {opt.barcode || `ID ${opt.productId}`} · {Math.round(opt.availableMetres)}m available / {Math.round(opt.freeMetres)}m free
+                </option>
+              ))}
+            </select>
+            <input aria-label="Planned colourway units" type="number" min="1" value={allocation.units} onChange={(event) => setColourwayAllocations((current) => current.map((item, itemIndex) => itemIndex === index ? { ...item, units: Number(event.target.value), requiredMetres: line.fabricConsumptionMetresPerUnit == null ? null : Math.ceil(Number(event.target.value) * line.fabricConsumptionMetresPerUnit), shortageWarning: line.fabricConsumptionMetresPerUnit == null ? false : Math.ceil(Number(event.target.value) * line.fabricConsumptionMetresPerUnit) > item.freeMetres } : item))} />
             <button type="button" className="icon-button" onClick={() => setColourwayAllocations((current) => current.filter((_, itemIndex) => itemIndex !== index))}><X size={13} /></button>
           </div>)}
-          <button type="button" className="weekly-colourway-add" onClick={() => setColourwayAllocations((current) => [...current, { name: '', units: 1 }])}><Plus size={12} /> Add colourway</button>
-          {colourwayAllocations.length > 0 && colourwayAllocations.length < colourwayMinimum && <small className="weekly-colourway-warning">Under the {colourwayMinimum}-colourway minimum for {patternType === 'Plain' ? 'Plain' : 'Print'} styles.</small>}
+          <button type="button" className="weekly-colourway-add" onClick={() => setColourwayAllocations((current) => [...current, { name: '', productId: null, barcode: '', units: 1, availableMetres: 0, freeMetres: 0, requiredMetres: null, shortageWarning: false, costPerMetre: 0 }])}><Plus size={12} /> Add colourway</button>
+          {colourwayMinimum !== null && colourwayAllocations.length > 0 && colourwayAllocations.length < colourwayMinimum && <small className="weekly-colourway-warning">Under the {colourwayMinimum}-colourway minimum for {patternType} styles.</small>}
           {colourwayAllocations.length > 0 && colourwayUnits !== Number(quantity) && <small className="weekly-colourway-warning">Split {colourwayUnits.toLocaleString()} of {Number(quantity).toLocaleString()} planned units.</small>}
-          {requiredMetres === null ? <small>Fabric rate pending.</small> : <small>{requiredMetres.toLocaleString()}m required at {line.fabricConsumptionMetresPerUnit}m/unit · {Math.round(line.availableMetres).toLocaleString()}m available</small>}
-          <button type="button" className="button button-outline" disabled={save.isPending || colourwayAllocations.some((item) => !item.name.trim() || !Number.isInteger(item.units) || item.units <= 0)} onClick={() => save.mutate({ colourwayAllocations })}>Save colourways</button>
+          {colourwayAllocations.map((allocation) => allocation.requiredMetres == null ? null : <small key={`${allocation.barcode}-stock`} className={allocation.shortageWarning ? 'weekly-colourway-warning' : ''}>{allocation.name}: {allocation.requiredMetres.toLocaleString()}m required · {Math.round(allocation.freeMetres).toLocaleString()}m free{allocation.shortageWarning ? ' · Shortage warning' : ''}</small>)}
+          {requiredMetres === null ? <small>Fabric rate pending.</small> : <small>{requiredMetres.toLocaleString()}m required at {line.fabricConsumptionMetresPerUnit}m/unit</small>}
+          {line.totalFabricCost !== null && <small className="weekly-cost-label" style={{display: 'block', marginTop: '4px', fontSize: '11px', color: '#8c8375'}}>Fabric-only cost: <strong>KES {Math.round(line.fabricCostPerUnit || 0).toLocaleString()}</strong>/unit · KES {Math.round(line.totalFabricCost).toLocaleString()} total · excludes labour, trims and manufacturing</small>}
+          <button type="button" className="button button-outline" style={{marginTop: '8px'}} disabled={save.isPending || colourwayAllocations.some((item) => !item.name?.trim() || !Number.isInteger(item.units) || item.units <= 0)} onClick={() => save.mutate({ colourwayAllocations })}>Save colourways</button>
         </div>
       </details>
     </td>

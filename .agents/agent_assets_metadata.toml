@@ -280,3 +280,17 @@ mtime_ms = 1788799851035
 storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/9774836f-8427-46b2-8128-920f98db9061/b8953aff-fd7e-4957-b7c6-6d5870d81b80"
 storage_version_token = "1788799885836609"
 content_type = "text/csv"
+
+[[outputs]]
+id = "dDEps_SOF_rzguZozx9ht"
+uri = "file://artifacts/vivo-product-workspace/reports/fabric-style-link-reconciliation.csv"
+type = "table"
+title = "Fabric style link reconciliation"
+description = "All 97 Style Development records with resolved or unresolved Level 3 Fabric BI links and candidate details."
+logical_id = "ffa30ea7-d097-4cad-ab93-50529c283506"
+content_hash = "sha256:49a67fdbf0667fe45f9ad49e976cb0997ceee3b5b2cb174e25300a9f0c2e5111"
+size = 12409
+mtime_ms = 1788809460644
+storage_uri = "gcs://replit-rams-assets-kirk/rams/assets/repl:a2104183-e22b-4aee-99f6-fc604d080eee/ffa30ea7-d097-4cad-ab93-50529c283506/d8519b6e-d1ea-4efe-b93d-e84b2292c6a3"
+storage_version_token = "1788809778578754"
+content_type = "text/csv"

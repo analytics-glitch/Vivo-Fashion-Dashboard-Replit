@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import http from "node:http";
+import { mkdir, writeFile } from "node:fs/promises";
 import { actualOrderHistoryForStyle, computeReorderSignal, weeksSinceFirstSale, type FabricAvailability, type LifecycleRules } from "./assortment-signal.js";
 import { orderAllowedByHistoryCutover } from "./order-history-cutover.js";
 import { Readable } from "node:stream";
@@ -55,6 +56,7 @@ import {
   rangePlanAosDefaultMigrationSql,
 } from "./range-plan-defaults.js";
 import { calendarDate, legacyCalendarDate, styleDateInput } from "./calendar-date.js";
+import { certainFabricStyleMatch, fabricStyleBase, normalizeFabricStyle, type FabricStyleCandidate } from "./fabric-style-linking.js";
 import {
   DEFAULT_NEW_STYLE_ORDER_UNITS,
   calculateNewnessCommitment,
@@ -1566,6 +1568,7 @@ async function ensureStyleDevelopmentTrackerData() {
       ADD COLUMN IF NOT EXISTS blocked BOOLEAN NOT NULL DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS blocker_reason TEXT NOT NULL DEFAULT '',
        ADD COLUMN IF NOT EXISTS sample_fabric_product_id INTEGER,
+       ADD COLUMN IF NOT EXISTS fabric_style_key TEXT,
        ADD COLUMN IF NOT EXISTS season TEXT NOT NULL DEFAULT '',
        ADD COLUMN IF NOT EXISTS intended_selling_price_kes NUMERIC,
        ADD COLUMN IF NOT EXISTS indicative_cogs_kes NUMERIC,
@@ -2010,6 +2013,16 @@ async function ensureStyleDevelopmentTrackerData() {
   } finally {
     client.release();
   }
+}
+
+async function ensureFabricWorkspaceSchema() {
+  await pool.query(`
+    ALTER TABLE ${schema}.style_development_tracker
+      ADD COLUMN IF NOT EXISTS fabric_style_key TEXT;
+    ALTER TABLE ${schema}.weekly_order_plan_lines
+      ADD COLUMN IF NOT EXISTS fabric_style_key TEXT;
+  `);
+  await backfillCertainFabricStyleLinks();
 }
 
 async function ensureFabricConsumptionRates() {
@@ -3845,6 +3858,7 @@ async function ensureSchema() {
     ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS fabric_structure TEXT;
     ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS fabric_consumption_metres_per_unit NUMERIC;
     ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS colourway_allocations JSONB NOT NULL DEFAULT '[]'::jsonb;
+    ALTER TABLE ${schema}.weekly_order_plan_lines ADD COLUMN IF NOT EXISTS fabric_style_key TEXT;
     CREATE TABLE IF NOT EXISTS ${schema}.weekly_order_week_targets (
       iso_year INTEGER NOT NULL,
       iso_week INTEGER NOT NULL CHECK (iso_week BETWEEN 1 AND 53),
@@ -4267,6 +4281,7 @@ async function ensureSchema() {
   await ensureStockSalesReportArchive();
   await ensureStyleDevelopmentTrackerData();
   await ensureFabricConsumptionRates();
+  await backfillCertainFabricStyleLinks();
 
   for (const fabric of fabrics) {
     await pool.query(
@@ -6192,10 +6207,18 @@ function styleDevelopmentPayload(row: Record<string, unknown>, history: Array<Re
     blocked: status === "Blocked",
     blockerReason: status === "Blocked" ? (row.blockerReason || (sourceStatus.trim().toUpperCase() === "WAITING FOR FABRIC" ? "Waiting for fabric" : "")) : "",
     sampleFabricProductId: row.sampleFabricProductId === null ? null : Number(row.sampleFabricProductId),
+    fabricStyleKey: row.fabricStyleKey ?? null,
     sampleFabricName: row.sampleFabricName ?? null,
     sampleFabricColour: row.sampleFabricColour ?? null,
     sampleFabricCostPerMetre: row.sampleFabricCostPerMetre ?? null,
     sampleFabricOtherColours: row.sampleFabricOtherColours ?? [],
+    linkedFabric: row.linkedFabric ?? null,
+    fabricLevel4: row.fabricLevel4 ?? [],
+    totalAvailableMetres: row.totalAvailableMetres ?? fabricMetres,
+    totalReservedMetres: row.totalReservedMetres ?? 0,
+    totalFreeMetres: row.totalFreeMetres ?? fabricMetres,
+    printPlainSource: row.printPlainSource ?? "override",
+    knitWovenSource: row.knitWovenSource ?? "override",
     categoryMetresPerGarment: row.categoryMetresPerGarment ?? null,
     sampleFabricMetres: fabricMetres,
     season: row.season ?? "",
@@ -6264,7 +6287,7 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
       (route.workspace_user_id IS NULL AND LOWER(BTRIM(route.name))='cad') AS "isLegacyCadPatternAssignment",
       t.adoption_date AS "adoptionDate",
       t.target_launch_week AS "targetLaunchWeek",t.blocked,t.blocker_reason AS "blockerReason",
-       t.sample_fabric_product_id AS "sampleFabricProductId",t.season,
+        t.sample_fabric_product_id AS "sampleFabricProductId",t.fabric_style_key AS "fabricStyleKey",t.season,
        t.intended_selling_price_kes AS "intendedSellingPriceKes",t.indicative_cogs_kes AS "indicativeCogsKes",
        t.pattern_effort_days::float AS "patternEffortDays",
        t.exit_status AS "exitStatus",t.exit_reason AS "exitReason",t.exited_at AS "exitedAt",t.exit_stage AS "exitStage",
@@ -6345,12 +6368,14 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
      ORDER BY i.tracker_style_id,i.uploaded_at DESC,i.id DESC`,
     [ids],
   );
-  const [historyResult, consumption, selectedFabrics, rowsWithImages, manualImagesResult] = await Promise.all([
+  const fabricGroupsPromise = liveFabricStyleProjection(pool);
+  const [historyResult, consumption, selectedFabrics, rowsWithImages, manualImagesResult, fabricGroups] = await Promise.all([
     historyPromise,
     consumptionPromise,
     selectedFabricsPromise,
     rowsWithImagesPromise,
     manualImagesPromise,
+    fabricGroupsPromise,
   ]);
   const byStyle = new Map<number, Array<Record<string, unknown>>>();
   for (const entry of historyResult.rows) {
@@ -6359,6 +6384,7 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
   }
   const metresByCategory = new Map(consumption.rows.map((item) => [String(item.category).toLowerCase(), Number(item.metres_per_garment)]));
   const fabricById = new Map(selectedFabrics.rows.map((item) => [Number(item.id), item]));
+  const fabricGroupByKey = new Map(fabricGroups.map((group) => [group.fabricStyleKey, group]));
   const manualImagesByStyle = new Map<number, Array<Record<string, unknown>>>();
   for (const image of manualImagesResult.rows) {
     const trackerStyleId = Number(image.trackerStyleId);
@@ -6379,13 +6405,25 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
     const selected = fabricById.get(Number(row.sampleFabricProductId));
     const mpg = metresByCategory.get(String(row.category ?? "").toLowerCase());
     const cost = selected ? Number(selected.cost_per_metre) : null;
-    row.sampleFabricName = selected?.name ?? null;
+    const linked = fabricGroupByKey.get(String(row.fabricStyleKey ?? ""));
+    row.sampleFabricName = linked?.fabricStyle ?? selected?.name ?? null;
     row.sampleFabricColour = selected?.fabric_color ?? null;
-    row.sampleFabricCostPerMetre = cost;
+    row.sampleFabricCostPerMetre = linked?.weightedCostPerMetre ?? cost;
     row.sampleFabricOtherColours = [];
     row.categoryMetresPerGarment = mpg ?? null;
     row.fabricMetres = selected?.metres ?? 0;
     row.indicativeCogsKes = cost !== null && mpg && mpg > 0 ? cost * mpg : row.indicativeCogsKes;
+    row.linkedFabric = linked ?? null;
+    row.fabricLevel4 = linked?.level4 ?? [];
+    row.totalAvailableMetres = linked?.totalAvailableMetres ?? row.fabricMetres;
+    row.totalReservedMetres = linked?.totalReservedMetres ?? 0;
+    row.totalFreeMetres = linked?.totalFreeMetres ?? row.fabricMetres;
+    const sourcePattern = String(linked?.patternPlainPrint ?? "").toLowerCase() === "solid" ? "plain" : String(linked?.patternPlainPrint ?? "").toLowerCase();
+    const storedPattern = String(row.printOrSolid ?? "").toLowerCase() === "solid" ? "plain" : String(row.printOrSolid ?? "").toLowerCase();
+    const sourceStructure = String(linked?.structure ?? "").toLowerCase();
+    const storedStructure = String(row.knitOrWoven ?? "").toLowerCase();
+    row.printPlainSource = !linked ? "manual" : !storedPattern || storedPattern === sourcePattern ? "derived" : "override";
+    row.knitWovenSource = !linked ? "manual" : !storedStructure || storedStructure === sourceStructure ? "derived" : "override";
     const manualImages = manualImagesByStyle.get(Number(row.id)) ?? [];
     const displayImage = manualImages.find((image) => image.isPrimary) ?? manualImages[0];
     const payload = styleDevelopmentPayload(row, styleHistory);
@@ -6396,6 +6434,143 @@ async function loadStyleDevelopmentTracker(styleId?: number) {
     history: styleId ? styleHistory.slice().reverse() : undefined,
     };
   });
+}
+
+/**
+ * Read-only Fabric BI Level 3 candidates.  A Level 3 key is deliberately
+ * derived from the name before its ` - colour` suffix; it is never persisted
+ * back to Fabric BI.  JSON access keeps this adapter compatible with older
+ * source snapshots whose optional fabric attributes have not been migrated.
+ */
+async function liveFabricStyleCandidates(client: { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, any>> }> }) {
+  const result = await client.query(
+    `SELECT DISTINCT BTRIM(split_part(p.name,' - ',1)) AS "fabricStyle",
+       NULLIF(BTRIM(p.fabric_category),'') AS category,
+       NULLIF(BTRIM(p.fabric_subcategory),'') AS subcategory,
+       NULLIF(BTRIM(p.fabric_subcategory),'') AS "subCategory",
+       NULLIF(BTRIM(p.plain_print),'') AS "plainPrint",
+       NULLIF(BTRIM(p.fabric_structure),'') AS "fabricStructure"
+     FROM public.raw_fabric_products p
+     WHERE p.category='Fabric' AND NULLIF(BTRIM(p.name),'') IS NOT NULL`,
+  );
+  const collapsed = new Map<string, Record<string, any>>();
+  for (const row of result.rows) {
+    const key = normalizeFabricStyle(row.fabricStyle);
+    if (!key) continue;
+    const existing = collapsed.get(key);
+    // Multiple colour rows must collapse rather than turn a certain Level 3
+    // into an ambiguous spelling. Preserve the first non-empty attributes.
+    collapsed.set(key, {
+      ...(existing ?? {}),
+      ...row,
+      plainPrint: existing?.plainPrint ?? row.plainPrint,
+      fabricStructure: existing?.fabricStructure ?? row.fabricStructure,
+      fabricStyleKey: key,
+    });
+  }
+  return [...collapsed.values()];
+}
+
+type FabricLevel4 = Record<string, any>;
+async function liveFabricStyleProjection(client: { query: (sql: string, values?: unknown[]) => Promise<{ rows: Array<Record<string, any>> }> }) {
+  // Inventory.available is already net of the inventory reservation.  Team
+  // reservations are deliberately subtracted once, after kg→metre conversion.
+  const result = await client.query(`WITH inventory AS (
+    SELECT i.product_id,
+      COALESCE(SUM(i.available) FILTER (WHERE i.location_name='RMAT/Stock'),0) available_kg,
+      COALESCE(SUM(COALESCE((to_jsonb(i)->>'reserved_qty')::numeric,0)) FILTER (WHERE i.location_name='RMAT/Stock'),0) inventory_reserved_kg
+    FROM public.raw_fabric_inventory i GROUP BY i.product_id
+  ), team AS (
+    SELECT r.product_id::text product_id,
+      SUM(COALESCE(r.qty_kg,0)) team_reserved_kg
+    FROM public.fabric_reservations r
+    WHERE LOWER(COALESCE(r.status,'active')) IN ('active','reserved','open')
+    GROUP BY r.product_id
+  ) SELECT p.id::text product_id,
+    COALESCE(to_jsonb(p)->>'barcode',to_jsonb(p)->>'default_code',p.id::text) barcode,
+    p.name, BTRIM(split_part(p.name,' - ',1)) fabric_style,
+    NULLIF(BTRIM(p.fabric_category),'') category,
+    NULLIF(BTRIM(p.fabric_subcategory),'') subcategory,
+    NULLIF(BTRIM(p.plain_print),'') plain_print,
+    NULLIF(BTRIM(p.fabric_structure),'') structure,
+    p.width_m::text width, p.gsm::text gsm,
+    COALESCE(NULLIF(BTRIM(p.fabric_supplier_name),''),NULLIF(BTRIM(p.supplier),'')) supplier,
+    NULLIF(BTRIM(p.fiber_content),'') fibre_composition,
+    p.fabric_color colour, (p.standard_price*p.kg_per_mtr_eff)::float cost_per_metre,
+    (COALESCE(inventory.available_kg,0)/NULLIF(p.kg_per_mtr_eff,0))::float available_metres,
+    ((COALESCE(inventory.inventory_reserved_kg,0)+COALESCE(team.team_reserved_kg,0))/NULLIF(p.kg_per_mtr_eff,0))::float reserved_metres,
+    ((COALESCE(inventory.available_kg,0)-COALESCE(team.team_reserved_kg,0))/NULLIF(p.kg_per_mtr_eff,0))::float free_metres
+    FROM public.raw_fabric_products p
+    LEFT JOIN inventory ON inventory.product_id=p.id LEFT JOIN team ON team.product_id=p.id::text
+    WHERE p.category='Fabric' AND p.kg_per_mtr_eff>0 AND NULLIF(BTRIM(p.name),'') IS NOT NULL
+    ORDER BY p.name`);
+  const groups = new Map<string, any>();
+  for (const row of result.rows) {
+    const fabricStyle = fabricStyleBase(row.fabric_style);
+    const fabricStyleKey = normalizeFabricStyle(fabricStyle);
+    if (!fabricStyleKey) continue;
+    const level4: FabricLevel4 = { productId: Number(row.product_id), barcode: row.barcode, productName: row.name,
+      colour: row.colour ?? "Unspecified", category: row.category, subcategory: row.subcategory,
+      patternPlainPrint: row.plain_print, structure: row.structure, width: row.width, gsm: row.gsm,
+      supplier: row.supplier, fibreComposition: row.fibre_composition, costPerMetre: Number(row.cost_per_metre ?? 0),
+      availableMetres: Number(row.available_metres ?? 0), reservedMetres: Number(row.reserved_metres ?? 0), freeMetres: Number(row.free_metres ?? 0) };
+    const group = groups.get(fabricStyleKey) ?? { fabricStyleKey, fabricStyle, category: row.category, subcategory: row.subcategory,
+      patternPlainPrint: row.plain_print, structure: row.structure, width: row.width, gsm: row.gsm, supplier: row.supplier,
+      fibreComposition: row.fibre_composition, level4: [] as FabricLevel4[] };
+    group.level4.push(level4); groups.set(fabricStyleKey, group);
+  }
+  return [...groups.values()].map((group) => ({ ...group,
+    totalAvailableMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.availableMetres, 0),
+    totalReservedMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.reservedMetres, 0),
+    totalFreeMetres: group.level4.reduce((n: number, x: FabricLevel4) => n + x.freeMetres, 0),
+    weightedCostPerMetre: (() => {
+      const stocked = group.level4.filter((x: FabricLevel4) => x.freeMetres > 0 && x.costPerMetre > 0);
+      const metres = stocked.reduce((n: number, x: FabricLevel4) => n + x.freeMetres, 0);
+      if (metres > 0) return stocked.reduce((n: number, x: FabricLevel4) => n + x.freeMetres * x.costPerMetre, 0) / metres;
+      const costed = group.level4.filter((x: FabricLevel4) => x.costPerMetre > 0);
+      return costed.length ? costed.reduce((n: number, x: FabricLevel4) => n + x.costPerMetre, 0) / costed.length : null;
+    })(),
+  }));
+}
+
+async function backfillCertainFabricStyleLinks() {
+  const [groups, trackers] = await Promise.all([
+    liveFabricStyleProjection(pool),
+    pool.query(`SELECT id,fabric FROM ${schema}.style_development_tracker WHERE fabric_style_key IS NULL`),
+  ]);
+  const candidates: FabricStyleCandidate[] = groups.map((group) => ({
+    fabricStyleKey: group.fabricStyleKey, fabricStyle: group.fabricStyle,
+    category: group.category, subcategory: group.subcategory,
+  }));
+  for (const tracker of trackers.rows) {
+    const match = certainFabricStyleMatch(tracker.fabric, candidates);
+    if (match.status === "resolved") {
+      await pool.query(`UPDATE ${schema}.style_development_tracker SET fabric_style_key=$1,updated_at=NOW()
+        WHERE id=$2 AND fabric_style_key IS NULL`, [match.fabricStyleKey, tracker.id]);
+    }
+  }
+  await pool.query(
+    `UPDATE ${schema}.weekly_order_plan_lines w
+        SET fabric_style_key=t.fabric_style_key
+       FROM ${schema}.style_development_tracker t
+      WHERE w.fabric_style_key IS NULL
+        AND w.source='development'
+        AND w.source_id=t.id::text
+        AND t.fabric_style_key IS NOT NULL`,
+  );
+  const weekly = await pool.query(
+    `SELECT id,fabric FROM ${schema}.weekly_order_plan_lines WHERE fabric_style_key IS NULL`,
+  );
+  for (const line of weekly.rows) {
+    const match = certainFabricStyleMatch(line.fabric, candidates);
+    if (match.status === "resolved") {
+      await pool.query(
+        `UPDATE ${schema}.weekly_order_plan_lines SET fabric_style_key=$1,updated_at=NOW()
+          WHERE id=$2 AND fabric_style_key IS NULL`,
+        [match.fabricStyleKey, line.id],
+      );
+    }
+  }
 }
 
 async function loadStyleDevelopmentPatternMakers(includeInactive = false) {
@@ -6574,44 +6749,41 @@ router.get("/style-development-tracker", async (_req, res, next) => {
 
 router.get("/style-development-tracker/fabric-options", async (_req, res, next) => {
   try {
-    // Name is deliberately tested before the source colour, matching Fabric BI's
-    // canonical name/fabric_color fallback.  The regex is longest-first for
-    // compound colours such as Dark Olive Green.
-    const result = await pool.query(
-      `WITH live AS (
-         SELECT p.id,p.name,p.fabric_color,p.kg_per_mtr_eff,p.standard_price,
-           COALESCE(SUM(i.available) FILTER (WHERE i.location_name='RMAT/Stock' AND i.available>0),0) AS kg,
-            COALESCE(SUM(i.total_value) FILTER (WHERE i.location_name='RMAT/Stock' AND i.quantity>0),0) AS value,
-            COALESCE(SUM(i.quantity) FILTER (WHERE i.location_name='RMAT/Stock' AND i.quantity>0),0) AS valued_kg
-          FROM public.raw_fabric_products p LEFT JOIN public.raw_fabric_inventory i ON i.product_id=p.id
-         WHERE p.category='Fabric' AND p.kg_per_mtr_eff>0 GROUP BY p.id,p.name,p.fabric_color,p.kg_per_mtr_eff,p.standard_price
-       ), resolved AS (
-         SELECT *, COALESCE(
-           (regexp_match(lower(name),'(dark olive green|olive green|navy blue|dark blue|light blue|denim blue|army green|dark green|light green|dark brown|light brown|dark grey|light grey|dusty pink|burnt orange|off white|baby blue|black|white|cream|beige|brown|green|blue|red|pink|yellow|orange|purple|grey|gold|silver)'))[1],
-           (regexp_match(lower(coalesce(fabric_color,'')),'(dark olive green|olive green|navy blue|dark blue|light blue|denim blue|army green|dark green|light green|dark brown|light brown|dark grey|light grey|dusty pink|burnt orange|off white|baby blue|black|white|cream|beige|brown|green|blue|red|pink|yellow|orange|purple|grey|gold|silver)'))[1],
-           'Unspecified') AS colour
-         FROM live
-       )
-       SELECT id,name,initcap(colour) AS colour,
-         trim(regexp_replace(lower(name),'(dark olive green|olive green|navy blue|dark blue|light blue|denim blue|army green|dark green|light green|dark brown|light brown|dark grey|light grey|dusty pink|burnt orange|off white|baby blue|black|white|cream|beige|brown|green|blue|red|pink|yellow|orange|purple|grey|gold|silver)',' ','gi')) AS fabric_base_name,
-         kg/kg_per_mtr_eff AS metres,
-          COALESCE(value/NULLIF(valued_kg,0)*kg_per_mtr_eff,standard_price*kg_per_mtr_eff) AS cost_per_metre
-       FROM resolved ORDER BY name LIMIT 1000`,
-    );
-    const groups = new Map<string, { fabricBaseName: string; variants: Array<Record<string, unknown>>; metres: number }>();
-    for (const row of result.rows) {
-      const base = String(row.fabric_base_name).replace(/\s+/g, " ").trim() || String(row.name);
-      const group = groups.get(base) ?? { fabricBaseName: base, variants: [], metres: 0 };
-      const metres = Number(row.metres ?? 0);
-      group.metres += metres;
-      group.variants.push({ productId: Number(row.id), productName: row.name, colour: row.colour, metres, costPerMetre: Number(row.cost_per_metre ?? 0) });
-      groups.set(base, group);
-    }
-    const fabrics = [...groups.values()].map((group) => ({
-      fabricName: group.fabricBaseName, totalMetres: group.metres,
-      colours: group.variants.map((v) => ({ productId: v.productId, productName: v.productName, colour: v.colour, metres: v.metres, costPerMetre: v.costPerMetre })),
-    }));
-    res.json({ fabrics, groups: [...groups.values()].map((group) => ({ ...group, variants: group.variants.map((v) => ({ ...v, otherColourMetres: group.metres - Number(v.metres) })) })) });
+    const groups = await liveFabricStyleProjection(pool);
+    // `fabrics`/`colours` retain the previous picker contract.
+    res.json({ groups, fabrics: groups.map((group) => ({ fabricStyleKey: group.fabricStyleKey,
+      fabricName: group.fabricStyle, totalMetres: group.totalAvailableMetres,
+      colours: group.level4.map((x: FabricLevel4) => ({ ...x, metres: x.availableMetres })) })) });
+  } catch (error) { next(error); }
+});
+
+router.get("/style-development-tracker/fabric-link-reconciliation", requireUser, async (_req, res, next) => {
+  try {
+    const [groups, trackers] = await Promise.all([
+      liveFabricStyleProjection(pool),
+      pool.query(`SELECT id,style_number,style_name,fabric,fabric_style_key FROM ${schema}.style_development_tracker ORDER BY id`),
+    ]);
+    const candidates: FabricStyleCandidate[] = groups.map((group) => ({ fabricStyleKey: group.fabricStyleKey,
+      fabricStyle: group.fabricStyle, category: group.category, subcategory: group.subcategory }));
+    const rows = trackers.rows.map((tracker) => {
+      const match = certainFabricStyleMatch(tracker.fabric, candidates);
+      const stored = tracker.fabric_style_key ? String(tracker.fabric_style_key) : null;
+      const status = stored && groups.some((group) => group.fabricStyleKey === stored) ? "resolved" : match.status;
+      return { trackerId: Number(tracker.id), styleNumber: tracker.style_number, styleName: tracker.style_name,
+        fabricText: tracker.fabric, storedFabricStyleKey: stored,
+        status, resolvedFabricStyleKey: status === "resolved" ? (stored ?? match.fabricStyleKey ?? null) : null,
+        candidates: match.candidates.map((candidate) => ({ fabricStyleKey: candidate.fabricStyleKey, fabricStyle: candidate.fabricStyle })) };
+    });
+    const csv = ["tracker_id,style_number,style_name,fabric_text,stored_fabric_style_key,status,resolved_fabric_style_key,candidates",
+      ...rows.map((row) => [row.trackerId,row.styleNumber,row.styleName,row.fabricText,row.storedFabricStyleKey ?? "",row.status,
+        row.resolvedFabricStyleKey ?? "",row.candidates.map((candidate) => candidate.fabricStyleKey).join("|")]
+        .map((value) => `"${String(value).replace(/"/g, '""')}"`).join(","))].join("\n");
+    await mkdir("reports", { recursive: true });
+    await writeFile("reports/fabric-style-link-reconciliation.csv", `${csv}\n`, "utf8");
+    res.json({ total: rows.length, resolved: rows.filter((row) => row.status === "resolved").length,
+      ambiguous: rows.filter((row) => row.status === "ambiguous").length,
+      unresolved: rows.filter((row) => row.status === "unresolved").length, rows,
+      reportPath: "artifacts/vivo-product-workspace/reports/fabric-style-link-reconciliation.csv" });
   } catch (error) { next(error); }
 });
 
@@ -7164,6 +7336,39 @@ router.patch("/style-development-tracker/:id", async (req: AuthRequest, res, nex
     const assignments: string[] = [];
     const values: unknown[] = [];
     const changes: Array<{ key: string; oldValue: unknown; newValue: unknown }> = [];
+    if (req.body?.fabricStyleKey !== undefined) {
+      const requestedKey = normalizeFabricStyle(req.body.fabricStyleKey);
+      const candidates = await liveFabricStyleCandidates(client);
+      const match = certainFabricStyleMatch(requestedKey, candidates as FabricStyleCandidate[]);
+      const linked = match.status === "resolved" && match.fabricStyleKey === requestedKey
+        ? candidates.find((candidate) => candidate.fabricStyleKey === requestedKey)
+        : undefined;
+      if (requestedKey && !linked) {
+        await client.query("ROLLBACK");
+        res.status(400).json({ error: "Fabric Style must be a current, unambiguous Level 3 Fabric BI style" });
+        return;
+      }
+      const oldKey = String(current.rows[0].fabric_style_key ?? "");
+      if (oldKey !== requestedKey) {
+        values.push(requestedKey || null); assignments.push(`fabric_style_key=$${values.length}`);
+        changes.push({ key: "fabricStyleKey", oldValue: oldKey || null, newValue: requestedKey || null });
+        if (linked) {
+          values.push(linked.fabricStyle); assignments.push(`fabric=$${values.length}`);
+          changes.push({ key: "fabric", oldValue: current.rows[0].fabric, newValue: linked.fabricStyle });
+          // Fabric BI is authoritative only when the user did not explicitly
+          // supply an override in this same PATCH.
+          if (req.body?.printOrSolid === undefined && linked.plainPrint) {
+            const value = String(linked.plainPrint).toLowerCase() === "solid" ? "Plain" : linked.plainPrint;
+            values.push(value); assignments.push(`print_or_solid=$${values.length}`);
+            changes.push({ key: "printOrSolid", oldValue: current.rows[0].print_or_solid, newValue: value });
+          }
+          if (req.body?.knitOrWoven === undefined && linked.fabricStructure) {
+            values.push(linked.fabricStructure); assignments.push(`knit_or_woven=$${values.length}`);
+            changes.push({ key: "knitOrWoven", oldValue: current.rows[0].knit_or_woven, newValue: linked.fabricStructure });
+          }
+        }
+      }
+    }
     if (req.body?.designerUserId !== undefined) {
       const requestedDesignerId = req.body.designerUserId === null || req.body.designerUserId === ""
         ? null : Number(req.body.designerUserId);
@@ -13433,12 +13638,12 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
           t.style_name AS "styleName",t.style_type AS "styleType",t.tier,t.category,
           t.sub_category AS "subCategory",t.brand,
           COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
-          t.sample_fabric_product_id AS "fabricProductId",t.target_order_week AS "targetOrderWeek",
+           t.sample_fabric_product_id AS "fabricProductId",t.fabric_style_key AS "fabricStyleKey",t.target_order_week AS "targetOrderWeek",
           CASE WHEN LOWER(BTRIM(COALESCE(t.print_or_solid,''))) IN ('plain','solid') THEN 'Plain'
                WHEN LOWER(BTRIM(COALESCE(t.print_or_solid,'')))='print' THEN 'Print' END AS "patternType",
           CASE WHEN LOWER(BTRIM(COALESCE(t.knit_or_woven,'')))='knit' THEN 'Knit'
                WHEN LOWER(BTRIM(COALESCE(t.knit_or_woven,'')))='woven' THEN 'Woven' END AS "fabricStructure",
-          COALESCE(t.fabric_consumption_override_m_per_unit,rate.expected_metres_per_unit)::float AS "fabricConsumptionMetresPerUnit",
+           COALESCE(t.fabric_consumption_override_m_per_unit,MAX(rate.expected_metres_per_unit))::float AS "fabricConsumptionMetresPerUnit",
           ARRAY[]::text[] AS colourways,
           CASE WHEN gi.id IS NOT NULL THEN '/api/workspace/garment-images/plm/' || encode(LOWER(BTRIM(t.style_number))::bytea,'escape') END AS "imageUrl",
           COALESCE(SUM(fi.available / NULLIF(fp.kg_per_mtr_eff,0)) FILTER (WHERE fi.location_name='RMAT/Stock' AND fi.available>0),0)::float AS "availableMetres"
@@ -13456,6 +13661,22 @@ router.get("/weekly-order-plan/sources", async (req, res, next) => {
          LIMIT 30`,
         [search, pattern],
       ));
+      const groups = await liveFabricStyleProjection(pool);
+      const byKey = new Map(groups.map((group) => [group.fabricStyleKey, group]));
+      for (const item of result.rows) {
+        const group = byKey.get(String(item.fabricStyleKey ?? ""));
+        item.fabricStyle = group?.fabricStyle ?? null;
+        item.colourOptions = group?.level4 ?? [];
+        item.availableMetres = group?.totalAvailableMetres ?? item.availableMetres;
+        item.reservedMetres = group?.totalReservedMetres ?? 0;
+        item.freeMetres = group?.totalFreeMetres ?? item.availableMetres;
+        const derivedPattern = String(group?.patternPlainPrint ?? "").toLowerCase() === "solid" ? "Plain" : group?.patternPlainPrint;
+        const derivedStructure = group?.structure;
+        if (!item.patternType && ["Print", "Plain"].includes(String(derivedPattern))) item.patternType = derivedPattern;
+        if (!item.fabricStructure && ["Knit", "Woven"].includes(String(derivedStructure))) item.fabricStructure = derivedStructure;
+        item.derivedPatternType = derivedPattern ?? null;
+        item.derivedFabricStructure = derivedStructure ?? null;
+      }
       res.json({ items: result.rows });
       return;
     }
@@ -13648,6 +13869,41 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
     )) : { rows: [] };
+    const fabricGroups = await timedEndpointPhase(res, "fabric", () => liveFabricStyleProjection(pool));
+    const fabricGroupsByKey = new Map(fabricGroups.map((group) => [group.fabricStyleKey, group]));
+    for (const line of lines.rows) {
+      const fabricGroup = fabricGroupsByKey.get(String(line.fabric_style_key ?? ""));
+      line.fabricStyleKey = line.fabric_style_key ?? null;
+      line.fabricStyle = fabricGroup?.fabricStyle ?? null;
+      line.colourOptions = fabricGroup?.level4 ?? [];
+      line.availableMetres = fabricGroup?.totalAvailableMetres ?? Number(line.availableMetres ?? 0);
+      line.reservedMetres = fabricGroup?.totalReservedMetres ?? 0;
+      line.freeMetres = fabricGroup?.totalFreeMetres ?? Number(line.availableMetres ?? 0);
+      const derivedPattern = String(fabricGroup?.patternPlainPrint ?? "").toLowerCase() === "solid" ? "Plain" : fabricGroup?.patternPlainPrint ?? null;
+      const derivedStructure = fabricGroup?.structure ?? null;
+      line.derivedPatternType = derivedPattern;
+      line.derivedFabricStructure = derivedStructure;
+      line.patternTypeSource = !fabricGroup ? "manual" : String(line.patternType ?? "").toLowerCase() === String(derivedPattern ?? "").toLowerCase() ? "derived" : "override";
+      line.fabricStructureSource = !fabricGroup ? "manual" : String(line.fabricStructure ?? "").toLowerCase() === String(derivedStructure ?? "").toLowerCase() ? "derived" : "override";
+      const rate = Number(line.fabricConsumptionMetresPerUnit ?? 0);
+      const allocations = Array.isArray(line.colourwayAllocations) ? line.colourwayAllocations : [];
+      line.colourwayAllocations = allocations.map((allocation: any) => {
+        const colour = fabricGroup?.level4.find((item: FabricLevel4) => item.productId === Number(allocation.productId)
+          || (allocation.barcode && item.barcode === allocation.barcode));
+        const units = Number(allocation.units ?? 0);
+        const requiredMetres = rate > 0 ? Math.ceil(units * rate) : null;
+        return colour ? { ...allocation, name: colour.colour, productId: colour.productId, barcode: colour.barcode,
+          productName: colour.productName, availableMetres: colour.availableMetres, reservedMetres: colour.reservedMetres,
+          freeMetres: colour.freeMetres, costPerMetre: colour.costPerMetre, requiredMetres,
+          shortageWarning: requiredMetres !== null && requiredMetres > colour.freeMetres } : allocation;
+      });
+      const costs = line.colourwayAllocations.filter((allocation: any) => allocation.requiredMetres !== null);
+      const totalFabricCost = costs.reduce((sum: number, allocation: any) => sum + Number(allocation.requiredMetres) * Number(allocation.costPerMetre), 0);
+      const allocatedUnits = costs.reduce((sum: number, allocation: any) => sum + Number(allocation.units), 0);
+      line.totalFabricCost = totalFabricCost;
+      line.fabricCostPerUnit = allocatedUnits ? totalFabricCost / allocatedUnits : null;
+      line.weightedFabricCostPerMetre = allocatedUnits && rate > 0 ? totalFabricCost / (allocatedUnits * rate) : null;
+    }
     const projection = sourceResult ? await timedEndpointPhase(res, "project", async () => biWorkspaceProjection(sourceResult)) : null;
     // Preserve the former Array.find semantics: when an order number and name
     // happen to identify different lines, the earliest sequence line wins.
@@ -13944,7 +14200,7 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     if (!validTypes.includes(body.orderType) || !validStages.includes(body.orderStage)) {
       res.status(400).json({ error: "A valid order type and stage are required" }); return;
     }
-    if (!["Print", "Plain"].includes(patternType) || !["Knit", "Woven"].includes(fabricStructure)) {
+    if ((patternType && !["Print", "Plain"].includes(patternType)) || (fabricStructure && !["Knit", "Woven"].includes(fabricStructure))) {
       res.status(400).json({
         error: "Choose both Knit or Woven and Print or Plain. The weekly % Knit and % Print KPIs cannot be calculated without them.",
         code: "CLASSIFICATION_REQUIRED",
@@ -13969,8 +14225,8 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const sourceResult = source === "development"
       ? await client.query(
         `SELECT t.id::text AS source_id,t.style_number,t.style_name,t.style_type,t.tier,t.category,t.sub_category,t.brand,
-          COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
-           sample_fabric_product_id AS fabric_product_id,target_order_week,
+           COALESCE(NULLIF(fp.name,''),NULLIF(t.fabric,''),'Fabric pending') AS fabric,
+            sample_fabric_product_id AS fabric_product_id,fabric_style_key,target_order_week,
             COALESCE(NULLIF(BTRIM(t.print_or_solid),''),NULLIF(BTRIM(fp.plain_print),'')) AS pattern_type,
             COALESCE(NULLIF(BTRIM(t.knit_or_woven),''),NULLIF(BTRIM(fp.fabric_structure),'')) AS fabric_structure,
             COALESCE(t.fabric_consumption_override_m_per_unit,rate.expected_metres_per_unit)::float AS fabric_consumption_metres_per_unit,
@@ -14023,8 +14279,16 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
       );
       Object.assign(style, fabricAttributes.rows[0] ?? {});
     }
-    style.pattern_type = patternType;
-    style.fabric_structure = fabricStructure;
+    const linkedGroup = style.fabric_style_key
+      ? (await liveFabricStyleProjection(client)).find((group) => group.fabricStyleKey === style.fabric_style_key)
+      : null;
+    style.pattern_type = patternType || style.pattern_type || linkedGroup?.patternPlainPrint;
+    style.fabric_structure = fabricStructure || style.fabric_structure || linkedGroup?.structure;
+    if (!["Print", "Plain"].includes(String(style.pattern_type)) || !["Knit", "Woven"].includes(String(style.fabric_structure))) {
+      await client.query("ROLLBACK");
+      res.status(400).json({ error: "Choose both Knit or Woven and Print or Plain when the linked Fabric Style does not supply them.", code: "CLASSIFICATION_REQUIRED" });
+      return;
+    }
     if (source === "development") {
       await client.query(
         `UPDATE ${schema}.style_development_tracker
@@ -14041,14 +14305,14 @@ router.post("/weekly-order-plan/lines", async (req: AuthRequest, res, next) => {
     const inserted = await client.query(
       `INSERT INTO ${schema}.weekly_order_plan_lines
        (plan_id,sequence_no,order_number,source,source_id,style_number,style_name,style_type,tier,category,sub_category,
-         brand,fabric,fabric_product_id,pattern_type,fabric_structure,fabric_consumption_metres_per_unit,target_order_week,image_url,available_colourways,
-          selected_colourways,colourway_allocations,estimated_quantity,order_type,order_stage,created_by)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26) RETURNING id`,
+          brand,fabric,fabric_product_id,fabric_style_key,pattern_type,fabric_structure,fabric_consumption_metres_per_unit,target_order_week,image_url,available_colourways,
+           selected_colourways,colourway_allocations,estimated_quantity,order_type,order_stage,created_by)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27) RETURNING id`,
       [plan.rows[0].id, sequence, `W${isoWeek}${String(sequence).padStart(3, "0")}`, source, style.source_id,
         style.style_number, style.style_name, style.style_type, style.tier, style.category, style.sub_category, style.brand,
-        style.fabric, style.fabric_product_id, style.pattern_type, style.fabric_structure, style.fabric_consumption_metres_per_unit ?? null, style.target_order_week,
+         style.fabric, style.fabric_product_id, style.fabric_style_key ?? null, style.pattern_type, style.fabric_structure, style.fabric_consumption_metres_per_unit ?? null, style.target_order_week,
         `/api/workspace/garment-images/${source === "development" ? "workspace" : "catalogue"}/${encodeURIComponent(style.style_number)}`,
-        style.colourways ?? [], selected, [], quantity, body.orderType, body.orderStage, req.workspaceUser?.id ?? null],
+         style.colourways ?? [], selected, [], quantity, body.orderType, body.orderStage, req.workspaceUser?.id ?? null],
     );
     await client.query("COMMIT");
     res.status(201).json({ id: inserted.rows[0].id });
@@ -14079,9 +14343,11 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
     const allocations = Array.isArray(req.body?.colourwayAllocations)
       ? req.body.colourwayAllocations.map((item: any) => ({
         name: String(item?.name ?? "").trim(),
+        productId: item?.productId === undefined ? null : Number(item.productId),
+        barcode: String(item?.barcode ?? "").trim(),
         units: Number(item?.units),
-      })).filter((item: { name: string; units: number }) =>
-        item.name && Number.isInteger(item.units) && item.units > 0)
+      })).filter((item: { name: string; barcode: string; productId: number | null; units: number }) =>
+        (item.name || item.barcode || item.productId) && Number.isInteger(item.units) && item.units > 0)
       : [];
     if (!Number.isInteger(quantity) || quantity <= 0 || !stages.includes(req.body?.orderStage) || !types.includes(req.body?.orderType)) {
       res.status(400).json({ error: "Quantity, order type and stage are required" }); return;
@@ -14089,6 +14355,25 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
     if (!["Print", "Plain"].includes(patternType) || !["Knit", "Woven"].includes(fabricStructure)) {
       res.status(400).json({ error: "Choose both Knit or Woven and Print or Plain so the weekly KPIs remain accurate." }); return;
     }
+    const line = await pool.query(`SELECT fabric_style_key,fabric_consumption_metres_per_unit,sub_category
+      FROM ${schema}.weekly_order_plan_lines WHERE id=$1`, [Number(req.params.id)]);
+    if (!line.rows[0]) { res.status(404).json({ error: "Planned style was not found" }); return; }
+    const fabricStyleKey = String(line.rows[0].fabric_style_key ?? "");
+    const group = fabricStyleKey ? (await liveFabricStyleProjection(pool)).find((item) => item.fabricStyleKey === fabricStyleKey) : null;
+    if (allocations.length && !group) {
+      res.status(400).json({ error: "Colour allocations require a resolved Fabric Style" }); return;
+    }
+    const rate = Number(line.rows[0].fabric_consumption_metres_per_unit ?? 0);
+    const canonicalAllocations = allocations.map((allocation: any) => {
+      const colour = group?.level4.find((item: FabricLevel4) =>
+        (allocation.productId && item.productId === allocation.productId) || (allocation.barcode && item.barcode === allocation.barcode));
+      if (!colour) throw Object.assign(new Error("Every allocation barcode and product must belong to the linked Fabric Style"), { status: 400 });
+      const requiredMetres = rate > 0 ? Math.ceil(allocation.units * rate) : null;
+      return { name: colour.colour, productId: colour.productId, barcode: colour.barcode, units: allocation.units,
+        productName: colour.productName, availableMetres: colour.availableMetres, reservedMetres: colour.reservedMetres,
+        freeMetres: colour.freeMetres, costPerMetre: colour.costPerMetre, requiredMetres,
+        shortageWarning: requiredMetres === null ? null : requiredMetres > colour.freeMetres };
+    });
     const result = await pool.query(
       `UPDATE ${schema}.weekly_order_plan_lines l
        SET estimated_quantity=CASE WHEN p.status='draft' THEN $1 ELSE l.estimated_quantity END,
@@ -14099,7 +14384,7 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
        FROM ${schema}.weekly_order_plans p
        WHERE l.id=$8 AND p.id=l.plan_id
        RETURNING l.id,l.source,l.source_id`,
-      [quantity, allocations.map((item: { name: string }) => item.name), JSON.stringify(allocations),
+       [quantity, canonicalAllocations.map((item: { name: string }) => item.name), JSON.stringify(canonicalAllocations),
         req.body.orderType, req.body.orderStage, patternType, fabricStructure, Number(req.params.id)],
     );
     if (!result.rows.length) { res.status(404).json({ error: "Planned style was not found" }); return; }
@@ -14111,7 +14396,11 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
         [patternType, fabricStructure, Number(result.rows[0].source_id)],
       );
     }
-    res.json({ ok: true });
+    const allocationUnits = canonicalAllocations.reduce((sum: number, item: any) => sum + item.units, 0);
+    const totalFabricCost = canonicalAllocations.reduce((sum: number, item: any) => sum + item.requiredMetres * item.costPerMetre, 0);
+    res.json({ ok: true, colourwayAllocations: canonicalAllocations,
+      weightedFabricCostPerMetre: allocationUnits ? totalFabricCost / (allocationUnits * (rate || 1)) : null,
+      fabricCostPerUnit: allocationUnits ? totalFabricCost / allocationUnits : null, totalFabricCost });
   } catch (error) { next(error); }
 });
 
@@ -14508,6 +14797,7 @@ httpServer.listen(port, "0.0.0.0", () => {
       }
       if (!await essentialWorkspaceCompatibility()) throw new Error("workspace essential tables are unavailable");
       await withTimeout(ensureOrderHistoryConfig(), 4000, "order history cutover config");
+      await withTimeout(ensureFabricWorkspaceSchema(), 8000, "Fabric Workspace schema");
       await withTimeout(ensureStyleDevelopmentImageSchema(), 8000, "Style Development image schema");
       serviceReady = true;
       schemaReady = true;

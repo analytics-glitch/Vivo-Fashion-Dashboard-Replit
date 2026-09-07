@@ -29,4 +29,6 @@ test("classification KPIs remain unavailable until at least one style is classif
 test("Plain styles require four colourways and Print styles require two", () => {
   assert.equal(minimumColourwayCount("Plain"), 4);
   assert.equal(minimumColourwayCount("Print"), 2);
+  assert.equal(minimumColourwayCount("Unknown"), null);
+  assert.equal(minimumColourwayCount(null), null);
 });

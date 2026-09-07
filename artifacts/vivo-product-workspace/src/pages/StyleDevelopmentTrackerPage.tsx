@@ -65,8 +65,19 @@ type TrackerStyle = {
   sampleFabricProductId?: number | null;
   sampleFabricName?: string | null;
   sampleFabricColour?: string | null;
+  sampleFabricCostPerMetre?: number | null;
   sampleFabricMetres?: number | null;
   sampleFabricOtherColours?: { productId: number; colour: string; metres: number }[];
+  fabricStyleKey?: string | null;
+  fabricLevel4?: { productId: number; barcode: string; colour: string; availableMetres: number; reservedMetres: number; freeMetres: number; costPerMetre: number }[];
+  linkedFabric?: {
+    category?: string | null; subcategory?: string | null; patternPlainPrint?: string | null;
+    structure?: string | null; width?: string | null; gsm?: string | null;
+    supplier?: string | null; fibreComposition?: string | null;
+  } | null;
+  totalAvailableMetres?: number | null;
+  totalReservedMetres?: number | null;
+  totalFreeMetres?: number | null;
   season?: string | null;
   intendedSellingPriceKes?: number | null;
   indicativeCogsKes?: number | null;
@@ -203,9 +214,35 @@ type TrackerPayload = {
 
 type FabricOptionsResponse = {
   groups: {
-    fabricBaseName: string;
-    metres: number;
-    variants: {
+    fabricStyleKey: string;
+    fabricStyle: string;
+    totalAvailableMetres: number;
+    totalReservedMetres: number;
+    totalFreeMetres: number;
+    category?: string | null;
+    subcategory?: string | null;
+    patternPlainPrint?: string | null;
+    structure?: string | null;
+    width?: string | null;
+    gsm?: string | null;
+    supplier?: string | null;
+    fibreComposition?: string | null;
+    level4: {
+      productId: number;
+      productName: string;
+      barcode: string;
+      colour: string;
+      availableMetres: number;
+      reservedMetres: number;
+      freeMetres: number;
+      costPerMetre: number;
+    }[];
+  }[];
+  fabrics: {
+    fabricStyleKey: string;
+    fabricName: string;
+    totalMetres: number;
+    colours: {
       productId: number;
       productName: string;
       colour: string;
@@ -2123,19 +2160,16 @@ function TrackerFabricSelection({ item }: { item: TrackerDetailPayload }) {
   const [search, setSearch] = useState('');
   const [isEditing, setIsEditing] = useState(false);
 
-  const fabrics = query.data?.groups || [];
+  const fabrics = query.data?.fabrics || [];
 
-  const filteredFabrics = search ? fabrics.map(f => ({
-     ...f,
-     variants: f.variants.filter(c =>
-       f.fabricBaseName.toLowerCase().includes(search.toLowerCase()) ||
-       c.productName.toLowerCase().includes(search.toLowerCase()) ||
-       c.colour.toLowerCase().includes(search.toLowerCase())
-     )
-  })).filter(f => f.variants.length > 0) : fabrics;
+  const filteredFabrics = search ? fabrics.filter(f =>
+       f.fabricName.toLowerCase().includes(search.toLowerCase()) ||
+       f.fabricStyleKey.toLowerCase().includes(search.toLowerCase()) ||
+       f.colours?.some(c => c.colour.toLowerCase().includes(search.toLowerCase()))
+  ) : fabrics;
 
-  const selectColour = (productId: number) => {
-    mutation.mutate({ sampleFabricProductId: productId });
+  const selectFabricGroup = (fabricStyleKey: string) => {
+    mutation.mutate({ fabricStyleKey });
     setIsEditing(false);
   };
 
@@ -2150,22 +2184,36 @@ function TrackerFabricSelection({ item }: { item: TrackerDetailPayload }) {
          <div className="tracker-fabric-current">
             <div className="fabric-main">
                <div className="fabric-name">{item.sampleFabricName}</div>
-               <div className="fabric-col">{item.sampleFabricColour}</div>
-               <div className="fabric-metres">{Math.round(item.sampleFabricMetres ?? 0)}m available</div>
+               <div className="fabric-col"></div>
+               <div className="fabric-metres">{Math.round(item.totalAvailableMetres ?? item.sampleFabricMetres ?? 0)}m total available</div>
             </div>
-            <div className="fabric-stats">
+             {item.linkedFabric && <div className="fabric-stats">
+                <div className="fabric-stat"><span>Category</span><strong>{item.linkedFabric.category || '—'}</strong></div>
+                <div className="fabric-stat"><span>Subcategory</span><strong>{item.linkedFabric.subcategory || '—'}</strong></div>
+                <div className="fabric-stat"><span>Pattern / Structure</span><strong>{[item.linkedFabric.patternPlainPrint, item.linkedFabric.structure].filter(Boolean).join(' · ') || '—'}</strong></div>
+                <div className="fabric-stat"><span>Width / GSM</span><strong>{[item.linkedFabric.width && `${item.linkedFabric.width}m`, item.linkedFabric.gsm && `${item.linkedFabric.gsm} GSM`].filter(Boolean).join(' · ') || '—'}</strong></div>
+                <div className="fabric-stat"><span>Supplier</span><strong>{item.linkedFabric.supplier || '—'}</strong></div>
+                <div className="fabric-stat"><span>Composition</span><strong>{item.linkedFabric.fibreComposition || '—'}</strong></div>
+                <div className="fabric-stat"><span>Reserved / Free</span><strong>{Math.round(item.totalReservedMetres || 0).toLocaleString()}m / {Math.round(item.totalFreeMetres || 0).toLocaleString()}m</strong></div>
+             </div>}
+             <div className="fabric-stats">
                <div className="fabric-stat"><span>Req/Garment</span><strong>{item.categoryMetresPerGarment ?? '-'}m</strong></div>
-               <div className="fabric-stat"><span>Yield</span><strong>{item.categoryMetresPerGarment && item.sampleFabricMetres ? Math.floor(item.sampleFabricMetres / item.categoryMetresPerGarment) : '-'} units</strong></div>
-               <div className="fabric-stat"><span>Est COGS</span><strong>KES {Math.round(item.indicativeCogsKes ?? 0) || '-'}</strong></div>
-               <div className="fabric-stat"><span>COGS %</span><strong>{item.indicativeCogsPct ? `${Math.round(item.indicativeCogsPct)}%` : '-'}</strong></div>
+               <div className="fabric-stat"><span>Total Yield</span><strong>{item.categoryMetresPerGarment && (item.totalAvailableMetres || item.sampleFabricMetres) ? Math.floor((item.totalAvailableMetres || item.sampleFabricMetres || 0) / item.categoryMetresPerGarment).toLocaleString() : '-'} units</strong></div>
+               <div className="fabric-stat"><span>Est. Fabric Cost / Unit</span><strong>KES {item.categoryMetresPerGarment && item.sampleFabricCostPerMetre ? Math.round(item.sampleFabricCostPerMetre * item.categoryMetresPerGarment).toLocaleString() : '-'}</strong></div>
             </div>
-            {item.sampleFabricOtherColours && item.sampleFabricOtherColours.length > 0 && (
+            <p className="fabric-note" style={{fontSize: '11px', color: '#8c8375', margin: '4px 0 0', lineHeight: 1.4}}>Cost shown is fabric-only and excludes labour, trims, and manufacturing margins. It is not the full COGS.</p>
+            {((item.fabricLevel4?.length ?? 0) > 0 || (item.sampleFabricOtherColours?.length ?? 0) > 0) && (
                <div className="fabric-alts">
-                  <span>Other Colours in Stock:</span>
+                  <span>Available Colours:</span>
                   <div className="fabric-alts-list">
-                     {item.sampleFabricOtherColours.map(oc => (
-                        <div key={oc.productId} className="fabric-alt-tag">{oc.colour} ({Math.round(oc.metres)}m)</div>
-                     ))}
+                     {item.fabricLevel4 && item.fabricLevel4.length > 0 
+                        ? item.fabricLevel4.map(c => (
+                            <div key={c.productId} className="fabric-alt-tag">{c.colour} · {c.barcode || `ID ${c.productId}`} · {Math.round(c.availableMetres)}m available / {Math.round(c.reservedMetres)}m reserved / {Math.round(c.freeMetres)}m free</div>
+                          ))
+                        : item.sampleFabricOtherColours?.map(oc => (
+                           <div key={oc.productId} className="fabric-alt-tag">{oc.colour} ({Math.round(oc.metres)}m)</div>
+                          ))
+                     }
                   </div>
                </div>
             )}
@@ -2176,15 +2224,11 @@ function TrackerFabricSelection({ item }: { item: TrackerDetailPayload }) {
             {query.isLoading ? <div className="picker-msg">Loading fabrics...</div> : (
               <div className="picker-list">
                  {filteredFabrics.map(f => (
-                    <div key={f.fabricBaseName} className="picker-group">
-                       <div className="picker-group-name">{f.fabricBaseName} <span>{Math.round(f.metres)}m total</span></div>
-                       {f.variants.map(c => (
-                          <div key={c.productId} className="picker-item" onClick={() => selectColour(c.productId)}>
-                             <div className="picker-item-colour">{c.colour}</div>
-                             <div className="picker-item-metres">{Math.round(c.metres)}m</div>
-                             <div className="picker-item-cost">KES {Math.round(c.costPerMetre)}/m</div>
-                          </div>
-                       ))}
+                    <div key={f.fabricStyleKey} className="picker-group picker-group-selectable" onClick={() => selectFabricGroup(f.fabricStyleKey)}>
+                       <div className="picker-group-name">{f.fabricName} <span>{Math.round(f.totalMetres)}m total</span></div>
+                       <div className="picker-variants-summary">
+                         {f.colours?.length ?? 0} colours available
+                       </div>
                     </div>
                  ))}
                  {filteredFabrics.length === 0 && <div className="picker-msg">No fabrics found</div>}

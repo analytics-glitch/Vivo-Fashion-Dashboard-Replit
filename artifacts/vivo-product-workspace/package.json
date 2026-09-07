@@ -20,7 +20,7 @@
     "test:feedback": "tsx --test server/feedback-policy.test.ts",
     "test:style-assignment": "tsx --test server/style-development-assignments.test.ts server/style-development-reassignment.test.ts",
     "test:range-plan": "tsx --test server/range-plan-defaults.test.ts server/range-plan-defaults.pg.test.ts",
-    "test:weekly-order-plan": "tsx --test server/weekly-order-plan-classification.test.ts server/order-history-cutover.test.ts",
+    "test:weekly-order-plan": "tsx --test server/weekly-order-plan-classification.test.ts server/fabric-style-linking.test.ts server/order-history-cutover.test.ts",
     "perf:bundle": "node --test scripts/performance-budget.test.mjs scripts/performance-live-config.test.mjs",
     "perf:report": "node scripts/performance-static-report.mjs",
     "perf:live": "node scripts/performance-live.mjs",
