@@ -10,21 +10,53 @@ it happens in BOTH places — design and UI here, backend on the VM — and GitH
 is what keeps them one codebase. Neither side keeps a private copy; a second
 copy is a fork with nobody reconciling it.
 
+### ⚠️ NAME THE REMOTE. `git pull` AND `git push` DO NOT REACH GITHUB.
+
+This workspace's `main` tracks a Replit sub-Repl remote (`subrepl-*/main`), not
+GitHub, and there is no `origin`. So a bare `git pull` succeeds, reports
+success, and fetches nothing of ours. The GitHub remote is named **`github`**:
+
+```
+git remote -v | grep github
+# github  https://github.com/analytics-glitch/Vivo-Fashion-Dashboard-Replit.git
+```
+
+Every command below names it explicitly. Do not "fix" the tracking branch to
+point at `github` — Replit's own task system uses those sub-Repl remotes, and
+what depends on that upstream is not visible from here.
+
 **Pull before touching anything under `artifacts/vivo-community/`:**
 
 ```
-git fetch origin && git pull --rebase origin main
+git stash push -u                  # only if the tree is dirty
+git fetch github main
+git merge github/main              # MERGE, not rebase — see below
+git stash pop                      # if you stashed
 ```
+
+Merge, never rebase. This branch carries hundreds of commits of unrelated
+workspace history; rebasing them onto GitHub rewrites work that has nothing to
+do with the community app.
 
 Starting from a stale checkout means the next push either conflicts or silently
 reverts work somebody else finished. This is not occasional: the VM pushes to
-`main` too.
+GitHub too.
 
-**Push as soon as a change is done and your own checks pass.** The VM picks up
-`main` within two minutes, runs its own gate — typecheck, the vitest suite, a
-production build — and publishes only if all three pass. A commit that fails
-the gate publishes nothing and leaves the previous release live, so pushing is
-safe; but a push IS a deploy, so push finished work rather than a checkpoint.
+**Push as soon as a change is done and your own checks pass:**
+
+```
+git push github main
+```
+
+The VM picks it up within two minutes, runs its own gate — typecheck, the
+vitest suite, a production build — and publishes only if all three pass. A
+commit that fails the gate publishes nothing and leaves the previous release
+live, so pushing is safe; but a push IS a deploy, so push finished work rather
+than a checkpoint.
+
+Check what a push would carry before making one: `git log --oneline
+github/main..main`. This repository is the whole workspace, so it will include
+BI and backend commits alongside the community app. That is expected.
 
 ### The backend for this app is on the VM, not in `api_pg.py`
 
