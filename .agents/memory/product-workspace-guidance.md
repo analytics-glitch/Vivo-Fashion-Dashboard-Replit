@@ -5,7 +5,7 @@ description: Durable cross-cutting rules for the standalone Product Workspace.
 
 - EOS/L10 meeting data is owned by the Product Workspace; migrate legacy public records once, then workspace edits own future status.
 - Reference-library content is idempotently seeded, server-admin-gated for edits, and rendered through safe structured tables.
-- Startup readiness and identity bootstrap must continue if PostgreSQL is temporarily unavailable; optional DDL cannot block the app shell. Business-critical data migrations must run before the optional-migration queue in the degraded path.
+- Startup readiness and identity bootstrap must continue if PostgreSQL is temporarily unavailable; once essential compatibility is confirmed, additive DDL cannot block the app shell and must retry automatically. Business-critical data migrations must run before the optional-migration queue in the degraded path.
 - Every style surface must server-scope to Vivo, Safari by Vivo, Safari, and Zoya. Development and assortment views each use their appropriate authoritative source rather than mixing product domains.
 - Date of birth is Settings-admin-only: public team/birthday payloads must never include it.
 - Embedded HTTPS previews require Secure/SameSite=None cookies; public feedback stores a canonical style number and colourway.

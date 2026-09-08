@@ -11363,6 +11363,7 @@ async function workspaceHomeFocus() {
        productionOrders: number; monthlyPlanUnits: number;
       monthLabel: string; monthlyNewnessTargetUnits: number; monthlyPlannedNewUnits: number;
       monthlyPlannedNewStyles: number; monthlyPlannedTotalUnits: number;
+       weeklyEnteredTargetUnits: number | null; weeklyNewnessPctTarget: number;
     }>(`
       WITH bounds AS (
         SELECT TO_CHAR(CURRENT_DATE,'IYYY')::int AS iso_year,
@@ -11451,6 +11452,10 @@ async function workspaceHomeFocus() {
         COALESCE((SELECT planned_new_units FROM monthly_plan),0)::float AS "monthlyPlannedNewUnits",
         COALESCE((SELECT planned_new_styles FROM monthly_plan),0)::int AS "monthlyPlannedNewStyles",
         COALESCE((SELECT planned_total_units FROM monthly_plan),0)::float AS "monthlyPlannedTotalUnits",
+        (SELECT t.target_units::float FROM ${schema}.weekly_order_week_targets t
+          WHERE t.iso_year=b.iso_year AND t.iso_week=b.iso_week) AS "weeklyEnteredTargetUnits",
+        COALESCE((SELECT k.target_value::float FROM ${schema}.weekly_order_kpi_targets k
+          WHERE k.metric_key='new_pct'),35)::float AS "weeklyNewnessPctTarget",
         TO_CHAR(CURRENT_DATE,'FMMonth YYYY') AS "monthLabel"
       FROM bounds b
     `),
@@ -11577,6 +11582,13 @@ async function workspaceHomeFocus() {
       targetUnits: Number(row.newnessTarget),
     })),
   );
+  const enteredWeeklyTarget = week.weeklyEnteredTargetUnits == null
+    ? null
+    : Number(week.weeklyEnteredTargetUnits);
+  const weeklyTargetUnits = enteredWeeklyTarget ?? weeklyUnitTarget.targetUnits;
+  const weeklyNewnessTargetUnits = enteredWeeklyTarget == null
+    ? weeklyNewnessTargetResult.targetUnits
+    : Math.round(enteredWeeklyTarget * Number(week.weeklyNewnessPctTarget) / 100);
   const monthlyNewness = calculateNewnessCommitment({
     targetUnits: Number(week.monthlyNewnessTargetUnits),
     plannedNewUnits: Number(week.planNewUnits),
@@ -11618,15 +11630,17 @@ async function workspaceHomeFocus() {
       isoYear: Number(week.isoYear), isoWeek: Number(week.isoWeek),
       startDate: week.startDate, endDate: week.endDate,
       planStyles: Number(week.planStyles), stylesCommitted, unitsCommitted,
-      targetUnits: weeklyUnitTarget.targetUnits,
-      targetComponents: weeklyUnitTarget.components,
+      targetUnits: weeklyTargetUnits,
+      targetSource: enteredWeeklyTarget == null ? "derived" : "entered",
+      targetComponents: enteredWeeklyTarget == null ? weeklyUnitTarget.components : [],
       monthLabel: week.monthLabel,
-      varianceUnits: unitsCommitted - weeklyUnitTarget.targetUnits,
-      status: unitsCommitted >= weeklyUnitTarget.targetUnits ? "on_track" : "off_track",
+      varianceUnits: unitsCommitted - weeklyTargetUnits,
+      status: unitsCommitted >= weeklyTargetUnits ? "on_track" : "off_track",
       newUnits: Number(week.planNewUnits),
-      newnessTargetUnits: weeklyNewnessTargetResult.targetUnits,
-      newnessTargetComponents: weeklyNewnessTargetResult.components,
-      newnessVarianceUnits: Number(week.planNewUnits) - weeklyNewnessTargetResult.targetUnits,
+      newnessTargetUnits: weeklyNewnessTargetUnits,
+      newnessTargetPct: Number(week.weeklyNewnessPctTarget),
+      newnessTargetComponents: enteredWeeklyTarget == null ? weeklyNewnessTargetResult.components : [],
+      newnessVarianceUnits: Number(week.planNewUnits) - weeklyNewnessTargetUnits,
     },
     month: {
       label: week.monthLabel,
@@ -14884,35 +14898,48 @@ async function runPostReadinessHousekeeping() {
   }
 }
 
+let workspaceInitializationRetry: NodeJS.Timeout | null = null;
+async function initialiseWorkspaceDatabase() {
+  try {
+    if (!await essentialWorkspaceCompatibility()) {
+      // A brand-new workspace has no compatibility surface yet. Bootstrap it
+      // once, but never make normal restarts wait for this broad initializer.
+      await withTimeout(ensureSchema(), 15000, "workspace schema bootstrap");
+    }
+    if (!await essentialWorkspaceCompatibility()) throw new Error("workspace essential tables are unavailable");
+    await withTimeout(ensureOrderHistoryConfig(), 4000, "order history cutover config");
+    // Existing workspaces can serve their saved plans as soon as the essential
+    // compatibility surface is confirmed. Slow additive schema checks continue
+    // below and retry without holding the entire app in a permanent 503 state.
+    serviceReady = true;
+    schemaReady = true;
+    lastDbProbeResult = true;
+    await withTimeout(ensureFabricWorkspaceSchema(), 8000, "Fabric Workspace schema");
+    await withTimeout(ensureStyleDevelopmentImageSchema(), 8000, "Style Development image schema");
+    console.log("Vivo workspace database ready");
+    // This queue is fire-and-forget so optional DDL/seed work cannot delay
+    // readiness, while its internal ordering prevents DDL lock deadlocks.
+    void runPostReadinessHousekeeping();
+    startBiSnapshotScheduler();
+  } catch (error) {
+    console.error("Unable to initialise workspace database", error);
+    if (!serviceReady) schemaReady = false;
+    startBiSnapshotScheduler();
+    console.warn(`${serviceReady ? "Vivo workspace is serving essential data while additive schema checks retry" : "Vivo workspace starting with essential compatibility unavailable"}; retrying in 15 seconds`);
+    if (!workspaceInitializationRetry) {
+      workspaceInitializationRetry = setTimeout(() => {
+        workspaceInitializationRetry = null;
+        void initialiseWorkspaceDatabase();
+      }, 15_000);
+      workspaceInitializationRetry.unref();
+    }
+  }
+}
+
 httpServer.listen(port, "0.0.0.0", () => {
   console.log(`Vivo workspace API listening on ${port}`);
   startBiSnapshotScheduler();
-  void (async () => {
-    try {
-      if (!await essentialWorkspaceCompatibility()) {
-        // A brand-new workspace has no compatibility surface yet. Bootstrap it
-        // once, but never make normal restarts wait for this broad initializer.
-        await withTimeout(ensureSchema(), 15000, "workspace schema bootstrap");
-      }
-      if (!await essentialWorkspaceCompatibility()) throw new Error("workspace essential tables are unavailable");
-      await withTimeout(ensureOrderHistoryConfig(), 4000, "order history cutover config");
-      await withTimeout(ensureFabricWorkspaceSchema(), 8000, "Fabric Workspace schema");
-      await withTimeout(ensureStyleDevelopmentImageSchema(), 8000, "Style Development image schema");
-      serviceReady = true;
-      schemaReady = true;
-      lastDbProbeResult = true;
-      console.log("Vivo workspace database ready");
-      // This queue is fire-and-forget so optional DDL/seed work cannot delay
-      // readiness, while its internal ordering prevents DDL lock deadlocks.
-      void runPostReadinessHousekeeping();
-      startBiSnapshotScheduler();
-    } catch (error) {
-      console.error("Unable to initialise workspace database", error);
-      schemaReady = false;
-      startBiSnapshotScheduler();
-      console.warn("Vivo workspace starting with essential compatibility unavailable");
-    }
-  })();
+  void initialiseWorkspaceDatabase();
 });
 
 process.on("SIGTERM", () => {

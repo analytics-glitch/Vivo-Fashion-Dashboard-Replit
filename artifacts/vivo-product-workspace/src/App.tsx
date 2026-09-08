@@ -294,7 +294,7 @@ function EmptyState({ title, text, action }: { title: string; text: string; acti
 function Progress({ value = 0 }: { value?: number | null }) { const safe = Math.max(0, Math.min(100, Number(value) || 0)); return <div className="progress-track"><span style={{ width: `${safe}%` }} /></div>; }
 function StatusPill({ value }: { value: unknown }) { const label = fmt(value, 'In progress'); return <span className={`status-pill status-${label.toLowerCase().replaceAll(' ', '-')}`}><i />{label}</span>; }
 
-type FocusWeek = { isoYear: number; isoWeek: number; stylesCommitted: number; unitsCommitted: number; targetUnits: number; monthLabel: string; varianceUnits: number; status: string; newUnits: number; newnessTargetUnits: number; newnessVarianceUnits: number };
+type FocusWeek = { isoYear: number; isoWeek: number; stylesCommitted: number; unitsCommitted: number; targetUnits: number; targetSource: 'entered' | 'derived'; monthLabel: string; varianceUnits: number; status: string; newUnits: number; newnessTargetUnits: number; newnessTargetPct: number; newnessVarianceUnits: number };
 type FocusMonth = { label: string; units: number; targetUnits: number; varianceUnits: number; newUnits: number; newnessTargetUnits: number; newnessVarianceUnits: number };
 type FocusNewness = { newUnits: number; totalUnits: number; capacityUnits: number; pct: number; targetUnits: number; targetPctOfCapacity: number; plannedNewStyles: number; impliedStyles: number; shortfallUnits: number; shortfallStyles: number; meetsTarget: boolean; monthLabel: string; explanation: string };
 type FocusGap = { subCategory: string; plannedNewStyles: number; availableNewStyles: number; balance: number; status: string };
@@ -369,7 +369,7 @@ function Dashboard() {
               </h3>
               <div className="dash-tile-main">
                 <span className="dash-tile-value">{Math.round(focus.week.unitsCommitted).toLocaleString()} / {Math.round(focus.week.targetUnits).toLocaleString()}</span>
-                <span className="dash-tile-sub">units planned / weekly target · {focus.week.stylesCommitted} styles</span>
+                <span className="dash-tile-sub">units planned / saved factory target · {focus.week.stylesCommitted} styles</span>
               </div>
               <div className={`dash-tile-status ${focus.week.varianceUnits < 0 ? 'danger' : 'success'}`}>
                 {focus.week.varianceUnits < 0 ? <CircleAlert size={14} /> : <Check size={14} />}
@@ -386,7 +386,7 @@ function Dashboard() {
               </h3>
               <div className="dash-tile-main">
                 <span className="dash-tile-value">{Math.round(focus.week.newUnits).toLocaleString()} / {Math.round(focus.week.newnessTargetUnits).toLocaleString()}</span>
-                <span className="dash-tile-sub">new units planned / weekly newness target</span>
+                <span className="dash-tile-sub">new units planned / {apiDecimal(focus.week.newnessTargetPct, 0, '%')} weekly newness target</span>
               </div>
               <div className={`dash-tile-status ${focus.week.newnessVarianceUnits < 0 ? 'danger' : 'success'}`}>
                 {focus.week.newnessVarianceUnits < 0 ? <CircleAlert size={14} /> : <Check size={14} />}
