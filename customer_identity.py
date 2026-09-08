@@ -4,6 +4,7 @@ The identity contract is deliberately small: a real record can only be linked
 by the same normalised phone.  Email and names are descriptive fields, never
 matching keys.  A source record is always ``system:store:customer_id``.
 """
+
 import argparse
 import json
 import os
@@ -15,7 +16,10 @@ from datetime import datetime, timezone
 import psycopg2
 from psycopg2.extras import execute_values
 
-PSEUDO = re.compile(r"walk.?in|dormant|newsletter|subscriber|jumia|wholesale|\binfo\b|sample|test|demo|staff|anonymous|\bguest\b|collection|counter|reception", re.I)
+PSEUDO = re.compile(
+    r"walk.?in|dormant|newsletter|subscriber|jumia|wholesale|\binfo\b|sample|test|demo|staff|anonymous|\bguest\b|collection|counter|reception",
+    re.I,
+)
 DEFAULT_EXPECTED_SOURCES = (
     "odoo:vivofashiongroup",
     "shopify:vivowoman",
@@ -26,21 +30,27 @@ DEFAULT_EXPECTED_SOURCES = (
 
 
 def _column_exists(cur, table, column):
-    cur.execute("""SELECT EXISTS (
+    cur.execute(
+        """SELECT EXISTS (
         SELECT 1 FROM information_schema.columns
         WHERE table_schema='public' AND table_name=%s AND column_name=%s
-    )""", (table, column))
+    )""",
+        (table, column),
+    )
     return bool(cur.fetchone()[0])
 
 
 def _constraint_exists(cur, table, constraint):
-    cur.execute("""SELECT EXISTS (
+    cur.execute(
+        """SELECT EXISTS (
         SELECT 1
         FROM pg_constraint c
         JOIN pg_class t ON t.oid=c.conrelid
         JOIN pg_namespace n ON n.oid=t.relnamespace
         WHERE n.nspname='public' AND t.relname=%s AND c.conname=%s
-    )""", (table, constraint))
+    )""",
+        (table, constraint),
+    )
     return bool(cur.fetchone()[0])
 
 
@@ -63,9 +73,16 @@ def normal_name(value):
 
 
 def pseudo(name, email):
-    return bool((name and PSEUDO.search(name)) or
-                (email and (email.lower().endswith("@vivofashiongroup.com") or
-                            email.lower().endswith("@vivoactivewear.com"))))
+    return bool(
+        (name and PSEUDO.search(name))
+        or (
+            email
+            and (
+                email.lower().endswith("@vivofashiongroup.com")
+                or email.lower().endswith("@vivoactivewear.com")
+            )
+        )
+    )
 
 
 def ensure_schema(cur):
@@ -117,7 +134,9 @@ def ensure_schema(cur):
     if not _column_exists(cur, "customer_identity_override", "source_key"):
         cur.execute("ALTER TABLE customer_identity_override ADD COLUMN source_key TEXT")
     if not _column_exists(cur, "customer_identity_override", "updated_at"):
-        cur.execute("ALTER TABLE customer_identity_override ADD COLUMN updated_at TIMESTAMPTZ")
+        cur.execute(
+            "ALTER TABLE customer_identity_override ADD COLUMN updated_at TIMESTAMPTZ"
+        )
     cur.execute("""UPDATE customer_identity_override
                    SET source_key=source_system || ':' ||
                      CASE WHEN source_system='odoo' THEN 'vivofashiongroup'
@@ -127,15 +146,21 @@ def ensure_schema(cur):
     # The legacy (system,bare ID) key collides across Shopify stores. Keep
     # unmigrated store-less rows inert for audit/history, while all actionable
     # overrides are uniquely keyed by their fully qualified source key.
-    if _constraint_exists(cur, "customer_identity_override", "customer_identity_override_pkey"):
-        cur.execute("ALTER TABLE customer_identity_override DROP CONSTRAINT customer_identity_override_pkey")
+    if _constraint_exists(
+        cur, "customer_identity_override", "customer_identity_override_pkey"
+    ):
+        cur.execute(
+            "ALTER TABLE customer_identity_override DROP CONSTRAINT customer_identity_override_pkey"
+        )
     if not _index_exists(cur, "customer_identity_override_source_key_uq"):
         cur.execute("""CREATE UNIQUE INDEX customer_identity_override_source_key_uq
                        ON customer_identity_override(source_key) WHERE source_key IS NOT NULL""")
     if not _column_exists(cur, "customer_identity_review", "source_key"):
         cur.execute("ALTER TABLE customer_identity_review ADD COLUMN source_key TEXT")
     if not _index_exists(cur, "customer_identity_review_source_phone_uq"):
-        cur.execute("CREATE UNIQUE INDEX customer_identity_review_source_phone_uq ON customer_identity_review(source_key,match_key,key_type)")
+        cur.execute(
+            "CREATE UNIQUE INDEX customer_identity_review_source_phone_uq ON customer_identity_review(source_key,match_key,key_type)"
+        )
     if not _column_exists(cur, "customer_identity", "source_key"):
         cur.execute("ALTER TABLE customer_identity ADD COLUMN source_key TEXT")
     cur.execute("""UPDATE customer_identity SET source_key=source_system || ':' || COALESCE(store_id,'') || ':' || source_customer_id
@@ -144,9 +169,13 @@ def ensure_schema(cur):
     # per-store namespaces. A unique source_key is the durable compatibility
     # constraint (we intentionally do not DROP tables, grants or review data).
     if _constraint_exists(cur, "customer_identity", "customer_identity_pkey"):
-        cur.execute("ALTER TABLE customer_identity DROP CONSTRAINT customer_identity_pkey")
+        cur.execute(
+            "ALTER TABLE customer_identity DROP CONSTRAINT customer_identity_pkey"
+        )
     if not _index_exists(cur, "customer_identity_source_key_uq"):
-        cur.execute("CREATE UNIQUE INDEX customer_identity_source_key_uq ON customer_identity(source_key)")
+        cur.execute(
+            "CREATE UNIQUE INDEX customer_identity_source_key_uq ON customer_identity(source_key)"
+        )
     # Every reader resolves a ledger customer through this *store-qualified*
     # pair.  A bare Shopify id is not a customer key, and a sequential scan here
     # makes the otherwise small identity map an expensive part of BI queries.
@@ -171,7 +200,9 @@ def ensure_schema(cur):
 
 
 def _new_person(cur):
-    cur.execute("INSERT INTO customer_person_registry DEFAULT VALUES RETURNING person_id")
+    cur.execute(
+        "INSERT INTO customer_person_registry DEFAULT VALUES RETURNING person_id"
+    )
     return cur.fetchone()[0]
 
 
@@ -182,9 +213,19 @@ def read_nodes(cur):
     for cid, store, first, last, email, phone in cur.fetchall():
         system = source_system(store)
         display = ("%s %s" % (first or "", last or "")).strip()
-        nodes.append(dict(key=source_key(system, store, cid), system=system, store=store,
-                          customer_id=str(cid), display=display, email=email, phone=phone,
-                          name=normal_name(display), pseudo=pseudo(display, email)))
+        nodes.append(
+            dict(
+                key=source_key(system, store, cid),
+                system=system,
+                store=store,
+                customer_id=str(cid),
+                display=display,
+                email=email,
+                phone=phone,
+                name=normal_name(display),
+                pseudo=pseudo(display, email),
+            )
+        )
     return nodes
 
 
@@ -206,38 +247,75 @@ def resolve(cur, nodes):
         if len({n["name"] for n in group if n["name"]}) > 1:
             ambiguous.update(n["key"] for n in group)
             for n in group:
-                cur.execute("""INSERT INTO customer_identity_review(source_key,match_key,key_type,source_ids,names)
+                cur.execute(
+                    """INSERT INTO customer_identity_review(source_key,match_key,key_type,source_ids,names)
                     VALUES (%s,%s,'phone_ambiguous',%s,%s) ON CONFLICT (source_key,match_key,key_type)
                     DO UPDATE SET source_ids=EXCLUDED.source_ids,names=EXCLUDED.names""",
-                    (n["key"], phone, [x["key"] for x in group], sorted({x["display"] for x in group if x["display"]})))
+                    (
+                        n["key"],
+                        phone,
+                        [x["key"] for x in group],
+                        sorted({x["display"] for x in group if x["display"]}),
+                    ),
+                )
     # Establish a registry ID for every source before merges. This makes removed
     # records and contact changes stable indefinitely.
     for n in sorted(nodes, key=lambda x: x["key"]):
         if n["key"] not in known:
             known[n["key"]] = _new_person(cur)
-            cur.execute("INSERT INTO customer_identity_registry(source_key,person_id) VALUES (%s,%s)", (n["key"], known[n["key"]]))
+            cur.execute(
+                "INSERT INTO customer_identity_registry(source_key,person_id) VALUES (%s,%s)",
+                (n["key"], known[n["key"]]),
+            )
     for phone, group in phone_groups.items():
-        eligible = [n for n in group if n["key"] not in ambiguous and n["key"] not in overrides]
+        eligible = [
+            n for n in group if n["key"] not in ambiguous and n["key"] not in overrides
+        ]
         if len(eligible) > 1:
             winner = min(known[n["key"]] for n in eligible)
             for n in eligible:
                 known[n["key"]] = winner
-                cur.execute("UPDATE customer_identity_registry SET person_id=%s,last_seen_at=now() WHERE source_key=%s", (winner, n["key"]))
+                cur.execute(
+                    "UPDATE customer_identity_registry SET person_id=%s,last_seen_at=now() WHERE source_key=%s",
+                    (winner, n["key"]),
+                )
     out = []
     for n in nodes:
-        method = "pseudo" if n["pseudo"] else ("ambiguous_phone" if n["key"] in ambiguous else "phone")
+        method = (
+            "pseudo"
+            if n["pseudo"]
+            else ("ambiguous_phone" if n["key"] in ambiguous else "phone")
+        )
         pid = known[n["key"]]
         if n["key"] in overrides:
             pid, reason, actor = overrides[n["key"]]
             method = "override"
-            cur.execute("""INSERT INTO customer_identity_override_audit(source_key,force_person_id,reason,created_by)
+            cur.execute(
+                """INSERT INTO customer_identity_override_audit(source_key,force_person_id,reason,created_by)
               SELECT %s,%s,%s,%s WHERE NOT EXISTS (
                 SELECT 1 FROM customer_identity_override_audit
                 WHERE source_key=%s AND force_person_id=%s AND reason IS NOT DISTINCT FROM %s
                   AND created_by IS NOT DISTINCT FROM %s)""",
-                        (n["key"], pid, reason, actor, n["key"], pid, reason, actor))
-        out.append((pid, n["key"], n["system"], n["customer_id"], n["store"], n["display"], n["email"], n["phone"], n["name"], method))
-        cur.execute("UPDATE customer_identity_registry SET last_seen_at=now() WHERE source_key=%s", (n["key"],))
+                (n["key"], pid, reason, actor, n["key"], pid, reason, actor),
+            )
+        out.append(
+            (
+                pid,
+                n["key"],
+                n["system"],
+                n["customer_id"],
+                n["store"],
+                n["display"],
+                n["email"],
+                n["phone"],
+                n["name"],
+                method,
+            )
+        )
+        cur.execute(
+            "UPDATE customer_identity_registry SET last_seen_at=now() WHERE source_key=%s",
+            (n["key"],),
+        )
     return out
 
 
@@ -258,14 +336,26 @@ def _publish(
 ):
     cur = conn.cursor()
     ensure_schema(cur)
-    cur.execute("INSERT INTO customer_identity_publish_lock(lock_name) VALUES ('canonical') ON CONFLICT DO NOTHING")
-    cur.execute("SELECT lock_name FROM customer_identity_publish_lock WHERE lock_name='canonical' FOR UPDATE")
+    cur.execute(
+        "INSERT INTO customer_identity_publish_lock(lock_name) VALUES ('canonical') ON CONFLICT DO NOTHING"
+    )
+    cur.execute(
+        "SELECT lock_name FROM customer_identity_publish_lock WHERE lock_name='canonical' FOR UPDATE"
+    )
     nodes = read_nodes(cur)
     if len(nodes) < minimum_rows:
-        raise ValueError("refusing incomplete customer snapshot: %d rows (< %d)" % (len(nodes), minimum_rows))
-    tolerance = float(os.getenv("IDENTITY_SOURCE_REGRESSION_TOLERANCE", "0.20") if regression_tolerance is None else regression_tolerance)
+        raise ValueError(
+            "refusing incomplete customer snapshot: %d rows (< %d)"
+            % (len(nodes), minimum_rows)
+        )
+    tolerance = float(
+        os.getenv("IDENTITY_SOURCE_REGRESSION_TOLERANCE", "0.20")
+        if regression_tolerance is None
+        else regression_tolerance
+    )
     current_sources = defaultdict(int)
-    for n in nodes: current_sources[(n["system"], n["store"])] += 1
+    for n in nodes:
+        current_sources[(n["system"], n["store"])] += 1
     current_source_names = {"%s:%s" % key for key in current_sources}
     missing_sources = expected_sources(required_sources) - current_source_names
     if missing_sources:
@@ -273,32 +363,90 @@ def _publish(
             "refusing incomplete customer snapshot; missing required sources: %s"
             % ",".join(sorted(missing_sources))
         )
-    cur.execute("SELECT source_system,store_id,source_rows FROM customer_identity_publish_source")
+    # ── Skip rebuild when the source is unchanged ────────────────────────────
+    # The rebuild below holds a transaction lock over customer_identity that
+    # blocks customer reads; running it every sync cycle even when nothing
+    # changed gridlocked the DB. Fingerprint the resolution-relevant source
+    # fields; if unchanged since the last ready publish, skip the whole rebuild.
+    import hashlib as _hashlib
+
+    _src_sig = "\n".join(
+        sorted(
+            "%s\x1f%s\x1f%s\x1f%s\x1f%d"
+            % (
+                n["key"],
+                (n["email"] or ""),
+                (n["phone"] or ""),
+                (n["name"] or ""),
+                1 if n["pseudo"] else 0,
+            )
+            for n in nodes
+        )
+    )
+    _src_fp = _hashlib.md5(_src_sig.encode()).hexdigest()
+    cur.execute(
+        "SELECT source_fingerprint FROM customer_identity_publish "
+        "WHERE singleton AND status='ready'"
+    )
+    _prev = cur.fetchone()
+    if _prev and _prev[0] == _src_fp and not os.getenv("IDENTITY_FORCE_PUBLISH"):
+        cur.execute(
+            "UPDATE customer_identity_publish SET published_at=now() "
+            "WHERE singleton AND status='ready'"
+        )
+        conn.commit()
+        return {
+            "skipped": "source unchanged",
+            "nodes": len(nodes),
+            "fingerprint": _src_fp,
+        }
+    cur.execute(
+        "SELECT source_system,store_id,source_rows FROM customer_identity_publish_source"
+    )
     for system, store, prior in cur.fetchall():
         actual = current_sources.get((system, store), 0)
         if prior and actual < prior * (1 - tolerance):
-            raise ValueError("refusing incomplete source snapshot %s/%s: %s < %s (tolerance %.2f)" %
-                             (system, store, actual, prior, tolerance))
+            raise ValueError(
+                "refusing incomplete source snapshot %s/%s: %s < %s (tolerance %.2f)"
+                % (system, store, actual, prior, tolerance)
+            )
     rows = resolve(cur, nodes)
     # Upsert/delete live tables in this one transaction. No DROP/rename means
     # grants, constraints and audit/review state survive and readers see old/new.
-    execute_values(cur, """INSERT INTO customer_identity
+    execute_values(
+        cur,
+        """INSERT INTO customer_identity
       (person_id,source_key,source_system,source_customer_id,store_id,display_name,email_n,phone9,name_n,match_method)
       VALUES %s ON CONFLICT (source_key) DO UPDATE SET person_id=EXCLUDED.person_id,display_name=EXCLUDED.display_name,
-      email_n=EXCLUDED.email_n,phone9=EXCLUDED.phone9,name_n=EXCLUDED.name_n,match_method=EXCLUDED.match_method,built_at=now()""", rows)
-    cur.execute("DELETE FROM customer_identity WHERE source_key IS NOT NULL AND NOT (source_key = ANY(%s))", ([r[1] for r in rows],))
+      email_n=EXCLUDED.email_n,phone9=EXCLUDED.phone9,name_n=EXCLUDED.name_n,match_method=EXCLUDED.match_method,built_at=now()""",
+        rows,
+    )
+    cur.execute(
+        "DELETE FROM customer_identity WHERE source_key IS NOT NULL AND NOT (source_key = ANY(%s))",
+        ([r[1] for r in rows],),
+    )
     build_people(cur)
-    execute_values(cur, """INSERT INTO customer_identity_publish_source(source_system,store_id,source_rows,published_at)
+    execute_values(
+        cur,
+        """INSERT INTO customer_identity_publish_source(source_system,store_id,source_rows,published_at)
       VALUES %s ON CONFLICT(source_system,store_id) DO UPDATE SET source_rows=EXCLUDED.source_rows,published_at=EXCLUDED.published_at""",
-      [(a, b, c, datetime.now(timezone.utc)) for (a,b),c in current_sources.items()])
-    cur.execute("""INSERT INTO customer_identity_publish(singleton,published_at,source_rows,source_fingerprint,status,error)
-      VALUES(true,now(),%s,md5(%s),'ready',NULL) ON CONFLICT(singleton) DO UPDATE SET
+        [
+            (a, b, c, datetime.now(timezone.utc))
+            for (a, b), c in current_sources.items()
+        ],
+    )
+    cur.execute(
+        """INSERT INTO customer_identity_publish(singleton,published_at,source_rows,source_fingerprint,status,error)
+      VALUES(true,now(),%s,%s,'ready',NULL) ON CONFLICT(singleton) DO UPDATE SET
       published_at=EXCLUDED.published_at,source_rows=EXCLUDED.source_rows,source_fingerprint=EXCLUDED.source_fingerprint,status='ready',error=NULL,last_error=NULL""",
-      (len(rows), "|".join(sorted(r[1] for r in rows))))
+        (len(rows), _src_fp),
+    )
     report = reconciliation(cur)
     threshold = float(os.getenv("IDENTITY_UNMATCHED_SALES_THRESHOLD", "0"))
     if report["unmatched_sales_lines"] > threshold or not report["ready"]:
-        raise ValueError("identity readiness failed: %s" % json.dumps(report, sort_keys=True))
+        raise ValueError(
+            "identity readiness failed: %s" % json.dumps(report, sort_keys=True)
+        )
     # Reconciliation is part of the publication transaction.  Committing before
     # this gate would expose an unready identity/people snapshot even though the
     # caller receives a failure.
@@ -325,9 +473,12 @@ def publish(
         try:
             cur = conn.cursor()
             ensure_schema(cur)
-            cur.execute("""INSERT INTO customer_identity_publish(singleton,status,last_error)
+            cur.execute(
+                """INSERT INTO customer_identity_publish(singleton,status,last_error)
               VALUES(true,'never',%s) ON CONFLICT(singleton)
-              DO UPDATE SET last_error=EXCLUDED.last_error""", (str(exc),))
+              DO UPDATE SET last_error=EXCLUDED.last_error""",
+                (str(exc),),
+            )
             conn.commit()
         except Exception:
             conn.rollback()
@@ -361,14 +512,19 @@ def build_people(cur):
       name=EXCLUDED.name,email=EXCLUDED.email,phone=EXCLUDED.phone,source_records=EXCLUDED.source_records,systems=EXCLUDED.systems,
       is_pseudo=EXCLUDED.is_pseudo,total_orders=EXCLUDED.total_orders,total_spend_kes=EXCLUDED.total_spend_kes,
       first_purchase=EXCLUDED.first_purchase,last_purchase=EXCLUDED.last_purchase,customer_type=EXCLUDED.customer_type,built_at=EXCLUDED.built_at""")
-    cur.execute("DELETE FROM customer_people WHERE person_id NOT IN (SELECT person_id FROM _cp)")
+    cur.execute(
+        "DELETE FROM customer_people WHERE person_id NOT IN (SELECT person_id FROM _cp)"
+    )
 
 
 def reconciliation(cur):
     cur.execute("""SELECT source_system,store_id,count(*),count(DISTINCT person_id),
       count(*) FILTER (WHERE match_method='pseudo'),count(*) FILTER (WHERE match_method='ambiguous_phone')
       FROM customer_identity GROUP BY source_system,store_id ORDER BY 1,2""")
-    data = [dict(system=a, store=b, source_records=c, people=d, pseudo=e, ambiguous=f) for a,b,c,d,e,f in cur.fetchall()]
+    data = [
+        dict(system=a, store=b, source_records=c, people=d, pseudo=e, ambiguous=f)
+        for a, b, c, d, e, f in cur.fetchall()
+    ]
     # A left join to a source-qualified identity is intentionally the only
     # resolution path. Rows that cannot be attributed are reported, never
     # guessed from bare customer_id (which collides across Shopify stores).
@@ -379,23 +535,49 @@ def reconciliation(cur):
       FROM all_sales s LEFT JOIN customer_identity ci
         ON ci.source_customer_id=s.customer_id::text AND ci.store_id=s.store_id
       WHERE s.sale_kind IN ('sale','order') GROUP BY 1,2""")
-    sales = {(a,b): dict(sales_orders=c, sales_spend=float(d), unmatched_sales=e,
-                         ambiguous_sales=f) for a,b,c,d,e,f in cur.fetchall()}
+    sales = {
+        (a, b): dict(
+            sales_orders=c, sales_spend=float(d), unmatched_sales=e, ambiguous_sales=f
+        )
+        for a, b, c, d, e, f in cur.fetchall()
+    }
     for (system, store), values in sales.items():
         if not any(x["system"] == system and x["store"] == store for x in data):
-            data.append(dict(system=system, store=store, source_records=0, people=0,
-                             pseudo=0, ambiguous=0, **values))
+            data.append(
+                dict(
+                    system=system,
+                    store=store,
+                    source_records=0,
+                    people=0,
+                    pseudo=0,
+                    ambiguous=0,
+                    **values,
+                )
+            )
     for item in data:
-        item.update(sales.get((item["system"], item["store"]),
-                              dict(sales_orders=0, sales_spend=0, unmatched_sales=0, ambiguous_sales=0)))
-    totals = dict(sales_orders=sum(x["sales_orders"] for x in data),
-                  sales_spend=sum(x["sales_spend"] for x in data),
-                  unmatched_sales_lines=sum(x["unmatched_sales"] for x in data),
-                  ambiguous_sales_lines=sum(x["ambiguous_sales"] for x in data),
-                  people=sum(x["people"] for x in data), pseudo=sum(x["pseudo"] for x in data))
-    return {"generated_at": datetime.now(timezone.utc).isoformat(), "markets": data, "totals": totals,
-            "unmatched_sales_lines": totals["unmatched_sales_lines"],
-            "ready": bool(data) and not any(x["ambiguous_sales"] for x in data)}
+        item.update(
+            sales.get(
+                (item["system"], item["store"]),
+                dict(
+                    sales_orders=0, sales_spend=0, unmatched_sales=0, ambiguous_sales=0
+                ),
+            )
+        )
+    totals = dict(
+        sales_orders=sum(x["sales_orders"] for x in data),
+        sales_spend=sum(x["sales_spend"] for x in data),
+        unmatched_sales_lines=sum(x["unmatched_sales"] for x in data),
+        ambiguous_sales_lines=sum(x["ambiguous_sales"] for x in data),
+        people=sum(x["people"] for x in data),
+        pseudo=sum(x["pseudo"] for x in data),
+    )
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(),
+        "markets": data,
+        "totals": totals,
+        "unmatched_sales_lines": totals["unmatched_sales_lines"],
+        "ready": bool(data) and not any(x["ambiguous_sales"] for x in data),
+    }
 
 
 def diagnostics(cur):
@@ -433,38 +615,47 @@ def diagnostics(cur):
     has_built_at = cur.fetchone()[0]
     cur.execute(
         "SELECT max(built_at), count(*) FROM customer_people"
-        if has_built_at else
-        "SELECT NULL::timestamptz, count(*) FROM customer_people"
+        if has_built_at
+        else "SELECT NULL::timestamptz, count(*) FROM customer_people"
     )
     people_built_at, people_count = cur.fetchone()
     report = reconciliation(cur)
-    publish.update({
-        "people_built_at": people_built_at.isoformat() if people_built_at else None,
-        "people_count": people_count,
-        "reconciliation": report,
-        "fresh": publish["status"] == "ready"
-                 and publish["published_at"] is not None
-                 and people_built_at is not None
-                 and report["ready"],
-    })
+    publish.update(
+        {
+            "people_built_at": people_built_at.isoformat() if people_built_at else None,
+            "people_count": people_count,
+            "reconciliation": report,
+            "fresh": publish["status"] == "ready"
+            and publish["published_at"] is not None
+            and people_built_at is not None
+            and report["ready"],
+        }
+    )
     return publish
 
 
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--reconcile", action="store_true")
-    ap.add_argument("--minimum-rows", type=int, default=int(os.getenv("IDENTITY_MIN_ROWS", "1")))
+    ap.add_argument(
+        "--minimum-rows", type=int, default=int(os.getenv("IDENTITY_MIN_ROWS", "1"))
+    )
     ap.add_argument(
         "--expected-sources",
         default=os.getenv("IDENTITY_EXPECTED_SOURCES"),
         help="comma-separated system:store sources; defaults to all production customer sources",
     )
     args = ap.parse_args(argv)
-    conn = psycopg2.connect(os.getenv("VIVO_DATABASE_URL") or os.environ["DATABASE_URL"])
+    conn = psycopg2.connect(
+        os.getenv("VIVO_DATABASE_URL") or os.environ["DATABASE_URL"]
+    )
     try:
         if args.reconcile:
-            cur = conn.cursor(); ensure_schema(cur); conn.commit()
-            report = reconciliation(cur); print(json.dumps(report, sort_keys=True))
+            cur = conn.cursor()
+            ensure_schema(cur)
+            conn.commit()
+            report = reconciliation(cur)
+            print(json.dumps(report, sort_keys=True))
             return 0 if report["ready"] else 2
         print(
             json.dumps(
@@ -482,14 +673,21 @@ def main(argv=None):
         # Failure metadata is deliberately a separate short transaction, so
         # last-known-good identity/people rows are never replaced.
         try:
-            cur = conn.cursor(); ensure_schema(cur)
-            cur.execute("""INSERT INTO customer_identity_publish(singleton,status,last_error)
-              VALUES(true,'never',%s) ON CONFLICT(singleton) DO UPDATE SET last_error=EXCLUDED.last_error""", (str(exc),))
+            cur = conn.cursor()
+            ensure_schema(cur)
+            cur.execute(
+                """INSERT INTO customer_identity_publish(singleton,status,last_error)
+              VALUES(true,'never',%s) ON CONFLICT(singleton) DO UPDATE SET last_error=EXCLUDED.last_error""",
+                (str(exc),),
+            )
             conn.commit()
         except Exception:
             conn.rollback()
-        print("identity publish failed: %s" % exc, file=sys.stderr); return 1
-    finally: conn.close()
+        print("identity publish failed: %s" % exc, file=sys.stderr)
+        return 1
+    finally:
+        conn.close()
+
 
 if __name__ == "__main__":
     sys.exit(main())
