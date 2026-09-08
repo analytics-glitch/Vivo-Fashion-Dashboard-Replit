@@ -520,8 +520,31 @@ def _fabric_value_from(record, field_names, numeric=False):
 def extract_products(uid, models, cur, now, since=None):
     log.info("Extracting fabric products with attributes...")
     
-    # First ensure table has new columns
+    # Do not queue an ACCESS EXCLUSIVE ALTER on every incremental extract.
+    # A waiting ALTER blocks later readers behind it and can freeze every app
+    # that reads fabric products. Only attempt DDL when a column is genuinely
+    # missing, and fail quickly rather than creating a lock convoy.
+    required_columns = {
+        "derived_color", "fabric_color", "kg_per_mtr", "width_m", "gsm",
+        "plain_print", "fabric_structure", "fabric_category",
+        "fabric_subcategory", "stretch_type", "weight_range",
+        "fiber_content", "fabric_type", "supplier",
+        "supplier_fabric_code", "primary_color", "source_city",
+        "source_country", "fabric_name", "fabric_supplier_name",
+        "odoo_fabric_color", "noos_fabric", "write_date",
+        "kg_per_mtr_eff", "kg_per_mtr_src",
+    }
     cur.execute("""
+        SELECT attname
+        FROM pg_attribute
+        WHERE attrelid = 'raw_fabric_products'::regclass
+          AND attnum > 0
+          AND NOT attisdropped
+    """)
+    existing_columns = {row[0] for row in cur.fetchall()}
+    if not required_columns.issubset(existing_columns):
+        cur.execute("SET LOCAL lock_timeout = '2s'")
+        cur.execute("""
         ALTER TABLE raw_fabric_products
         ADD COLUMN IF NOT EXISTS derived_color TEXT,
         ADD COLUMN IF NOT EXISTS fabric_color TEXT;
@@ -547,7 +570,7 @@ def extract_products(uid, models, cur, now, since=None):
         ADD COLUMN IF NOT EXISTS odoo_fabric_color TEXT,
         ADD COLUMN IF NOT EXISTS noos_fabric BOOLEAN NOT NULL DEFAULT FALSE,
         ADD COLUMN IF NOT EXISTS write_date TIMESTAMP
-    """)
+        """)
 
     # Effective Kg/Mtr + source flag — code-defined derived columns (generated,
     # so they stay in lockstep with the stored attributes on every extract and
@@ -560,7 +583,9 @@ def extract_products(uid, models, cur, now, since=None):
     # NOT change an existing column's expression — on a DB where they already
     # exist with the old formula, migration 003 drops + re-adds them. This block
     # is what gives a FRESH DB the correct expression from the first extract.
-    cur.execute("""
+    if not {"kg_per_mtr_eff", "kg_per_mtr_src"}.issubset(existing_columns):
+        cur.execute("SET LOCAL lock_timeout = '2s'")
+        cur.execute("""
         ALTER TABLE raw_fabric_products
         ADD COLUMN IF NOT EXISTS kg_per_mtr_eff NUMERIC
           GENERATED ALWAYS AS (
@@ -577,7 +602,7 @@ def extract_products(uid, models, cur, now, since=None):
               ELSE 'incomplete'
             END
           ) STORED
-    """)
+        """)
 
     batch_size = 200
     offset = 0
@@ -855,15 +880,27 @@ def extract_inventory(uid, models, cur, now):
         offset += batch_size
         if len(records) < batch_size:
             break
-    cur.execute("TRUNCATE raw_fabric_inventory")
+    if not rows:
+        raise RuntimeError(
+            "Odoo returned no fabric inventory rows; refusing to prune the last good snapshot"
+        )
     execute_values(cur, """
         INSERT INTO raw_fabric_inventory
         (id,product_id,product_name,product_sku,location_id,location_name,
          quantity,reserved_qty,available,uom,standard_price,total_value,category,_loaded_at)
         VALUES %s ON CONFLICT (id) DO UPDATE SET
-            quantity=EXCLUDED.quantity, reserved_qty=EXCLUDED.reserved_qty,
-            available=EXCLUDED.available, total_value=EXCLUDED.total_value, _loaded_at=EXCLUDED._loaded_at
+            product_id=EXCLUDED.product_id, product_name=EXCLUDED.product_name,
+            product_sku=EXCLUDED.product_sku, location_id=EXCLUDED.location_id,
+            location_name=EXCLUDED.location_name, quantity=EXCLUDED.quantity,
+            reserved_qty=EXCLUDED.reserved_qty, available=EXCLUDED.available,
+            uom=EXCLUDED.uom, standard_price=EXCLUDED.standard_price,
+            total_value=EXCLUDED.total_value, category=EXCLUDED.category,
+            _loaded_at=EXCLUDED._loaded_at
     """, rows, page_size=500)
+    cur.execute(
+        "DELETE FROM raw_fabric_inventory WHERE NOT (id = ANY(%s))",
+        ([row[0] for row in rows],),
+    )
     log.info("✅ raw_fabric_inventory: %d rows", len(rows))
 
 def extract_boms(uid, models, cur, now):

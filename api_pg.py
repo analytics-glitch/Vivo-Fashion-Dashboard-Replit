@@ -172,7 +172,7 @@ _slow_queries = deque(maxlen=20)
 # and are kept permanently warm by the background pre-warmer below, so users
 # should never pay their 10-20s cold cost. Underlying data changes at the
 # sync-loop cadence, so 15 minutes of staleness is acceptable for these views.
-HEAVY_DASH_TTL = 900
+HEAVY_DASH_TTL = 3600
 HEAVY_DASH_WARM_INTERVAL = 600  # re-warm well before the TTL lapses
 
 
@@ -40837,17 +40837,38 @@ def _ensure_production_tables():
     # Richer buying-order header (added incrementally; idempotent so a fresh/prod
     # DB picks them up without the standalone migration file).
     _users_exec("""
-        ALTER TABLE production_orders
-            ADD COLUMN IF NOT EXISTS buyer                  TEXT,
-            ADD COLUMN IF NOT EXISTS style_name             TEXT,
-            ADD COLUMN IF NOT EXISTS expected_delivery_date DATE,
-            ADD COLUMN IF NOT EXISTS production_type        TEXT,
-            ADD COLUMN IF NOT EXISTS lifecycle_type         TEXT,
-            ADD COLUMN IF NOT EXISTS bo_state               TEXT,
-            ADD COLUMN IF NOT EXISTS notes_html             TEXT,
-            ADD COLUMN IF NOT EXISTS cost_price_kes         NUMERIC,
-            ADD COLUMN IF NOT EXISTS cost_date              DATE,
-            ADD COLUMN IF NOT EXISTS cost_source            TEXT""")
+        DO $$
+        BEGIN
+          IF EXISTS (
+            SELECT 1
+            FROM unnest(ARRAY[
+              'buyer','style_name','expected_delivery_date','production_type',
+              'lifecycle_type','bo_state','notes_html','cost_price_kes',
+              'cost_date','cost_source'
+            ]) AS required(column_name)
+            WHERE NOT EXISTS (
+              SELECT 1
+              FROM pg_attribute
+              WHERE attrelid='production_orders'::regclass
+                AND attname=required.column_name
+                AND attnum>0
+                AND NOT attisdropped
+            )
+          ) THEN
+            PERFORM set_config('lock_timeout','2s',true);
+            ALTER TABLE production_orders
+                ADD COLUMN IF NOT EXISTS buyer                  TEXT,
+                ADD COLUMN IF NOT EXISTS style_name             TEXT,
+                ADD COLUMN IF NOT EXISTS expected_delivery_date DATE,
+                ADD COLUMN IF NOT EXISTS production_type        TEXT,
+                ADD COLUMN IF NOT EXISTS lifecycle_type         TEXT,
+                ADD COLUMN IF NOT EXISTS bo_state               TEXT,
+                ADD COLUMN IF NOT EXISTS notes_html             TEXT,
+                ADD COLUMN IF NOT EXISTS cost_price_kes         NUMERIC,
+                ADD COLUMN IF NOT EXISTS cost_date              DATE,
+                ADD COLUMN IF NOT EXISTS cost_source            TEXT;
+          END IF;
+        END $$""")
     # Per-colour breakdown of each buying order (one row per BO line).
     _users_exec("""
         CREATE TABLE IF NOT EXISTS production_order_lines (
@@ -47974,11 +47995,12 @@ def _build_priority_drivers(proj, expected, rev_gap):
 
 
 @app.get("/api/store-profile/performance-report")
-def store_profile_performance_report(store: str = Query(...)):
-    """Comprehensive current-month performance report.
-    Returns MTD actuals, projected EOM, expected baseline (prior year Aug or 6m avg),
-    budget target, per-KPI analysis, and data-driven action plan.
-    """
+def store_profile_performance_report(
+    store: str = Query(...),
+    date_from: str = Query(default=None),
+    date_to: str = Query(default=None),
+):
+    """Store performance for an explicit analysis window (default: trailing 30 days)."""
     store_s = _sql_str(store)
     all_mode = _sp_all_stores(store)
     aggregate_mode = _sp_is_aggregate(store)
@@ -47987,19 +48009,35 @@ def store_profile_performance_report(store: str = Query(...)):
     sp_sales = _sp_scope_sql(store, "s.pos_location_name")
     sp_ff    = _sp_scope_sql(store, ff_canon_sql())
     sp_inv   = _sp_scope_sql(store, "i.pos_location_name", _SP_ALL_INV_PRED)
-    ck = (f"store_profile:perf_report:{store_s}:identity:"
+    today = date.today()
+    try:
+        period_end = date.fromisoformat(date_to) if date_to else today
+        period_start = date.fromisoformat(date_from) if date_from else period_end - timedelta(days=29)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=400, detail="date_from and date_to must be YYYY-MM-DD")
+    if period_start > period_end:
+        raise HTTPException(status_code=400, detail="date_from must be on or before date_to")
+    if period_end > today:
+        period_end = today
+    days_done = (period_end - period_start).days + 1
+    if days_done > 731:
+        raise HTTPException(status_code=400, detail="Store Scorecard date range cannot exceed 731 days")
+    is_mtd = period_start == period_end.replace(day=1) and period_end == today
+    ck = (f"store_profile:perf_report:{store_s}:{period_start}:{period_end}:identity:"
           + _customer_identity_snapshot_version())
     cv, cf = cache_get_swr(ck)
     if cv is not None:
         if not cf:
-            swr_refresh(ck, lambda: store_profile_performance_report(store=store), label="sp_perf_report")
+            swr_refresh(
+                ck,
+                lambda: store_profile_performance_report(
+                    store=store, date_from=str(period_start), date_to=str(period_end)),
+                label="sp_perf_report")
         return cv
 
-    today     = date.today()
-    cur_mstart = today.replace(day=1)
+    cur_mstart = period_end.replace(day=1)
     days_in_m = calendar.monthrange(today.year, today.month)[1]
-    days_done = today.day
-    days_rem  = days_in_m - days_done
+    days_rem  = days_in_m - today.day if is_mtd else 0
     vat       = "(CASE WHEN s.country IN ('Uganda','Rwanda') THEN 1.18 ELSE 1.16 END)"
 
     # 6-month trailing window (previous 6 complete months)
@@ -48008,11 +48046,18 @@ def store_profile_performance_report(store: str = Query(...)):
     for _ in range(6):
         six_start = (six_start - timedelta(days=1)).replace(day=1)
 
-    # Prior year same month
-    py_mstart = cur_mstart.replace(year=cur_mstart.year - 1)
-    py_mend   = py_mstart.replace(day=calendar.monthrange(py_mstart.year, py_mstart.month)[1])
+    # Prior-year comparison uses the exact same calendar window shifted back
+    # one year, rather than silently comparing a rolling period to a full month.
+    try:
+        py_mstart = period_start.replace(year=period_start.year - 1)
+    except ValueError:
+        py_mstart = period_start.replace(year=period_start.year - 1, day=28)
+    try:
+        py_mend = period_end.replace(year=period_end.year - 1)
+    except ValueError:
+        py_mend = period_end.replace(year=period_end.year - 1, day=28)
 
-    # Revenue target (All Stores = sum of every store's target, manual wins per store)
+    # Monthly revenue targets only apply to a genuine month-to-date window.
     selected_names = _sp_store_values(store)
     if all_mode:
         tgt_rows = run_query(
@@ -48041,11 +48086,14 @@ def store_profile_performance_report(store: str = Query(...)):
         )
         target_revenue = float(tgt_rows[0]["tgt"]) if tgt_rows else None
 
-    # ── Sales data: MTD + prior year same month + 6m trailing ─────────────────
+    if not is_mtd:
+        target_revenue = None
+
+    # ── Sales data: selected period + same period last year + 6m baseline ─────
     sales_rows = run_query(f"""
         SELECT
             CASE
-                WHEN s.sale_date::date >= '{cur_mstart}' THEN 'mtd'
+                WHEN s.sale_date::date BETWEEN '{period_start}' AND '{period_end}' THEN 'mtd'
                 WHEN s.sale_date::date >= '{py_mstart}'
                  AND s.sale_date::date <= '{py_mend}' THEN 'py_aug'
                 ELSE 'hist_' || to_char(date_trunc('month', s.sale_date::date), 'YYYY-MM')
@@ -48084,7 +48132,7 @@ def store_profile_performance_report(store: str = Query(...)):
          AND ci.store_id=s.store_id
         LEFT JOIN customer_people cp ON cp.person_id=ci.person_id
         WHERE (
-              (s.sale_date::date >= '{cur_mstart}' AND s.sale_date::date <= '{today}')
+              (s.sale_date::date >= '{period_start}' AND s.sale_date::date <= '{period_end}')
            OR (s.sale_date::date >= '{py_mstart}'  AND s.sale_date::date <= '{py_mend}')
            OR (s.sale_date::date >= '{six_start}'  AND s.sale_date::date <= '{six_end}')
         )
@@ -48098,7 +48146,7 @@ def store_profile_performance_report(store: str = Query(...)):
     ff_rows = run_query(f"""
         SELECT
             CASE
-                WHEN f.time::date >= '{cur_mstart}' THEN 'mtd'
+                WHEN f.time::date BETWEEN '{period_start}' AND '{period_end}' THEN 'mtd'
                 WHEN f.time::date >= '{py_mstart}'
                  AND f.time::date <= '{py_mend}' THEN 'py_aug'
                 ELSE 'hist_' || to_char(date_trunc('month', f.time::date), 'YYYY-MM')
@@ -48108,7 +48156,7 @@ def store_profile_performance_report(store: str = Query(...)):
             COUNT(*)                                         AS total_days
         FROM footfall f
         WHERE (
-              (f.time::date >= '{cur_mstart}' AND f.time::date <= '{today}')
+              (f.time::date >= '{period_start}' AND f.time::date <= '{period_end}')
            OR (f.time::date >= '{py_mstart}'  AND f.time::date <= '{py_mend}')
            OR (f.time::date >= '{six_start}'  AND f.time::date <= '{six_end}')
         )
@@ -48186,7 +48234,7 @@ def store_profile_performance_report(store: str = Query(...)):
         }
 
     mtd        = _extract("mtd", days_in_period=days_done)
-    py_days    = calendar.monthrange(py_mstart.year, py_mstart.month)[1]
+    py_days    = (py_mend - py_mstart).days + 1
     prior_year = _extract("py_aug", days_in_period=py_days) if "py_aug" in sales_by_p else None
 
     # 6-month averages
@@ -48211,14 +48259,15 @@ def store_profile_performance_report(store: str = Query(...)):
     # Expected baseline: prior year if it has revenue data, else hist avg
     py_has_data = prior_year and (prior_year.get("revenue") or 0) > 0
     expected    = prior_year  if py_has_data else hist_avg
-    exp_source  = "Aug " + str(py_mstart.year) + " Actual" if py_has_data else "6-Month Average"
+    exp_source  = f"Same period {py_mstart.year} actual" if py_has_data else "6-Month Average"
 
-    # Projected EOM (linear extrapolation for VOLUME KPIs only)
+    # Only MTD is projected to month-end. Other windows are complete analyses,
+    # so their period result is carried through unchanged.
     proj = {}
     for k in KPI_KEYS:
         v = mtd.get(k)
         if v is not None and days_done > 0:
-            proj[k] = round(v / days_done * days_in_m)
+            proj[k] = round(v / days_done * days_in_m) if is_mtd else v
         else:
             proj[k] = None
     # Rate/percentage KPIs are averages — never day-prorated. Carry the MTD rate,
@@ -48500,6 +48549,13 @@ def store_profile_performance_report(store: str = Query(...)):
 
     out = {
         "store": store,
+        "period": {"from": str(period_start), "to": str(period_end), "days": days_done},
+        "period_label": (
+            period_start.strftime("%d %b %Y")
+            if period_start == period_end else
+            f"{period_start.strftime('%d %b %Y')} – {period_end.strftime('%d %b %Y')}"
+        ),
+        "is_mtd": is_mtd,
         "month": str(cur_mstart),
         "month_label": today.strftime("%B %Y"),
         "days_done": days_done,

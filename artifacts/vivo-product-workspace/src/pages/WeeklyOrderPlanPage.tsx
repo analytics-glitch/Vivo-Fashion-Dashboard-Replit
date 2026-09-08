@@ -100,6 +100,15 @@ const formatWeekRange = (week: PlanPayload['week'] | undefined) => {
   return `${formatDate(week.startDate, !sameYear)} to ${formatDate(week.endDate, true)}`;
 };
 
+let weeklyPlanRefreshTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleWeeklyPlanRefresh(client: ReturnType<typeof useQueryClient>, year: number, week: number) {
+  if (weeklyPlanRefreshTimer) clearTimeout(weeklyPlanRefreshTimer);
+  weeklyPlanRefreshTimer = setTimeout(() => {
+    weeklyPlanRefreshTimer = null;
+    client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] });
+  }, 1_200);
+}
+
 function StyleImage({ style }: { style: Pick<SourceStyle, 'imageUrl' | 'styleName'> }) {
   return <div className="weekly-style-image">{style.imageUrl ? <img src={style.imageUrl} alt="" /> : <ImageIcon size={20} />}</div>;
 }
@@ -217,7 +226,7 @@ function EditableLine({ line, locked, year, week, startDate, endDate }: { line: 
         colourwayAllocations: override.colourwayAllocations ?? colourwayAllocations,
       }),
     }),
-    onSuccess: () => client.invalidateQueries({ queryKey: ['weekly-order-plan', year, week] }),
+    onSuccess: () => scheduleWeeklyPlanRefresh(client, year, week),
   });
   const remove = useMutation({
     mutationFn: () => jsonFetch(`/api/workspace/weekly-order-plan/lines/${line.id}`, { method: 'DELETE' }),

@@ -6549,6 +6549,25 @@ async function liveFabricStyleProjection(client: { query: (sql: string, values?:
   });
 }
 
+const LIVE_FABRIC_PROJECTION_TTL_MS = 30_000;
+let liveFabricProjectionCache: { value: Awaited<ReturnType<typeof liveFabricStyleProjection>>; expiresAt: number } | null = null;
+let liveFabricProjectionPromise: Promise<Awaited<ReturnType<typeof liveFabricStyleProjection>>> | null = null;
+async function cachedLiveFabricStyleProjection() {
+  if (liveFabricProjectionCache && liveFabricProjectionCache.expiresAt > Date.now()) {
+    return liveFabricProjectionCache.value;
+  }
+  if (liveFabricProjectionPromise) return liveFabricProjectionPromise;
+  liveFabricProjectionPromise = liveFabricStyleProjection(pool)
+    .then((value) => {
+      liveFabricProjectionCache = { value, expiresAt: Date.now() + LIVE_FABRIC_PROJECTION_TTL_MS };
+      return value;
+    })
+    .finally(() => {
+      liveFabricProjectionPromise = null;
+    });
+  return liveFabricProjectionPromise;
+}
+
 function fabricStyleMatchCandidates(groups: Array<Record<string, any>>): FabricStyleCandidate[] {
   return groups.flatMap((group) => (group.aliases ?? [group.fabricStyle]).map((alias: string) => ({
     fabricStyleKey: group.fabricStyleKey,
@@ -11677,9 +11696,26 @@ async function workspaceHomeFocus() {
   };
 }
 
+const HOME_FOCUS_TTL_MS = 30_000;
+let homeFocusCache: { value: Awaited<ReturnType<typeof workspaceHomeFocus>>; expiresAt: number } | null = null;
+let homeFocusPromise: Promise<Awaited<ReturnType<typeof workspaceHomeFocus>>> | null = null;
+async function cachedWorkspaceHomeFocus() {
+  if (homeFocusCache && homeFocusCache.expiresAt > Date.now()) return homeFocusCache.value;
+  if (homeFocusPromise) return homeFocusPromise;
+  homeFocusPromise = workspaceHomeFocus()
+    .then((value) => {
+      homeFocusCache = { value, expiresAt: Date.now() + HOME_FOCUS_TTL_MS };
+      return value;
+    })
+    .finally(() => {
+      homeFocusPromise = null;
+    });
+  return homeFocusPromise;
+}
+
 router.get("/dashboard", async (_req, res, next) => {
   try {
-    const focus = await workspaceHomeFocus();
+    const focus = await cachedWorkspaceHomeFocus();
     const snapshot = {
       asOfDate: calendarDate(new Date())!,
       planningPeriod: `Week ${focus.week.isoWeek} · ${focus.week.monthLabel}`,
@@ -13931,14 +13967,14 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
           encode(LOWER(BTRIM(l.style_number))::bytea,'escape') END AS "imageUrl",
          l.available_colourways AS "availableColourways",l.selected_colourways AS "selectedColourways",
          l.colourway_allocations AS "colourwayAllocations",
-          CASE WHEN LOWER(BTRIM(COALESCE(l.pattern_type,fa.pattern_type,''))) IN ('plain','solid') THEN 'Plain'
-               WHEN LOWER(BTRIM(COALESCE(l.pattern_type,fa.pattern_type,'')))='print' THEN 'Print' END AS "patternType",
-          CASE WHEN LOWER(BTRIM(COALESCE(l.fabric_structure,fa.fabric_structure,'')))='knit' THEN 'Knit'
-               WHEN LOWER(BTRIM(COALESCE(l.fabric_structure,fa.fabric_structure,'')))='woven' THEN 'Woven' END AS "fabricStructure",
+          CASE WHEN LOWER(BTRIM(COALESCE(l.pattern_type,''))) IN ('plain','solid') THEN 'Plain'
+               WHEN LOWER(BTRIM(COALESCE(l.pattern_type,'')))='print' THEN 'Print' END AS "patternType",
+          CASE WHEN LOWER(BTRIM(COALESCE(l.fabric_structure,'')))='knit' THEN 'Knit'
+               WHEN LOWER(BTRIM(COALESCE(l.fabric_structure,'')))='woven' THEN 'Woven' END AS "fabricStructure",
          COALESCE(l.fabric_consumption_metres_per_unit,rate.expected_metres_per_unit)::float AS "fabricConsumptionMetresPerUnit",
         l.data_quality_flags AS "dataQualityFlags",
         l.estimated_quantity AS "estimatedQuantity",l.order_type AS "orderType",l.order_stage AS "orderStage",
-        COALESCE(fm.metres,0)::float AS "availableMetres",
+         0::float AS "availableMetres",
         ao.first_order_date::text AS "firstOrderDate",COALESCE(ao.actual_quantity,0)::float AS "actualQuantity",
          COALESCE(ao.orders,'[]'::json) AS "actualOrders",
          COALESCE(mv.move_count,0)::int AS "moveCount",
@@ -13949,40 +13985,16 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
         JOIN ${schema}.weekly_order_plans p ON p.id=l.plan_id
        LEFT JOIN ${schema}.garment_images gi ON gi.source=CASE WHEN l.source='development' THEN 'plm' ELSE 'catalogue' END
          AND gi.style_key=LOWER(BTRIM(l.style_number))
-        LEFT JOIN LATERAL (
-          SELECT COALESCE(SUM(fi.available / NULLIF(fp.kg_per_mtr_eff,0))
-            FILTER (WHERE fi.location_name='RMAT/Stock' AND fi.available>0),0) AS metres
-          FROM public.raw_fabric_products fp
-          LEFT JOIN public.raw_fabric_inventory fi ON fi.product_id=fp.id
-          WHERE fp.id=l.fabric_product_id
-        ) fm ON TRUE
         LEFT JOIN ${schema}.subcategory_fabric_consumption_rates rate
           ON LOWER(BTRIM(rate.subcategory))=LOWER(BTRIM(l.sub_category)) AND rate.is_non_garment=FALSE
          LEFT JOIN LATERAL (
            SELECT NULL::date AS first_order_date,0::numeric AS actual_quantity,'[]'::json AS orders
          ) ao ON TRUE
-          LEFT JOIN LATERAL (
-            SELECT
-              CASE WHEN COUNT(DISTINCT LOWER(BTRIM(fp.plain_print)))
-                       FILTER (WHERE NULLIF(BTRIM(fp.plain_print),'') IS NOT NULL)=1
-                THEN MAX(NULLIF(BTRIM(fp.plain_print),'')) END AS pattern_type,
-              CASE WHEN COUNT(DISTINCT LOWER(BTRIM(fp.fabric_structure)))
-                       FILTER (WHERE NULLIF(BTRIM(fp.fabric_structure),'') IS NOT NULL)=1
-                THEN MAX(NULLIF(BTRIM(fp.fabric_structure),'')) END AS fabric_structure
-            FROM (
-              SELECT l.fabric_product_id AS fabric_product_id
-              UNION
-              SELECT a.fabric_product_id
-              FROM public.all_products_clean a
-              WHERE LOWER(BTRIM(COALESCE(NULLIF(a.style_number,''),NULLIF(a.sku,''))))=LOWER(BTRIM(l.style_number))
-            ) linked
-            JOIN public.raw_fabric_products fp ON fp.id=linked.fabric_product_id
-          ) fa ON TRUE
          LEFT JOIN move_history mv ON mv.line_id=l.id
        WHERE l.plan_id=$1 ORDER BY l.sequence_no`,
       [plan.id],
     )) : { rows: [] };
-    const fabricGroups = await timedEndpointPhase(res, "fabric", () => liveFabricStyleProjection(pool));
+    const fabricGroups = await timedEndpointPhase(res, "fabric", () => cachedLiveFabricStyleProjection());
     const fabricGroupsByKey = new Map(fabricGroups.map((group) => [group.fabricStyleKey, group]));
     for (const line of lines.rows) {
       const fabricGroup = fabricGroupsByKey.get(String(line.fabric_style_key ?? ""));
@@ -13996,6 +14008,8 @@ router.get("/weekly-order-plan", async (req: AuthRequest, res, next) => {
       const derivedStructure = fabricGroup?.structure ?? null;
       line.derivedPatternType = derivedPattern;
       line.derivedFabricStructure = derivedStructure;
+      line.patternType = line.patternType ?? derivedPattern;
+      line.fabricStructure = line.fabricStructure ?? derivedStructure;
       line.patternTypeSource = !fabricGroup ? "manual" : String(line.patternType ?? "").toLowerCase() === String(derivedPattern ?? "").toLowerCase() ? "derived" : "override";
       line.fabricStructureSource = !fabricGroup ? "manual" : String(line.fabricStructure ?? "").toLowerCase() === String(derivedStructure ?? "").toLowerCase() ? "derived" : "override";
       const rate = Number(line.fabricConsumptionMetresPerUnit ?? 0);
@@ -14472,7 +14486,7 @@ router.patch("/weekly-order-plan/lines/:id", async (req, res, next) => {
       FROM ${schema}.weekly_order_plan_lines WHERE id=$1`, [Number(req.params.id)]);
     if (!line.rows[0]) { res.status(404).json({ error: "Planned style was not found" }); return; }
     const fabricStyleKey = String(line.rows[0].fabric_style_key ?? "");
-    const group = fabricStyleKey ? (await liveFabricStyleProjection(pool)).find((item) => item.fabricStyleKey === fabricStyleKey) : null;
+    const group = fabricStyleKey ? (await cachedLiveFabricStyleProjection()).find((item) => item.fabricStyleKey === fabricStyleKey) : null;
     if (allocations.length && !group) {
       res.status(400).json({ error: "Colour allocations require a resolved Fabric Style" }); return;
     }
@@ -14901,21 +14915,23 @@ async function runPostReadinessHousekeeping() {
 let workspaceInitializationRetry: NodeJS.Timeout | null = null;
 async function initialiseWorkspaceDatabase() {
   try {
-    if (!await essentialWorkspaceCompatibility()) {
+    const needsBootstrap = !await essentialWorkspaceCompatibility();
+    if (needsBootstrap) {
       // A brand-new workspace has no compatibility surface yet. Bootstrap it
       // once, but never make normal restarts wait for this broad initializer.
       await withTimeout(ensureSchema(), 15000, "workspace schema bootstrap");
+      await withTimeout(ensureOrderHistoryConfig(), 4000, "order history cutover config");
+      await withTimeout(ensureFabricWorkspaceSchema(), 8000, "Fabric Workspace schema");
+      await withTimeout(ensureStyleDevelopmentImageSchema(), 8000, "Style Development image schema");
     }
     if (!await essentialWorkspaceCompatibility()) throw new Error("workspace essential tables are unavailable");
-    await withTimeout(ensureOrderHistoryConfig(), 4000, "order history cutover config");
-    // Existing workspaces can serve their saved plans as soon as the essential
-    // compatibility surface is confirmed. Slow additive schema checks continue
-    // below and retry without holding the entire app in a permanent 503 state.
+    // Existing workspaces serve immediately after the cheap compatibility
+    // check. Never run additive DDL in the live API: a Promise timeout cannot
+    // cancel PostgreSQL work, so retrying timed-out ALTER statements can build
+    // an unbounded lock queue that blocks normal reads and saves.
     serviceReady = true;
     schemaReady = true;
     lastDbProbeResult = true;
-    await withTimeout(ensureFabricWorkspaceSchema(), 8000, "Fabric Workspace schema");
-    await withTimeout(ensureStyleDevelopmentImageSchema(), 8000, "Style Development image schema");
     console.log("Vivo workspace database ready");
     // This queue is fire-and-forget so optional DDL/seed work cannot delay
     // readiness, while its internal ordering prevents DDL lock deadlocks.
