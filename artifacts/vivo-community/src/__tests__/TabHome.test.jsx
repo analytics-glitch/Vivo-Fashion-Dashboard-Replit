@@ -162,20 +162,6 @@ describe("TabHome image teasers", () => {
     expect(onOpenPage).toHaveBeenCalledWith("article-the-new-old-money");
   });
 
-  it("shows the second-life partner copy and opens its how-it-works page", async () => {
-    const user = userEvent.setup();
-    const onOpenPage = vi.fn();
-    render(<TabHome member={MEMBER} {...NO_OP} onOpenPage={onOpenPage} />);
-
-    const card = screen.getByTestId("home-givingback");
-    expect(card).toHaveTextContent(
-      "Pieces you've outgrown can lift another woman up. In partnership with [X Home], your gently-used Vivo pieces go directly to women rebuilding their lives."
-    );
-
-    await user.click(screen.getByTestId("givingback-open"));
-    expect(onOpenPage).toHaveBeenCalledWith("givingback");
-  });
-
   it("continues to render live event labels and opens event detail", async () => {
     const user = userEvent.setup();
     const onOpenEvent = vi.fn();

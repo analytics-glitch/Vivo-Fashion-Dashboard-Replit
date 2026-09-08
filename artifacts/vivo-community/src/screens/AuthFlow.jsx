@@ -5,6 +5,7 @@ import { inputCls, btnPrimary, btnSecondary, cardCls, VivoLogo, brandAsset } fro
 import HelpFaqView from "@/components/community/HelpFaqView";
 import LegalPage from "@/components/community/LegalPage";
 import { LEGAL_META } from "@/components/community/legalData";
+import { askNotifyPermission, registerDevice, pushSupported } from "@/lib/push";
 import { Loader2, ArrowRight, Check, AlertCircle, X } from "lucide-react";
 
 const COUNTRIES = [
@@ -40,6 +41,9 @@ export default function AuthFlow() {
   const [email, setEmail] = useState("");
   const [dob, setDob] = useState("");
   const [consent, setConsent] = useState(false); // must start unchecked
+  // Also unchecked, and for the same reason: a pre-ticked box is not consent
+  // under the Data Protection Act. Optional — signup does not wait on it.
+  const [notify, setNotify] = useState(false);
   const [username, setUsername] = useState("");
   const [uname, setUname] = useState({ state: "idle" }); // idle|checking|ok|taken|invalid
   const unameRef = useRef("");
@@ -53,12 +57,8 @@ export default function AuthFlow() {
   const referralCodeRef = useRef(new URLSearchParams(window.location.search).get("ref") || "");
 
   const phoneDigits = () => cc + local.replace(/\D/g, "").replace(/^0+/, "");
-  const localDigits = local.replace(/\D/g, "");
-  const localOk = /^\d{9,10}$/.test(localDigits.replace(/^0+/, "")) ||
-    /^0\d{9}$/.test(localDigits);
-  const phoneHint = localDigits && !localOk
-    ? `Enter 9 digits after +${cc}, for example 712 345 678.`
-    : `Enter 9 digits after +${cc}, for example 712 345 678.`;
+  const localOk = /^\d{9,10}$/.test(local.replace(/\D/g, "").replace(/^0+/, "")) ||
+    /^0\d{9}$/.test(local.replace(/\D/g, ""));
 
   // Membership is 18+ (Terms §1) — cap the date picker; the server enforces it too.
   const dobMax = (() => {
@@ -126,6 +126,18 @@ export default function AuthFlow() {
 
   const submitSignup = async () => {
     setBusy(true); setError("");
+
+    // ⚠️ THE BROWSER PROMPT COMES FIRST, BEFORE ANY AWAIT ON THE NETWORK.
+    //
+    // Safari only shows it while the tap that triggered this is still live, and
+    // awaiting the signup request would consume that — the prompt would then
+    // never appear on iPhone, silently. See lib/push.js.
+    //
+    // The cost is that a member who ticked the box is asked by the browser a
+    // moment before their account exists. That is the right way round anyway:
+    // the tick is the real ask, and the browser prompt only confirms it.
+    const permission = notify ? await askNotifyPermission() : "default";
+
     try {
       const d = await api.signup({
         signup_token: signupToken,
@@ -134,6 +146,10 @@ export default function AuthFlow() {
         email,
         dob,
         consent,
+        // Their answer to the checkbox, recorded whatever the browser said —
+        // consent and deliverability are different facts, and a member who
+        // agreed but was on an unsupported browser should not read as "no".
+        notify,
         referral_code: referralCodeRef.current,
         // Version of the terms shown at the moment of consent — recorded
         // server-side as consent_terms_version.
@@ -142,6 +158,9 @@ export default function AuthFlow() {
       // One-shot karibu moment on the very first session (TabHome shows it).
       try { sessionStorage.setItem("johari_welcome", "1"); } catch {}
       signIn(d.token, d.member);
+      // Registering the device needs the session, so it happens after sign-in
+      // and never blocks it: notifications failing must not fail joining.
+      if (permission === "granted") registerDevice().catch(() => {});
     } catch (e) {
       if (e.detail?.code === "username_taken") {
         setUname({ state: "taken", message: e.detail.message, suggestions: e.detail.suggestions || [] });
@@ -305,17 +324,9 @@ export default function AuthFlow() {
                       value={local}
                       onChange={(e) => setLocal(e.target.value)}
                       onKeyDown={(e) => e.key === "Enter" && localOk && !busy && sendCode()}
-                      aria-invalid={Boolean(localDigits && !localOk)}
-                      aria-describedby="phone-hint"
                       className={`${inputCls} flex-1 min-w-0`}
                     />
                   </div>
-                  <p
-                    id="phone-hint"
-                    className={`text-xs leading-relaxed ${localDigits && !localOk ? "text-destructive" : "text-muted-foreground"}`}
-                  >
-                    {phoneHint}
-                  </p>
                 </div>
 
                 <ErrorNote>{error}</ErrorNote>
@@ -493,6 +504,29 @@ export default function AuthFlow() {
                     , and to receive updates about my points, offers and activities. <span className="font-medium text-foreground">*Required</span>
                   </span>
                 </label>
+                {/* Notifications — optional, and visibly so. The required
+                    consent above already covers being contacted; this is about
+                    one extra channel on this one device, which is why it is a
+                    separate tick and not more small print inside the first. */}
+                {pushSupported() && (
+                  <label className="flex items-start gap-3 cursor-pointer group mt-4">
+                    <div className="relative flex items-center justify-center shrink-0 mt-1">
+                      <input
+                        data-testid="check-notify"
+                        type="checkbox"
+                        checked={notify}
+                        onChange={(e) => setNotify(e.target.checked)}
+                        className="peer appearance-none w-5 h-5 border border-border rounded bg-background checked:bg-primary checked:border-primary transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                      />
+                      <Check size={14} className="absolute text-primary-foreground opacity-0 peer-checked:opacity-100 pointer-events-none transition-opacity" />
+                    </div>
+                    <span className="text-[13px] leading-relaxed text-muted-foreground group-hover:text-foreground transition-colors">
+                      Send me notifications on this device — points earned, challenge results and first looks at a drop.{" "}
+                      <span className="font-medium text-foreground">Optional</span>
+                    </span>
+                  </label>
+                )}
+
                 <p className="text-[11px] text-muted-foreground/80 ml-8">
                   Terms v{LEGAL_META.terms.version} · Privacy v{LEGAL_META.privacy.version} · effective {LEGAL_META.terms.effective}
                 </p>

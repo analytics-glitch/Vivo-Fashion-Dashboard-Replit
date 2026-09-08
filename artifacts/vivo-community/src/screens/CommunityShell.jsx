@@ -21,7 +21,6 @@ import { FabulasStoryView } from "@/components/community/FabulasStory";
 import ContactView from "@/components/community/ContactView";
 import TryOnView from "@/components/community/TryOnView";
 import MyDataView from "@/components/community/MyDataView";
-import MySizeView from "@/components/community/MySizeView";
 import { StylePrefsView } from "@/components/community/StyledForYou";
 import { VivoEditsAllView, VivoEditDetail, VivoEditsHome } from "@/components/community/VivoEdits";
 import StoreLocatorView from "@/components/community/StoreLocatorView";
@@ -31,7 +30,8 @@ import NewsArticle from "@/components/community/NewsArticle";
 import CampaignArticle from "@/components/community/CampaignArticle";
 import { ReferAFriendView, WeeklyMissionsView } from "@/components/community/DestinationViews";
 import { isNewsPageId } from "@/components/community/newsData";
-import { Home, Users, ShoppingBag, Gift, User, Heart, HelpCircle, Search } from "lucide-react";
+import MobileMenu from "@/components/community/MobileMenu";
+import { Home, Users, ShoppingBag, Gift, User, Heart, HelpCircle, Search, Menu } from "lucide-react";
 
 const TABS = [
   { id: "home", label: "Home", icon: Home },
@@ -41,9 +41,20 @@ const TABS = [
   { id: "profile", label: "Account", icon: User },
 ];
 
+/**
+ * How many tabs the mobile nav row shows before the hamburger.
+ *
+ * Four is what fits a 360px screen without the row scrolling. It used to hold
+ * all five by overflowing horizontally, which put "Account" off the edge of
+ * the smallest phones with nothing to say it was there.
+ */
+const MOBILE_TAB_COUNT = 4;
+const MOBILE_TABS = TABS.slice(0, MOBILE_TAB_COUNT);
+const MENU_TABS = TABS.slice(MOBILE_TAB_COUNT);
+
 // Static help & legal pages routed via the ?page= param. News articles ride
 // the same param as "news-{id}", validated against the NEWS list.
-const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "mysize", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits", "refer", "missions"];
+const PAGES = ["faq", "contact", "terms", "privacy", "guidelines", "tryon", "mydata", "help", "givingback", "styleprefs", "stores", "delivery", "returns", "edits", "refer", "missions"];
 // Campaign articles ride ?page=article-{slug} — server-validated (404 UI on
 // unknown slugs), guest-readable like news pages (composer is member-gated).
 const isArticlePageId = (v) => /^article-[a-z0-9-]+$/.test(v || "");
@@ -124,6 +135,10 @@ function ShellInner() {
   // Vivo Edit detail rides ?edit= exactly like ?event= — card to browse,
   // detail page to explore and shop.
   const [editId, setEditId] = useState(params.get("edit") || "");
+  // Deliberately NOT in the URL. The other overlays are deep-linkable because
+  // they are destinations; this is a way of getting to one, and a back button
+  // that only closes a menu is a back button that does nothing.
+  const [menuOpen, setMenuOpen] = useState(false);
   const [cartOpen, setCartOpen] = useState(params.get("cart") === "1");
   const [wlOpen, setWlOpen] = useState(params.get("wishlist") === "1");
   const initialPage = isValidPage(params.get("page")) ? params.get("page") : "";
@@ -488,26 +503,58 @@ function ShellInner() {
           </div>
         </div>
         {/* Mobile top nav row — replaces the old bottom tab bar (rewire spec
-            §"mobile nav"). Horizontally scrollable; same testids preserved. */}
-        <nav aria-label="Primary" className="flex gap-6 px-4 overflow-x-auto hide-scrollbar border-t border-border/60">
-          {TABS.map((t) => {
-            const isActive = tab === t.id && onPlainTab;
-            return (
-              <button
-                key={t.id}
-                data-testid={`tab-${t.id}-mobile`}
-                onClick={() => goTab(t.id)}
-                className={`relative py-2.5 text-[12px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
-                  isActive ? "text-primary-ink" : "text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {t.label}
-                {isActive && <span className="absolute bottom-0 left-0 w-full h-[2px] bg-primary" />}
-              </button>
-            );
-          })}
+            §"mobile nav"). Four tabs fit; the rest live behind the hamburger,
+            which is pinned right and does not scroll away. Same testids. */}
+        <nav aria-label="Primary" className="flex items-stretch border-t border-border/60">
+          <div className="flex gap-6 px-4 flex-1 min-w-0 overflow-x-auto hide-scrollbar">
+            {MOBILE_TABS.map((t) => {
+              const isActive = tab === t.id && onPlainTab;
+              return (
+                <button
+                  key={t.id}
+                  data-testid={`tab-${t.id}-mobile`}
+                  onClick={() => goTab(t.id)}
+                  className={`relative py-2.5 text-[12px] font-semibold uppercase tracking-wider whitespace-nowrap transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
+                    isActive ? "text-primary-ink" : "text-muted-foreground hover:text-foreground"
+                  }`}
+                >
+                  {t.label}
+                  {isActive && <span className="absolute bottom-0 left-0 w-full h-[2px] bg-primary" />}
+                </button>
+              );
+            })}
+          </div>
+          <button
+            data-testid="mobile-menu-open"
+            aria-label="More"
+            aria-haspopup="dialog"
+            aria-expanded={menuOpen}
+            onClick={() => setMenuOpen(true)}
+            className={`relative shrink-0 px-4 flex items-center border-l border-border/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-inset ${
+              // A tab that now lives in the drawer still has to look selected,
+              // or the member loses their place the moment they open Account.
+              MENU_TABS.some((t) => t.id === tab) && onPlainTab
+                ? "text-primary-ink"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            <Menu size={18} strokeWidth={1.75} />
+            {MENU_TABS.some((t) => t.id === tab) && onPlainTab && (
+              <span className="absolute bottom-0 left-0 w-full h-[2px] bg-primary" />
+            )}
+          </button>
         </nav>
       </header>
+
+      <MobileMenu
+        open={menuOpen}
+        onClose={() => setMenuOpen(false)}
+        tabs={MENU_TABS}
+        activeTab={onPlainTab ? tab : ""}
+        activePage={page}
+        onTab={goTab}
+        onPage={openPage}
+      />
 
       {/* Main Content Area */}
       <main className="mx-auto max-w-6xl p-4 sm:p-8 animate-in fade-in duration-500">
@@ -515,7 +562,7 @@ function ShellInner() {
             via URL state (?page= / ?event=) that carry member-authenticated
             writes: try-on, survey, my-data, contact and event RSVP. Browsing
             surfaces (products, cart, wishlist, news, legal, help) stay open. */}
-        {!member && (quizOpen || eventId || ["tryon", "mydata", "mysize", "contact", "styleprefs", "refer", "missions"].includes(page)) ? (
+        {!member && (quizOpen || eventId || ["tryon", "mydata", "contact", "styleprefs", "refer", "missions"].includes(page)) ? (
           <GuestGate
             title={quizOpen ? "Your Style Quiz is for members" : eventId ? "Events are for members" : "This is a member space"}
             body={quizOpen
@@ -540,8 +587,6 @@ function ShellInner() {
             <ReturnsInfoView onBack={closePage} />
           ) : page === "mydata" ? (
             <MyDataView onBack={closePage} onOpenPage={openPage} />
-          ) : page === "mysize" ? (
-            <MySizeView member={member} onBack={closePage} onMemberUpdate={updateMember} />
           ) : page === "contact" ? (
             <ContactView onBack={closePage} member={member} />
           ) : page === "help" ? (
@@ -564,7 +609,7 @@ function ShellInner() {
         ) : wlOpen ? (
           <WishlistView onBack={closeWishlist} onShop={() => goTab("shop")} onOpenProduct={openProduct} />
         ) : productSku ? (
-          <ProductDetail sku={productSku} member={member} onBack={closeProduct} onOpenProduct={openProduct} onTryOn={openTryOn} onOpenPage={openPage} />
+          <ProductDetail sku={productSku} onBack={closeProduct} onOpenProduct={openProduct} onTryOn={openTryOn} onOpenPage={openPage} />
         ) : eventId ? (
           <EventDetail eventId={eventId} onBack={closeEventDetail} onOpenPage={openPage} />
         ) : editId ? (

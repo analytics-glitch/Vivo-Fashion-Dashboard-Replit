@@ -2,6 +2,24 @@
 
 Executive BI cockpit for Vivo Fashion Group — a multi-brand fashion retailer across East Africa (Kenya, Uganda, Rwanda + Online). Surfaces sales, locations, footfall, customers, products, and inventory from a live PostgreSQL database. All money in Kenyan Shillings (KES).
 
+
+## Vivo Johari (`artifacts/vivo-community`) — GitHub is the single source
+
+This app is published from **Vivo's own server** at
+`https://community.vivofashiongroup.com`, not from a Replit deployment. Work on
+it happens in BOTH places — design and UI here, backend on the VM — and GitHub
+is what keeps them one codebase. Neither side keeps a private copy; a second
+copy is a fork with nobody reconciling it.
+
+
+### ⚠️ NAME THE REMOTE. `git pull` AND `git push` DO NOT REACH GITHUB.
+
+This workspace's `main` tracks a Replit sub-Repl remote (`subrepl-*/main`), not
+GitHub, and there is no `origin`. So a bare `git pull` succeeds, reports
+success, and fetches nothing of ours. The GitHub remote is named **`github`**:
+
+```
+git remote -v | grep github
 ## Run & Operate
 
 - API server: `api_pg.py` (FastAPI) via the `artifacts/api-server` workflow — uvicorn on port 8080, served under `/api`. Required env: `DATABASE_URL` (Neon **pooler** URL, used by the connection pool and all normal query paths) + `DATABASE_URL_DIRECT` (Neon **direct / non-pooler** URL, used by advisory locks, VACUUM, and the watchdog — see below). **When rotating either secret, update both at the same time.** `/api/readyz` checks both independently and reports `db_direct: "down"` + a warning if the direct URL is reachable after rotation; a missing `DATABASE_URL_DIRECT` falls back to `DATABASE_URL` and is logged as a startup warning.
@@ -111,3 +129,56 @@ In-app CRM (`src/pages/CRM.jsx`, `/api/crm/*` in `api_pg.py`): contacts/360 (FUL
 
 - `.agents/memory/MEMORY.md` — index of ~120 durable topic notes (data semantics, perf invariants, integration quirks). Check it before non-trivial work.
 - See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details.
+
+### The backend for this app is on the VM, not in `api_pg.py`
+
+`/api/community/*` on `community.vivofashiongroup.com` is served by the Vivo
+loyalty backend (Fastify + Prisma + Postgres), because a community member IS a
+loyalty member — same account, same points wallet, same membership barcode.
+`community_app.py` still serves the Replit-hosted copy of this app and should be
+left alone until that copy is retired.
+
+**So new backend endpoints for Vivo Johari are built on the VM.** Adding them to
+`community_app.py` instead makes two backends answer the same paths against two
+different databases, which is the one failure this split exists to prevent. Ask
+for the endpoint rather than writing it here.
+
+# github  https://github.com/analytics-glitch/Vivo-Fashion-Dashboard-Replit.git
+```
+
+Every command below names it explicitly. Do not "fix" the tracking branch to
+point at `github` — Replit's own task system uses those sub-Repl remotes, and
+what depends on that upstream is not visible from here.
+
+**Pull before touching anything under `artifacts/vivo-community/`:**
+
+```
+git stash push -u                  # only if the tree is dirty
+git fetch github main
+git merge github/main              # MERGE, not rebase — see below
+git stash pop                      # if you stashed
+```
+
+Merge, never rebase. This branch carries hundreds of commits of unrelated
+workspace history; rebasing them onto GitHub rewrites work that has nothing to
+do with the community app.
+
+Starting from a stale checkout means the next push either conflicts or silently
+reverts work somebody else finished. This is not occasional: the VM pushes to
+GitHub too.
+
+**Push as soon as a change is done and your own checks pass:**
+
+```
+git push github main
+```
+
+The VM picks it up within two minutes, runs its own gate — typecheck, the
+vitest suite, a production build — and publishes only if all three pass. A
+commit that fails the gate publishes nothing and leaves the previous release
+live, so pushing is safe; but a push IS a deploy, so push finished work rather
+than a checkpoint.
+
+Check what a push would carry before making one: `git log --oneline
+github/main..main`. This repository is the whole workspace, so it will include
+BI and backend commits alongside the community app. That is expected.

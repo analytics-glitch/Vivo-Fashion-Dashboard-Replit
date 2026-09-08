@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
-import { ArrowLeft, Bell, Heart, ShoppingBag, Ruler, X, ChevronDown, Sparkles, Mail } from "lucide-react";
+import { ArrowLeft, Bell, BellOff, Heart, ShoppingBag, Ruler, X, ChevronDown, Sparkles } from "lucide-react";
 import { api } from "@/lib/api";
 import { useCart } from "@/context/CartContext";
 import { useWishlist } from "@/context/WishlistContext";
@@ -194,13 +194,8 @@ function Gallery({ images, name, wish, onWish }) {
 /* ------------------------------------------------------------------ */
 
 const SIZE_CHART = [
-  ["XS", "4–6", "0–2", "33–34", "25–26", "37–38"],
-  ["S", "8–10", "4–6", "35–36", "27–28", "39–40"],
-  ["M", "12–14", "8–10", "37–38", "29–30", "41–42"],
-  ["L", "16–18", "12–14", "39–41", "31–33", "43–45"],
-  ["1X", "20", "16", "40–44", "34–36", "46–48"],
-  ["2X", "22", "18", "45–47", "37–39", "49–51"],
-  ["3X", "24", "20", "48–50", "40–42", "52–54"],
+  ["XS", 82, 64, 90], ["S", 86, 68, 94], ["M", 92, 74, 100], ["L", 98, 80, 106],
+  ["1X", 106, 88, 114], ["2X", 114, 96, 122], ["3X", 122, 104, 130], ["4X", 130, 112, 138],
 ];
 
 function SizeGuide({ onClose }) {
@@ -248,7 +243,7 @@ function SizeGuide({ onClose }) {
         <div className="flex items-start justify-between mb-6">
           <div>
             <h3 className="font-serif text-2xl text-foreground mb-1">Size Guide</h3>
-            <p className="text-muted-foreground text-[13px]">Body measurements in inches</p>
+            <p className="text-muted-foreground text-[13px]">Body measurements in centimetres</p>
           </div>
           <button
             ref={closeRef}
@@ -260,24 +255,19 @@ function SizeGuide({ onClose }) {
             <X size={18} />
           </button>
         </div>
-        <div className="-mx-1 overflow-x-auto">
-        <table className="w-full min-w-[430px] text-[13px] border-collapse">
+        <table className="w-full text-[14px] border-collapse">
           <thead>
             <tr className="text-left text-[11px] uppercase tracking-wider text-muted-foreground border-b border-border">
               <th className="py-2.5 pr-3 font-semibold">Size</th>
-              <th className="py-2.5 pr-3 font-semibold">UK</th>
-              <th className="py-2.5 pr-3 font-semibold">US</th>
               <th className="py-2.5 pr-3 font-semibold">Bust</th>
               <th className="py-2.5 pr-3 font-semibold">Waist</th>
-              <th className="py-2.5 font-semibold">Hips</th>
+              <th className="py-2.5 font-semibold">Hip</th>
             </tr>
           </thead>
           <tbody>
-            {SIZE_CHART.map(([sz, uk, us, b, w, h]) => (
+            {SIZE_CHART.map(([sz, b, w, h]) => (
               <tr key={sz} className="border-b border-border/60">
                 <td className="py-2.5 pr-3 font-medium text-foreground">{sz}</td>
-                <td className="py-2.5 pr-3 text-foreground/80">{uk}</td>
-                <td className="py-2.5 pr-3 text-foreground/80">{us}</td>
                 <td className="py-2.5 pr-3 text-foreground/80">{b}</td>
                 <td className="py-2.5 pr-3 text-foreground/80">{w}</td>
                 <td className="py-2.5 text-foreground/80">{h}</td>
@@ -285,7 +275,6 @@ function SizeGuide({ onClose }) {
             ))}
           </tbody>
         </table>
-        </div>
         <p className="text-muted-foreground text-[13px] leading-relaxed mt-5">
           Between sizes? Our stylists suggest sizing up for a relaxed drape, or
           check the community fit notes on each piece.
@@ -384,23 +373,22 @@ function FitNotesBody({ fit, onSizeGuide }) {
 /* Notify Me modal                                                     */
 /* ------------------------------------------------------------------ */
 
-function NotifyMeModal({
-  member,
-  productName,
-  productSku,
-  preSize,
-  allVariants,
-  onConfirm,
-  onClose,
-}) {
+/**
+ * Bottom-sheet that lets a member pick an out-of-stock size and confirm
+ * a restock alert. `sizes` is the full sizes array from the PDP; `alertedSkus`
+ * is the Set of size-variant SKUs the member already has alerts for.
+ * `preSize` (optional) pre-selects one size entry when tapping an OOS chip.
+ */
+function NotifyMeModal({ sizes, preSize, alertedSkus, onConfirm, onCancel, onClose }) {
   const panelRef = useRef(null);
   const closeRef = useRef(null);
-  const [notifyPush, setNotifyPush] = useState(Boolean(member));
-  const [notifyEmail, setNotifyEmail] = useState(true);
-  const [email, setEmail] = useState(member?.email || "");
+  const [sel, setSel] = useState(preSize || null);
   const [busy, setBusy] = useState(false);
-  const [status, setStatus] = useState("");
+  const [done, setDone] = useState(false);
   const [err, setErr] = useState("");
+
+  // Only OOS sizes are subscribable
+  const oosSizes = sizes.filter((s) => !s.in_stock);
 
   useEffect(() => {
     const prev = document.activeElement;
@@ -423,33 +411,24 @@ function NotifyMeModal({
     };
   }, [onClose]);
 
-  const sizeLabel = allVariants ? "all sizes" : displaySize(preSize?.size || "");
-  const needsEmailInput = notifyEmail && !member?.email;
-  const canSubmit = !busy && (notifyPush || notifyEmail) &&
-    (!needsEmailInput || /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email.trim()));
+  const isAlerted = sel ? alertedSkus.has(sel.sku) : false;
 
   const handleConfirm = async () => {
-    if (!canSubmit) return;
+    if (!sel) return;
     setBusy(true);
     setErr("");
     try {
-      await api.restockAlertSet({
-        product_sku: productSku,
-        variant_sku: allVariants ? null : preSize?.sku,
-        all_variants: allVariants,
-        notify_push: notifyPush,
-        notify_email: notifyEmail,
-        email: needsEmailInput ? email.trim() : undefined,
-      });
-      onConfirm?.({ variantSku: preSize?.sku || null, allVariants });
-      setStatus("success");
-    } catch (e) {
-      if (e.status === 409 && /already on the list/i.test(e.message || "")) {
-        onConfirm?.({ variantSku: preSize?.sku || null, allVariants });
-        setStatus("duplicate");
+      if (isAlerted) {
+        await api.restockAlertCancel(sel.sku);
+        onCancel(sel.sku);
       } else {
-        setErr(e.message || "Something went wrong — please try again");
+        await api.restockAlertSet(sel.sku);
+        onConfirm(sel.sku);
       }
+      setDone(true);
+      setTimeout(onClose, 1800);
+    } catch (e) {
+      setErr(e.message || "Something went wrong — please try again");
     } finally {
       setBusy(false);
     }
@@ -460,7 +439,7 @@ function NotifyMeModal({
       data-testid="notify-me-modal"
       role="dialog"
       aria-modal="true"
-      aria-label="Get notified when this is back in stock"
+      aria-label="Notify me when available"
       onClick={onClose}
       className="fixed inset-0 z-[80] bg-foreground/40 backdrop-blur-sm flex items-end sm:items-center justify-center animate-in fade-in duration-200"
     >
@@ -471,11 +450,9 @@ function NotifyMeModal({
       >
         <div className="flex items-start justify-between mb-5">
           <div>
-            <h3 className="font-serif text-2xl text-foreground mb-1">
-              Get notified when this is back in stock
-            </h3>
+            <h3 className="font-serif text-2xl text-foreground mb-0.5">Notify me</h3>
             <p className="text-muted-foreground text-[13px]">
-              {productName}{allVariants ? " · Any size" : ` · Size ${sizeLabel}`}
+              We'll email you the moment your size is back.
             </p>
           </div>
           <button
@@ -489,92 +466,65 @@ function NotifyMeModal({
           </button>
         </div>
 
-        {status ? (
-          <div data-testid="notify-me-done" role="status" className="py-6 text-center">
-            <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-primary/10 text-primary-ink">
-              <Bell size={21} strokeWidth={1.5} />
-            </span>
-            <p className="font-serif text-xl text-foreground mb-2">
-              {status === "duplicate" ? "You're already on the list" : "You're on the list"}
-            </p>
-            <p className="text-muted-foreground text-[13px] leading-relaxed">
-              {status === "duplicate"
-                ? `We'll let you know when ${productName}, ${sizeLabel} is back.`
-                : `You're on the list — we'll let you know when ${productName}, ${sizeLabel} is back.`}
-            </p>
-            <button type="button" onClick={onClose} className={`${btnSecondary} mt-6`}>
-              Close
-            </button>
+        {done ? (
+          <div data-testid="notify-me-done" className="py-6 text-center">
+            {isAlerted
+              ? <><p className="text-foreground font-medium mb-1">Alert cancelled</p>
+                  <p className="text-muted-foreground text-[13px]">We won't send you a notification for this size.</p></>
+              : <><p className="text-foreground font-medium mb-1">You're on the list</p>
+                  <p className="text-muted-foreground text-[13px]">We'll email you when {sel ? displaySize(sel.size) : "this size"} is back in stock.</p></>
+            }
           </div>
         ) : (
           <>
-            <div className="space-y-3 mb-5">
-              <label className={`flex items-center gap-3 rounded border p-4 transition-colors ${
-                member ? "border-border cursor-pointer hover:border-foreground/40" : "border-border/60 bg-secondary/30"
-              }`}>
-                <input
-                  data-testid="notify-channel-push"
-                  type="checkbox"
-                  checked={notifyPush}
-                  disabled={!member}
-                  onChange={(e) => setNotifyPush(e.target.checked)}
-                  className="h-4 w-4 accent-primary"
-                />
-                <span className="flex min-w-0 items-center gap-3">
-                  <Bell size={17} className="shrink-0 text-primary-ink" />
-                  <span>
-                    <span className="block text-[14px] font-medium text-foreground">Notify me by push notification</span>
-                    {!member && <span className="block text-[11px] text-muted-foreground mt-0.5">Sign in to use push notifications</span>}
-                  </span>
-                </span>
-              </label>
-              <label className="flex cursor-pointer items-center gap-3 rounded border border-border p-4 transition-colors hover:border-foreground/40">
-                <input
-                  data-testid="notify-channel-email"
-                  type="checkbox"
-                  checked={notifyEmail}
-                  onChange={(e) => setNotifyEmail(e.target.checked)}
-                  className="h-4 w-4 accent-primary"
-                />
-                <span className="flex min-w-0 items-center gap-3">
-                  <Mail size={17} className="shrink-0 text-primary-ink" />
-                  <span className="text-[14px] font-medium text-foreground">Notify me by email</span>
-                </span>
-              </label>
+            <div className="mb-5">
+              <span className="text-[12px] font-bold uppercase tracking-wider text-foreground block mb-3">
+                Choose a size
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {oosSizes.map((s) => {
+                  const selected = sel?.sku === s.sku;
+                  const alerted = alertedSkus.has(s.sku);
+                  return (
+                    <button
+                      key={s.sku}
+                      data-testid={`notify-size-${s.size}`}
+                      onClick={() => setSel(s)}
+                      aria-pressed={selected}
+                      className={`relative min-w-[52px] h-11 px-3 rounded border text-[13px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${
+                        selected
+                          ? "border-foreground bg-foreground text-background"
+                          : "border-border bg-background text-foreground hover:border-foreground"
+                      }`}
+                    >
+                      {displaySize(s.size)}
+                      {alerted && (
+                        <span className="absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full bg-primary border-2 border-background" />
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             </div>
 
-            {needsEmailInput && (
-              <div className="mb-5">
-                <label htmlFor="notify-email" className="text-[12px] font-bold uppercase tracking-wider text-foreground block mb-2">
-                  Email address
-                </label>
-                <input
-                  id="notify-email"
-                  data-testid="notify-email-input"
-                  type="email"
-                  autoComplete="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  placeholder="you@example.com"
-                  className="h-12 w-full rounded border border-border bg-background px-3 text-[14px] text-foreground outline-none transition-colors placeholder:text-muted-foreground focus:border-primary focus:ring-2 focus:ring-primary/20"
-                />
-              </div>
-            )}
-
             {err && (
-              <p role="alert" className="text-sm text-destructive mb-4">{err}</p>
+              <p className="text-sm text-destructive mb-4">{err}</p>
             )}
 
             <button
               data-testid="notify-me-confirm"
-              disabled={!canSubmit}
+              disabled={!sel || busy}
               onClick={handleConfirm}
               className={`${btnPrimary} mb-2`}
             >
-              {busy ? "Saving…" : <><Bell size={16} /> Notify Me</>}
+              {busy
+                ? "Saving…"
+                : isAlerted
+                  ? <><BellOff size={16} /> Cancel alert for {displaySize(sel.size)}</>
+                  : <><Bell size={16} /> Notify me when available</>}
             </button>
             <p className="text-[12px] text-muted-foreground text-center leading-relaxed">
-              We’ll contact you once when this item returns. No spam.
+              You'll get one email when stock returns. No spam.
             </p>
           </>
         )}
@@ -588,7 +538,7 @@ function NotifyMeModal({
 /* PDP                                                                 */
 /* ------------------------------------------------------------------ */
 
-export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTryOn, onOpenPage }) {
+export default function ProductDetail({ sku, onBack, onOpenProduct, onTryOn, onOpenPage }) {
   const { add } = useCart();
   const { has, toggle } = useWishlist();
   const [detail, setDetail] = useState(null);
@@ -600,8 +550,7 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
   const [guideOpen, setGuideOpen] = useState(false);
   const [alsoLike, setAlsoLike] = useState([]);
   const [alertedSkus, setAlertedSkus] = useState(new Set());
-  const [alertedAll, setAlertedAll] = useState(false);
-  const [notifyModal, setNotifyModal] = useState(null);
+  const [notifyModal, setNotifyModal] = useState(null); // null | { preSize: sizeObj|null }
   const sizeRef = useRef(null);
   const hintTimer = useRef(null);
 
@@ -640,12 +589,10 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
     if (!detail) return;
     let alive = true;
     setAlertedSkus(new Set());
-    setAlertedAll(false);
     api.restockAlerts(detail.sku)
       .then((d) => {
         if (!alive) return;
         setAlertedSkus(new Set(d.skus || []));
-        setAlertedAll((d.alerts || []).some((a) => a.all_variants));
       })
       .catch(() => { /* not signed in or network error — silently skip */ });
     return () => { alive = false; };
@@ -728,8 +675,6 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
   const curCw = colorways.find((c) => c.color === detail.color);
   const colorLabel = curCw?.label || detail.color;
   const fit = fitFor(detail.sku);
-  const sizeProfile = member?.size_profile || null;
-  const recommendedSize = sizeProfile?.recommended_size || "";
   const descBits = [];
   const kind = (detail.subcategory || detail.category || "piece").toLowerCase();
   descBits.push(`A ${kind}${detail.color ? ` in ${detail.color.toLowerCase()}` : ""}`);
@@ -795,33 +740,21 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
               <div className="flex flex-wrap gap-2">
                 {colorways.map((c) => {
                   const cur = c.color === detail.color;
-                  const colorSoldOut = !c.in_stock;
                   return (
                     <button
                       key={c.sku}
                       data-testid={`colorway-${c.sku}`}
                       aria-label={`Colour ${c.label}${c.in_stock ? "" : " — sold out"}`}
                       aria-pressed={cur}
-                      onClick={() => {
-                        if (cur) return;
-                        if (colorSoldOut) {
-                          setNotifyModal({
-                            preSize: null,
-                            allVariants: true,
-                            productSku: c.sku,
-                          });
-                        } else {
-                          onOpenProduct(c.sku);
-                        }
-                      }}
+                      onClick={() => { if (!cur) onOpenProduct(c.sku); }}
                       className={`relative w-16 rounded-sm overflow-hidden border-2 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${
                         cur ? "border-foreground" : "border-border hover:border-muted-foreground"
                       }`}
                     >
                       <img src={c.image} alt="" loading="lazy" className="w-full aspect-[3/4] object-contain bg-secondary" />
                       {!c.in_stock && (
-                        <span className="absolute right-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-background/90 text-foreground shadow-sm">
-                          <Bell size={11} strokeWidth={1.8} aria-hidden="true" />
+                        <span className="absolute inset-x-0 bottom-0 bg-foreground/80 text-background text-[9px] uppercase tracking-wider text-center py-0.5">
+                          Sold out
                         </span>
                       )}
                     </button>
@@ -836,61 +769,6 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
             ref={sizeRef}
             className={`rounded transition-shadow duration-300 ${hintOn ? "ring-2 ring-primary/70 ring-offset-4 ring-offset-background" : ""}`}
           >
-            {sizeProfile ? (
-              <div
-                data-testid="my-size-recommendation"
-                className="mb-4 rounded border border-primary/40 bg-primary/5 p-4"
-              >
-                <div className="flex items-start gap-3">
-                  <span className="mt-0.5 w-8 h-8 rounded-full bg-primary/10 text-primary-ink flex items-center justify-center shrink-0">
-                    <Ruler size={16} strokeWidth={1.5} />
-                  </span>
-                  <div className="min-w-0 flex-grow">
-                    <div className="text-[10px] font-bold uppercase tracking-widest text-primary-ink mb-1">
-                      My Size recommendation
-                    </div>
-                    <div className="font-serif text-lg text-foreground">
-                      Recommended: {recommendedSize}
-                    </div>
-                    <p className="text-[12px] text-muted-foreground mt-0.5">
-                      Based on your saved {sizeProfile.method === "measurements" ? "measurements" : `${sizeProfile.known_size_system} size`}.
-                    </p>
-                    {sizeProfile.size_up && (
-                      <p data-testid="my-size-size-up-note" className="text-[12px] font-medium text-primary-ink mt-2">
-                        true to size may vary — consider sizing up
-                      </p>
-                    )}
-                  </div>
-                  <button
-                    type="button"
-                    data-testid="my-size-update-link"
-                    onClick={() => onOpenPage?.("mysize")}
-                    className="text-[11px] font-semibold text-muted-foreground hover:text-foreground underline underline-offset-4 decoration-border rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-                  >
-                    Update
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button
-                type="button"
-                data-testid="my-size-setup-link"
-                onClick={() => onOpenPage?.("mysize")}
-                className="w-full mb-4 rounded border border-border bg-secondary/40 p-4 text-left hover:border-primary/50 transition-colors group focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
-              >
-                <span className="flex items-center gap-3">
-                  <span className="w-8 h-8 rounded-full bg-background border border-border text-primary-ink flex items-center justify-center shrink-0">
-                    <Ruler size={16} strokeWidth={1.5} />
-                  </span>
-                  <span className="flex-grow min-w-0">
-                    <span className="block text-[13px] font-semibold text-foreground">Get your size recommendation</span>
-                    <span className="block text-[12px] text-muted-foreground mt-0.5">Set up My Size once for future pieces.</span>
-                  </span>
-                  <span className="text-primary-ink text-lg" aria-hidden="true">›</span>
-                </span>
-              </button>
-            )}
-
             <div className="flex items-center justify-between mb-3">
               <span className="text-[12px] font-bold uppercase tracking-wider text-foreground">
                 Size{selSize ? ` — ${displaySize(selSize.size)}` : ""}
@@ -908,47 +786,29 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
                 const sel = selSize?.sku === s.sku;
                 const dead = !s.in_stock;
                 const alerted = alertedSkus.has(s.sku);
-                const recommended = !selSize && recommendedSize &&
-                  String(s.size || "").trim().toUpperCase() === recommendedSize;
                 return (
                   <button
                     key={s.sku}
                     data-testid={`size-option-${s.size}`}
                     aria-pressed={sel}
-                    data-recommended={recommended ? "true" : undefined}
                     aria-label={dead
                       ? `${displaySize(s.size)} — sold out${alerted ? ", alert set" : ", tap to get notified"}`
                       : displaySize(s.size)}
-                    onClick={() => dead ? setNotifyModal({
-                      preSize: s,
-                      allVariants: false,
-                      productSku: detail.sku,
-                    }) : pickSize(s)}
+                    onClick={() => dead ? setNotifyModal({ preSize: s }) : pickSize(s)}
                     className={`relative min-w-[52px] h-11 px-3 rounded border text-[13px] font-medium transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 ${
                       dead
                         ? "border-border/60 bg-secondary/40 text-muted-foreground/50 line-through cursor-pointer hover:border-primary/50"
                         : sel
                           ? "border-foreground bg-foreground text-background"
-                          : recommended
-                            ? "border-primary bg-primary/5 text-primary-ink ring-1 ring-primary/30"
                           : "border-border bg-background text-foreground hover:border-foreground"
                     }`}
                   >
                     {displaySize(s.size)}
-                    {recommended && (
-                      <span className="absolute -top-2 left-1/2 -translate-x-1/2 bg-primary text-primary-foreground text-[8px] uppercase tracking-wider px-1.5 py-0.5 rounded-sm no-underline">
-                        My Size
-                      </span>
-                    )}
-                    {dead && (
+                    {dead && alerted && (
                       <span
                         aria-hidden="true"
-                        className={`absolute -top-2 -right-2 flex h-5 w-5 items-center justify-center rounded-full border-2 border-background shadow-sm ${
-                          alerted ? "bg-primary text-primary-foreground" : "bg-secondary text-foreground"
-                        }`}
-                      >
-                        <Bell size={10} strokeWidth={2} />
-                      </span>
+                        className="absolute -top-1.5 -right-1.5 w-3 h-3 rounded-full bg-primary border-2 border-background"
+                      />
                     )}
                   </button>
                 );
@@ -978,23 +838,19 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
             <QtyStepper value={qty} min={1} max={MAX_PER_ORDER} onChange={setQty} />
           </div>
 
-          {out ? (
+          <button data-testid="add-to-cart-btn" onClick={onAdd} disabled={out} className={btnPrimary}>
+            {out ? "Out of Stock" : <><ShoppingBag size={16} /> Add to Bag</>}
+          </button>
+
+          {/* Restock alert — shown when the whole product is OOS */}
+          {out && (
             <button
               data-testid="pdp-notify-me"
-              aria-label={alertedAll ? "NOTIFY ME, alert already set" : "NOTIFY ME"}
-              onClick={() => setNotifyModal({
-                preSize: null,
-                allVariants: true,
-                productSku: detail.sku,
-              })}
-              className={btnPrimary}
+              onClick={() => setNotifyModal({ preSize: null })}
+              className={`${btnSecondary} mt-2`}
             >
               <Bell size={16} />
-              NOTIFY ME
-            </button>
-          ) : (
-            <button data-testid="add-to-cart-btn" onClick={onAdd} className={btnPrimary}>
-              <ShoppingBag size={16} /> Add to Bag
+              {alertedSkus.size > 0 ? "Manage restock alerts" : "Notify me when available"}
             </button>
           )}
 
@@ -1101,17 +957,19 @@ export default function ProductDetail({ sku, member, onBack, onOpenProduct, onTr
 
       {notifyModal && (
         <NotifyMeModal
-          member={member}
-          productName={detail.name}
-          productSku={notifyModal.productSku || detail.sku}
+          sizes={detail.sizes}
           preSize={notifyModal.preSize}
-          allVariants={Boolean(notifyModal.allVariants)}
-          onConfirm={({ variantSku, allVariants }) => {
-            if (allVariants) setAlertedAll(true);
-            else if (variantSku) {
-              setAlertedSkus((prev) => new Set([...prev, variantSku]));
-            }
-          }}
+          alertedSkus={alertedSkus}
+          onConfirm={(sizeSkuAdded) =>
+            setAlertedSkus((prev) => new Set([...prev, sizeSkuAdded]))
+          }
+          onCancel={(sizeSkuRemoved) =>
+            setAlertedSkus((prev) => {
+              const next = new Set(prev);
+              next.delete(sizeSkuRemoved);
+              return next;
+            })
+          }
           onClose={() => setNotifyModal(null)}
         />
       )}

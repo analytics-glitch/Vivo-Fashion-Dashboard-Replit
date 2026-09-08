@@ -12,7 +12,6 @@ const MEMBER = {
   joined: "July 2022",
   points: 1586,
   lifetime_points: 1586,
-  member_barcode: "JH00000123",
   stats: { city: "Kenya", orders: 4, following: 12 },
 };
 
@@ -35,8 +34,6 @@ describe("AccountSummaryCard", () => {
     expect(within(card).getByTestId("rewards-points")).toHaveTextContent("1,586");
     expect(within(card).getByTestId("rewards-value")).toHaveTextContent("KES 2,500");
     expect(within(card).getByText("Tier Progress")).toBeInTheDocument();
-    expect(within(card).getByTestId("member-barcode")).toHaveTextContent("JH00000123");
-    expect(within(card).getByRole("img", { name: "Member barcode JH00000123" })).toBeInTheDocument();
     expect(within(card).getByTestId("profile-posts")).toHaveTextContent("3");
     expect(within(card).getByTestId("profile-points")).toHaveTextContent("1,586");
     expect(within(card).getByTestId("profile-orders")).toHaveTextContent("4");

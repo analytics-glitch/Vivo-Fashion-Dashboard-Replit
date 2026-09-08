@@ -7,14 +7,6 @@ const TOKEN_KEY = "vivo_community_token";
 let onUnauthorized = null;
 export function setUnauthorizedHandler(fn) { onUnauthorized = fn; }
 
-export function postNativeMessage(type, payload = {}) {
-  try {
-    if (window.ReactNativeWebView) {
-      window.ReactNativeWebView.postMessage(JSON.stringify({ type, ...payload }));
-    }
-  } catch { /* bridge unavailable or private browser */ }
-}
-
 export function getToken() {
   try { return localStorage.getItem(TOKEN_KEY) || ""; } catch { return ""; }
 }
@@ -23,10 +15,6 @@ export function setToken(t) {
     if (t) localStorage.setItem(TOKEN_KEY, t);
     else localStorage.removeItem(TOKEN_KEY);
   } catch { /* private mode */ }
-  // The installed Johari shell mirrors the opaque member token into the
-  // platform secure store. The browser still uses localStorage, so this is
-  // additive and does not change the hosted web experience.
-  postNativeMessage(t ? "auth-token" : "signed-out", { token: t || "" });
 }
 
 async function req(path, { method = "GET", body, auth = false } = {}) {
@@ -91,7 +79,14 @@ export const api = {
   logout: () => req("/auth/logout", { method: "POST", auth: true }),
   usernameCheck: (u) => req("/auth/username-check?u=" + encodeURIComponent(u), { auth: true }),
   updateSettings: (payload) => req("/me/settings", { method: "PUT", body: payload, auth: true }),
-  sizeProfileSave: (payload) => req("/me/size-profile", { method: "PUT", body: payload, auth: true }),
+
+  // Web push. These are the LOYALTY backend's push routes, mounted a second
+  // time under this prefix — a subscription belongs to the account, so a
+  // device registered here also receives the points and message notifications
+  // the loyalty app already sends.
+  pushKey: () => req("/push/key"),
+  pushSubscribe: (sub) => req("/push/subscribe", { method: "POST", body: sub, auth: true }),
+  pushUnsubscribe: (endpoint) => req("/push/unsubscribe", { method: "POST", body: { endpoint }, auth: true }),
   products: (opts = {}) => {
     // personalize needs the Bearer token so the server can find her Style DNA;
     // without it (or without a finished quiz) the server just returns the
@@ -188,8 +183,8 @@ export const api = {
   // size comes back in stock. Auth required for all three operations.
   restockAlerts: (sku) =>
     req("/restock-alert?sku=" + encodeURIComponent(sku), { auth: true }),
-  restockAlertSet: (payload) =>
-    req("/restock-alert", { method: "POST", body: payload, auth: true }),
+  restockAlertSet: (size_sku) =>
+    req("/restock-alert", { method: "POST", body: { size_sku }, auth: true }),
   restockAlertCancel: (size_sku) =>
     req("/restock-alert", { method: "DELETE", body: { size_sku }, auth: true }),
   // Challenges — real entries (photo riding the same b64-JSON lane as
