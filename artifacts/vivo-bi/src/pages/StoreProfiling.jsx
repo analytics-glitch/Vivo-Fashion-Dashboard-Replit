@@ -375,7 +375,7 @@ function StockDiagnosis({ store, enabled }) {
     { enabled, staleTime: 5 * 60_000 }
   );
   if (!enabled) {
-    return <div style={{ padding: 16, background: C.muted.bg, border: `1px solid ${C.muted.bdr}`, borderRadius: 10, color: C.muted.fg }}>Choose one store to view Stock Diagnosis.</div>;
+    return <div style={{ padding: 16, background: C.muted.bg, border: `1px solid ${C.muted.bdr}`, borderRadius: 10, color: C.muted.fg }}>Choose one store or All Stores to view Stock Diagnosis.</div>;
   }
   if (isLoading) return <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 20 }}><Skeleton rows={7} /></div>;
   if (error) return <ErrBox msg={error?.response?.data?.detail || error?.message} />;
@@ -395,8 +395,8 @@ function StockDiagnosis({ store, enabled }) {
           const tone = STOCK_STATUS[m?.status] || C.muted;
           return <div key={label} style={{ background: tone.bg, border: `1px solid ${tone.bdr}`, borderRadius: 10, padding: 14 }}>
             <div style={{ color: "#6b7280", fontSize: 11, fontWeight: 800, textTransform: "uppercase" }}>{label}</div>
-            <div style={{ color: "#111827", fontSize: 23, fontWeight: 900, marginTop: 3 }}>{fmtNum(m?.actual)} <span style={{ fontSize: 12, fontWeight: 500 }}>of {fmtNum(m?.target)} {unit}</span></div>
-            <div style={{ marginTop: 5 }}><Pill c={tone}>{m?.attainment_pct == null ? "No target configured" : `${m.attainment_pct}% · ${m.variance_units >= 0 ? "+" : ""}${fmtNum(m.variance_units)} (${m.variance_pct >= 0 ? "+" : ""}${m.variance_pct}%)`}</Pill></div>
+            <div style={{ color: "#111827", fontSize: 23, fontWeight: 900, marginTop: 3 }}>{fmtNum(m?.actual)} <span style={{ fontSize: 12, fontWeight: 500 }}>{m?.target == null ? unit : `of ${fmtNum(m.target)} ${unit}`}</span></div>
+            <div style={{ marginTop: 5 }}><Pill c={tone}>{m?.attainment_pct == null ? (data.store === "All Stores" ? "Complete network target not configured" : "No target configured") : `${m.attainment_pct}% · ${m.variance_units >= 0 ? "+" : ""}${fmtNum(m.variance_units)} (${m.variance_pct >= 0 ? "+" : ""}${m.variance_pct}%)`}</Pill></div>
           </div>;
         })}
       </div>
@@ -1415,7 +1415,7 @@ export default function StoreProfiling() {
 
           <SectionTitle icon="📦" title="Stock Diagnosis"
             subtitle="Test whether total stock, assortment breadth, missing sizes, mix, or retired inventory could explain performance" />
-          <StockDiagnosis store={store} enabled={selectedStores?.length === 1} />
+          <StockDiagnosis store={store} enabled={selectedStores?.length === 0 || selectedStores?.length === 1} />
 
           {/* 4 · Priority Actions */}
           {rpt && actions.length > 0 && (

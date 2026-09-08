@@ -357,6 +357,19 @@ def _stock_diag_price_band(value):
     return _STOCK_DIAG_PRICE_BANDS[0][0]
 
 
+def _stock_diag_primary_colour(value):
+    """Return only the leading colour from a combined colour label."""
+    raw = str(value or "").strip()
+    if not raw:
+        return "Unspecified"
+    return re.split(
+        r"\s*(?:/|,|&|\band\b)\s*",
+        raw,
+        maxsplit=1,
+        flags=re.IGNORECASE,
+    )[0].strip() or "Unspecified"
+
+
 def _stock_diag_metric(actual, target):
     target = int(target) if target is not None else None
     actual = int(actual or 0)
@@ -386,6 +399,7 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows):
     for source in rows:
         r = dict(source)
         r["stock_units"] = max(0.0, float(r.get("stock_units") or 0))
+        r["primary_colour"] = _stock_diag_primary_colour(r.get("primary_colour"))
         normalized_rows.append(r)
     style_states = {}
     for r in normalized_rows:
@@ -547,15 +561,49 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows):
 
 
 def _fetch_store_stock_diagnosis(store):
-    if not store or store == "All Stores" or "," in store:
-        raise ValueError("Stock Diagnosis requires one store")
-    meta = _db_exec("""
-        SELECT location_name, optimal_stock FROM pos_locations
-        WHERE location_name = %(store)s AND active = TRUE
-          AND LOWER(COALESCE(store_type,'')) = 'store'
-    """, {"store": store})
+    if not store or "," in store:
+        raise ValueError("Stock Diagnosis requires one store or All Stores")
+    all_stores = store == "All Stores"
+    if all_stores:
+        meta = _db_exec("""
+            SELECT COUNT(*) AS store_count,
+                   COUNT(optimal_stock) AS configured_count,
+                   SUM(optimal_stock) AS optimal_stock
+            FROM pos_locations
+            WHERE active = TRUE
+              AND LOWER(COALESCE(store_type,'')) = 'store'
+        """)
+    else:
+        meta = _db_exec("""
+            SELECT location_name, optimal_stock FROM pos_locations
+            WHERE location_name = %(store)s AND active = TRUE
+              AND LOWER(COALESCE(store_type,'')) = 'store'
+        """, {"store": store})
     if not meta:
         raise ValueError("Store not found")
+    if all_stores:
+        store_count = int(meta[0].get("store_count") or 0)
+        configured_count = int(meta[0].get("configured_count") or 0)
+        if not store_count:
+            raise ValueError("No active stores found")
+        optimal_stock = (
+            meta[0].get("optimal_stock")
+            if configured_count == store_count else None
+        )
+        stock_scope = (
+            A._SP_ALL_INV_PRED if A is not None
+            else (
+                "i.pos_location_name NOT ILIKE '%%warehouse%%' "
+                "AND i.pos_location_name NOT ILIKE '%%holding%%' "
+                "AND i.pos_location_name NOT ILIKE '%%transit%%' "
+                "AND i.pos_location_name NOT ILIKE '%%receiving%%'"
+            )
+        )
+        sales_scope = "TRUE"
+    else:
+        optimal_stock = meta[0].get("optimal_stock")
+        stock_scope = "i.pos_location_name = %(store)s"
+        sales_scope = "s.pos_location_name = %(store)s"
     rows = _db_exec(f"""
         WITH products AS (
             SELECT sku,
@@ -575,15 +623,15 @@ def _fetch_store_stock_diagnosis(store):
             GROUP BY sku
         ), stock AS (
             SELECT sku, SUM(available) AS stock_units
-            FROM all_inventory
-            WHERE pos_location_name = %(store)s
+            FROM all_inventory i
+            WHERE {stock_scope}
             GROUP BY sku
         ), sales AS (
             SELECT variant_sku AS sku,
                    SUM(CASE WHEN sale_kind IN ('sale','order')
                             THEN ordered_item_quantity ELSE 0 END) AS units_sold
             FROM all_sales s
-            WHERE s.pos_location_name = %(store)s
+            WHERE {sales_scope}
               AND s.sale_date::date BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
               AND {_BASE_FILTERS}
             GROUP BY variant_sku
@@ -595,7 +643,7 @@ def _fetch_store_stock_diagnosis(store):
         LEFT JOIN sales sa ON sa.sku = p.sku
     """, {"store": store}) or []
     return _build_store_stock_diagnosis(
-        store, meta[0].get("optimal_stock"), [dict(r) for r in rows])
+        store, optimal_stock, [dict(r) for r in rows])
 
 
 # ── Style universe query ───────────────────────────────────────────────────────
@@ -7603,12 +7651,12 @@ def register_merch_routes(app, api_pg_module):
         request: Request,
         store: Optional[str] = Query(None),
     ):
-        """Current store stock, breadth, size, mix and lifecycle evidence."""
+        """Current store or all-store stock, breadth, size, mix and lifecycle evidence."""
         if not store:
             return JSONResponse({"detail": "store is required"}, status_code=400)
-        if store == "All Stores" or "," in store:
+        if "," in store:
             return JSONResponse(
-                {"detail": "Choose one store to view Stock Diagnosis"},
+                {"detail": "Choose one store or All Stores to view Stock Diagnosis"},
                 status_code=400)
         try:
             result = _cached(
