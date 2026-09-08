@@ -3899,6 +3899,7 @@ def _parse_date_range(date_from: str, date_to: str):
     return (f, t) if f <= t else (t, f)
 
 
+@fabric_router.get("/api/internal/product-workspace-fabric-mix")
 @fabric_router.get("/api/fabric/mix")
 def fabric_mix(
     group_by: str = Query(default="category"),

@@ -841,7 +841,8 @@ _AUTH_INTERNAL_TOKEN_PATHS = {"/api/analytics/replenishment-sor/snapshot",
                               "/api/ibt/nightly-reconcile",
                                "/api/admin/upsert-store-targets",
                                "/api/internal/product-workspace-source",
-                               "/api/internal/product-workspace-cogs"}
+                               "/api/internal/product-workspace-cogs",
+                               "/api/internal/product-workspace-fabric-mix"}
 
 # Endpoints that accept EITHER a valid internal token (sync loop, no session) OR
 # a normal authenticated staff session (browser). Unlike the strict set above, a

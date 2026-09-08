@@ -1,0 +1,48 @@
+.fsm-export-menu {
+  position: relative;
+  margin-left: auto;
+}
+
+.fsm-export-menu .fsm-export {
+  margin-left: 0;
+  list-style: none;
+}
+
+.fsm-export-menu .fsm-export::-webkit-details-marker {
+  display: none;
+}
+
+.fsm-export-menu > div {
+  position: absolute;
+  right: 0;
+  top: 40px;
+  z-index: 8;
+  min-width: 230px;
+  padding: 6px;
+  border: 1px solid #ddd5ca;
+  border-radius: 9px;
+  background: #fff;
+  box-shadow: 0 12px 30px #39291d26;
+}
+
+.fsm-export-menu > div button {
+  display: block;
+  width: 100%;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 9px;
+  text-align: left;
+  color: #463e36;
+  cursor: pointer;
+}
+
+.fsm-export-menu > div button:hover {
+  background: #f5f1eb;
+}
+
+@media (max-width: 900px) {
+  .fsm-export-menu {
+    margin-left: 0;
+  }
+}

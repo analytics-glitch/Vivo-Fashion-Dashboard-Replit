@@ -8891,6 +8891,34 @@ router.get("/assortment-plan", async (_req, res, next) => {
   }
 });
 
+router.get("/fabric-stock-mix", async (req, res, next) => {
+  try {
+    const groupBy = String(req.query.group_by ?? "category").toLowerCase().startsWith("sub")
+      ? "subcategory"
+      : "category";
+    const days = Math.max(1, Math.min(730, Number.parseInt(String(req.query.days ?? "30"), 10) || 30));
+    const datePattern = /^\d{4}-\d{2}-\d{2}$/;
+    const dateFrom = datePattern.test(String(req.query.date_from ?? "")) ? String(req.query.date_from) : "";
+    const dateTo = datePattern.test(String(req.query.date_to ?? "")) ? String(req.query.date_to) : "";
+    const params = new URLSearchParams({
+      group_by: groupBy,
+      days: String(days),
+      location: "RMAT/Stock",
+      scope: "main",
+    });
+    if (dateFrom && dateTo) {
+      params.set("date_from", dateFrom);
+      params.set("date_to", dateTo);
+    }
+    const url = `http://127.0.0.1:${process.env.BI_API_PORT ?? "8080"}/api/internal/product-workspace-fabric-mix?${params}`;
+    const payload = await biRequest<Record<string, unknown>>(url, "GET", undefined, 120_000);
+    res.setHeader("Cache-Control", "private, max-age=30");
+    res.json(payload);
+  } catch (error) {
+    next(error);
+  }
+});
+
 router.get("/assortment-image/:styleNumber", requireUser, async (req, res, next) => {
   try {
     const styleNumber = decodeURIComponent(String(req.params.styleNumber ?? "")).trim();
