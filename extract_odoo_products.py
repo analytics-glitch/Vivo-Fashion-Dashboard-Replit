@@ -74,6 +74,7 @@ def main():
         "x_studio_fabric_ref", # Exact fabric product used by this colourway
         "x_vivo_collection",
         "x_vivo_color",
+        "x_vivo_attr_48",   # Primary Color
         "x_vivo_categories",
         "active", "write_date",
         "product_tmpl_id",  # needed for template-level tier/status fallback
@@ -94,7 +95,8 @@ def main():
     cur.execute("""
         ALTER TABLE raw_odoo_products
         ADD COLUMN IF NOT EXISTS fabric_product_id BIGINT,
-        ADD COLUMN IF NOT EXISTS fabric_barcode TEXT
+        ADD COLUMN IF NOT EXISTS fabric_barcode TEXT,
+        ADD COLUMN IF NOT EXISTS primary_color TEXT
     """)
     conn.commit()
     cur.execute("TRUNCATE raw_odoo_products")
@@ -197,6 +199,7 @@ def main():
                 get_m2o_name(r.get("x_vivo_attr_18")),  # style_number
                 get_m2o_name(r.get("x_vivo_collection")),# collection
                 get_m2o_name(r.get("x_vivo_color")),    # color
+                get_m2o_name(r.get("x_vivo_attr_48")),  # primary_color
                 get_m2o_name(r.get("x_vivo_attr_22")),  # brand
                 get_m2o_name(r.get("x_vivo_attr_20")),  # vendor
                 get_m2o_name(r.get("x_vivo_categories")),# category
@@ -227,7 +230,7 @@ def main():
                 id, name, default_code, barcode,
                 list_price, standard_price, categ_name,
                 sub_category, style_name, style_number,
-                collection, color, brand, vendor,
+                collection, color, primary_color, brand, vendor,
                 category, gender, season, status, tier,
                 fabric_structure, plain_print, source_country, source_city,
                 fabric_category, fabric_subcategory, fabric_width, gsm,
@@ -239,6 +242,7 @@ def main():
                 name = EXCLUDED.name,
                 list_price = EXCLUDED.list_price,
                 standard_price = EXCLUDED.standard_price,
+                primary_color = EXCLUDED.primary_color,
                 status = EXCLUDED.status,
                 tier = EXCLUDED.tier,
                 fabric_structure = EXCLUDED.fabric_structure,

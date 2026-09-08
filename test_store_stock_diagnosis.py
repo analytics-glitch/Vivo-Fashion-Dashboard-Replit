@@ -98,21 +98,6 @@ class TestStoreStockDiagnosis(unittest.TestCase):
         self.assertEqual(out["inventory"]["actual"], 0)
         self.assertEqual(sum(r["units"] for r in out["lifecycle"]), 0)
 
-    def test_primary_colour_excludes_secondary_colours(self):
-        rows = [
-            {"style_name": "A", "primary_colour": "Navy / White Print", "size": "S",
-             "category": "Clothing", "lifecycle": "Active",
-             "stock_units": 8, "units_sold": 3},
-            {"style_name": "B", "primary_colour": "Navy, Orange", "size": "M",
-             "category": "Clothing", "lifecycle": "Active",
-             "stock_units": 5, "units_sold": 2},
-        ]
-        out = merch_router._build_store_stock_diagnosis("Vivo Meru", 20, rows)
-        colours = out["stock_to_sales"]["primary_colour"]
-        self.assertEqual([r["segment"] for r in colours], ["Navy"])
-        self.assertEqual(colours[0]["inventory_units"], 13)
-        self.assertEqual(out["colour_styles"]["actual"], 2)
-
     @patch("merch_router._db_exec")
     def test_all_stores_uses_active_store_scope_and_summed_target(self, db_exec):
         db_exec.side_effect = [
@@ -125,6 +110,8 @@ class TestStoreStockDiagnosis(unittest.TestCase):
         sql = db_exec.call_args_list[1].args[0]
         self.assertIn("i.pos_location_name NOT ILIKE '%%warehouse%%'", sql)
         self.assertIn("WHERE TRUE", sql)
+        self.assertIn("mode() WITHIN GROUP (ORDER BY rop.primary_color)", sql)
+        self.assertNotIn("ORDER BY p.color_print", sql)
 
     @patch("merch_router._db_exec")
     def test_all_stores_hides_partial_network_target(self, db_exec):

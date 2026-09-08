@@ -357,19 +357,6 @@ def _stock_diag_price_band(value):
     return _STOCK_DIAG_PRICE_BANDS[0][0]
 
 
-def _stock_diag_primary_colour(value):
-    """Return only the leading colour from a combined colour label."""
-    raw = str(value or "").strip()
-    if not raw:
-        return "Unspecified"
-    return re.split(
-        r"\s*(?:/|,|&|\band\b)\s*",
-        raw,
-        maxsplit=1,
-        flags=re.IGNORECASE,
-    )[0].strip() or "Unspecified"
-
-
 def _stock_diag_metric(actual, target):
     target = int(target) if target is not None else None
     actual = int(actual or 0)
@@ -399,7 +386,6 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows):
     for source in rows:
         r = dict(source)
         r["stock_units"] = max(0.0, float(r.get("stock_units") or 0))
-        r["primary_colour"] = _stock_diag_primary_colour(r.get("primary_colour"))
         normalized_rows.append(r)
     style_states = {}
     for r in normalized_rows:
@@ -606,21 +592,22 @@ def _fetch_store_stock_diagnosis(store):
         sales_scope = "s.pos_location_name = %(store)s"
     rows = _db_exec(f"""
         WITH products AS (
-            SELECT sku,
-                   mode() WITHIN GROUP (ORDER BY style_name) AS style_name,
-                   mode() WITHIN GROUP (ORDER BY category) AS category,
-                   mode() WITHIN GROUP (ORDER BY product_type) AS subcategory,
-                   mode() WITHIN GROUP (ORDER BY color_print) AS primary_colour,
-                   mode() WITHIN GROUP (ORDER BY size) AS size,
-                   mode() WITHIN GROUP (ORDER BY print_plain) AS print_plain,
-                   mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS price,
-                   CASE WHEN BOOL_OR(LOWER(COALESCE(status,'')) = 'active')
+            SELECT p.sku,
+                   mode() WITHIN GROUP (ORDER BY p.style_name) AS style_name,
+                   mode() WITHIN GROUP (ORDER BY p.category) AS category,
+                   mode() WITHIN GROUP (ORDER BY p.product_type) AS subcategory,
+                   mode() WITHIN GROUP (ORDER BY rop.primary_color) AS primary_colour,
+                   mode() WITHIN GROUP (ORDER BY p.size) AS size,
+                   mode() WITHIN GROUP (ORDER BY p.print_plain) AS print_plain,
+                   mode() WITHIN GROUP (ORDER BY p.price) FILTER (WHERE p.price > 0) AS price,
+                   CASE WHEN BOOL_OR(LOWER(COALESCE(p.status,'')) = 'active')
                         THEN 'Active'
-                        WHEN BOOL_AND(LOWER(COALESCE(status,'')) = 'retired')
+                         WHEN BOOL_AND(LOWER(COALESCE(p.status,'')) = 'retired')
                         THEN 'Retired' ELSE 'Excluded' END AS lifecycle
-            FROM all_products_clean
-            WHERE {_PROD_BASE.replace('p.', '')}
-            GROUP BY sku
+            FROM all_products_clean p
+            LEFT JOIN raw_odoo_products rop ON rop.id = p.product_id
+            WHERE {_PROD_BASE}
+            GROUP BY p.sku
         ), stock AS (
             SELECT sku, SUM(available) AS stock_units
             FROM all_inventory i

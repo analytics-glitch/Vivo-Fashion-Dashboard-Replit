@@ -389,7 +389,7 @@ function StockDiagnosis({ store, enabled }) {
   const sizeInfo = data.size_completeness || {};
   const th = { padding: "9px 11px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#6b7280", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" };
   return (
-    <div data-testid="store-stock-diagnosis" style={{ display: "grid", gap: 14 }}>
+    <div data-testid="store-stock-diagnosis" style={{ display: "grid", gap: 10 }}>
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 10 }}>
         {metrics.map(([label, m, unit]) => {
           const tone = STOCK_STATUS[m?.status] || C.muted;
@@ -400,15 +400,15 @@ function StockDiagnosis({ store, enabled }) {
           </div>;
         })}
       </div>
-      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
         <div style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>Evidence summary</div>
-        <div style={{ display: "grid", gap: 7, marginTop: 9 }}>
+        <div style={{ display: "grid", gap: 3, marginTop: 5 }}>
           {(data.evidence || []).map((e) => <div key={e.key} style={{ fontSize: 13, color: "#374151" }}><strong>• {e.summary}</strong></div>)}
         </div>
-        <div style={{ marginTop: 8, color: "#9ca3af", fontSize: 11 }}>Evidence flags describe current stock conditions; they do not automatically label weak sales as a stock problem.</div>
+        <div style={{ marginTop: 5, color: "#9ca3af", fontSize: 11 }}>Evidence flags describe current stock conditions; they do not automatically label weak sales as a stock problem.</div>
       </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 12 }}>
-        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 10, alignItems: "start" }}>
+        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
             <div><strong>Size completeness</strong><div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>{fmtNum(sizeInfo.complete_colour_styles)} of {fmtNum(sizeInfo.assessable_colour_styles)} assessable colour-styles complete{sizeInfo.unassessable_colour_styles ? ` · ${fmtNum(sizeInfo.unassessable_colour_styles)} lack size metadata` : ""}</div></div>
             <button type="button" onClick={() => setShowSizes(v => !v)} style={{ border: "1px solid #d1d5db", background: "#fff", borderRadius: 7, padding: "6px 10px", cursor: "pointer", fontWeight: 700 }}>{showSizes ? "Hide gaps" : `Inspect ${fmtNum(sizeInfo.colour_styles_with_missing_sizes)} gaps`}</button>
@@ -417,9 +417,9 @@ function StockDiagnosis({ store, enabled }) {
             {(sizeInfo.rows || []).map((r) => <tr key={`${r.style}|${r.primary_colour}`} style={{ borderBottom: "1px solid #f3f4f6" }}><td style={{ padding: 9, fontWeight: 700 }}>{r.style}</td><td style={{ padding: 9 }}>{r.primary_colour}</td><td style={{ padding: 9 }}>{r.expected_sizes.join(", ")}</td><td style={{ padding: 9 }}>{r.present_sizes.join(", ") || "None"}</td><td style={{ padding: 9, color: C.bad.fg, fontWeight: 700 }}>{r.missing_sizes.join(", ")}</td></tr>)}
           </tbody></table></div>}
         </div>
-        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
           <strong>Lifecycle of current inventory</strong>
-          <div style={{ display: "grid", gap: 9, marginTop: 12 }}>{(data.lifecycle || []).map((r) => <div key={r.lifecycle} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}><div style={{ display: "flex", justifyContent: "space-between" }}><b>{r.lifecycle}</b><b>{fmtNum(r.units)} units · {fmtPct(r.inventory_share_pct)}</b></div><div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>{fmtNum(r.styles)} styles · {fmtNum(r.colour_styles)} colour-styles</div></div>)}</div>
+          <div style={{ display: "grid", gap: 6, marginTop: 7 }}>{(data.lifecycle || []).map((r) => <div key={r.lifecycle} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "7px 9px" }}><div style={{ display: "flex", justifyContent: "space-between" }}><b>{r.lifecycle}</b><b>{fmtNum(r.units)} units · {fmtPct(r.inventory_share_pct)}</b></div><div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{fmtNum(r.styles)} styles · {fmtNum(r.colour_styles)} colour-styles</div></div>)}</div>
         </div>
       </div>
       <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>

@@ -25,7 +25,7 @@ tables = [
         id BIGINT PRIMARY KEY, name TEXT, default_code TEXT, barcode TEXT,
         list_price NUMERIC, standard_price NUMERIC, categ_name TEXT,
         sub_category TEXT, style_name TEXT, style_number TEXT,
-        collection TEXT, color TEXT, brand TEXT, vendor TEXT,
+        collection TEXT, color TEXT, primary_color TEXT, brand TEXT, vendor TEXT,
         category TEXT, gender TEXT, season TEXT,
         status TEXT, tier TEXT,
         active BOOLEAN, fabric_structure TEXT,
