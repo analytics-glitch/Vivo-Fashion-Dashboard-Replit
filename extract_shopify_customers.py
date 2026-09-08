@@ -8,7 +8,7 @@ import argparse
 import logging
 import os
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import psycopg2
 import requests
@@ -20,7 +20,7 @@ from transform_all_customers import ensure_customer_profile_columns, upsert_shop
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+DATABASE_URL = os.environ.get("VIVO_DATABASE_URL") or os.environ.get("DATABASE_URL")
 BATCH_SIZE = 250
 API_VERSION = os.environ.get("SHOPIFY_API_VERSION", "2025-10")
 FIRST_SYNC_AT = "2019-01-01T00:00:00Z"
@@ -66,6 +66,15 @@ def active_stores():
     ]
 
 
+def stores(selected=None):
+    """Compatibility adapter for the identity recovery path."""
+    selected = set(selected or ())
+    return [
+        store for store in active_stores()
+        if not selected or store["store_id"] in selected
+    ]
+
+
 def ensure_sync_schema(cur):
     cur.execute("""
         CREATE TABLE IF NOT EXISTS shopify_customer_sync_state (
@@ -82,6 +91,36 @@ def ensure_sync_schema(cur):
         "ALTER TABLE raw_shopify_customers "
         "ADD COLUMN IF NOT EXISTS default_address_city TEXT"
     )
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS shopify_customer_source_sync (
+            store_id TEXT PRIMARY KEY,
+            attempted_at TIMESTAMPTZ,
+            succeeded_at TIMESTAMPTZ,
+            source_updated_at TIMESTAMPTZ,
+            rows_fetched INTEGER NOT NULL DEFAULT 0,
+            status TEXT NOT NULL DEFAULT 'never',
+            error TEXT
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS shopify_customer_missing_retry (
+            store_id TEXT NOT NULL,
+            customer_id TEXT NOT NULL,
+            attempts INTEGER NOT NULL DEFAULT 0,
+            last_attempt_at TIMESTAMPTZ,
+            next_retry_at TIMESTAMPTZ,
+            last_error TEXT,
+            PRIMARY KEY(store_id, customer_id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS shopify_customer_pending (
+            store_id TEXT NOT NULL,
+            customer_id TEXT NOT NULL,
+            queued_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+            PRIMARY KEY(store_id, customer_id)
+        )
+    """)
     cur.execute(
         "ALTER TABLE raw_shopify_customers "
         "ADD COLUMN IF NOT EXISTS default_address_province TEXT"
@@ -114,7 +153,9 @@ def get_last_sync(cur, store_id):
     )
     row = cur.fetchone()
     if row and row[0]:
-        return row[0].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        return (row[0].astimezone(timezone.utc) - timedelta(minutes=5)).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
     return FIRST_SYNC_AT
 
 
@@ -216,6 +257,28 @@ def fetch_customers(store_url, token, since, session=requests, sleep=time.sleep,
         )
         url = _next_link(response.headers.get("Link"))
         params = {}
+    return customers
+
+
+def fetch_customers_by_ids(
+    store_url, token, customer_ids, session=requests, sleep=time.sleep,
+    heartbeat=None,
+):
+    headers = {"X-Shopify-Access-Token": token}
+    customers = []
+    for start in range(0, len(customer_ids), 100):
+        ids = [str(value) for value in customer_ids[start:start + 100]]
+        if not ids:
+            continue
+        response = _request_page(
+            session,
+            f"https://{store_url}/admin/api/{API_VERSION}/customers.json",
+            headers,
+            {"ids": ",".join(ids), "limit": 100, "fields": CUSTOMER_FIELDS},
+            sleep=sleep,
+            heartbeat=heartbeat,
+        )
+        customers.extend(response.json().get("customers", []))
     return customers
 
 
@@ -352,6 +415,7 @@ def sync_store(store, connection_factory=psycopg2.connect, session=requests,
             "fetched": len(customers),
             "upserted": upserted,
             "success": True,
+            "identity_recovery_needed": True,
         }
         log.info("%s Shopify customers: %s", store_id, result)
         return result
@@ -395,6 +459,95 @@ def sync_all_stores(stores=None, **kwargs):
             reports.append(report)
             log.error("%s Shopify customer sync failed: %s", store["store_id"], exc)
     return reports
+
+
+def _sync_recovery_store(conn, store, missing_ids=None):
+    """Shared-transaction variant used by canonical identity recovery."""
+    store_id = store["store_id"]
+    attempted_at = datetime.now(timezone.utc)
+    with conn.cursor() as cur:
+        ensure_sync_schema(cur)
+        cur.execute("""
+            INSERT INTO shopify_customer_source_sync(store_id,attempted_at,status)
+            VALUES(%s,%s,'running') ON CONFLICT(store_id) DO UPDATE SET
+            attempted_at=EXCLUDED.attempted_at,status='running',error=NULL
+        """, (store_id, attempted_at))
+        since = get_last_sync(cur, store_id)
+    conn.commit()
+    try:
+        customers = fetch_customers(store["store_url"], store["token"], since)
+        found = {str(c["id"]) for c in customers}
+        wanted = [
+            str(value) for value in (missing_ids or ())
+            if str(value) not in found
+        ]
+        if wanted:
+            customers.extend(fetch_customers_by_ids(
+                store["store_url"], store["token"], wanted
+            ))
+        loaded_at = datetime.now(timezone.utc)
+        rows = [customer_row(c, store_id, loaded_at) for c in customers]
+        changed = {row[0] for row in rows}
+        with conn.cursor() as cur:
+            if rows:
+                execute_values(cur, RAW_UPSERT_SQL, rows, page_size=500)
+                execute_values(
+                    cur,
+                    """INSERT INTO shopify_customer_pending(store_id,customer_id)
+                       VALUES %s ON CONFLICT(store_id,customer_id) DO UPDATE
+                       SET queued_at=EXCLUDED.queued_at""",
+                    [(store_id, customer_id) for customer_id in changed],
+                )
+            upsert_shopify_store(cur, store_id, customer_ids=list(changed))
+            source_times = [
+                c.get("updated_at") for c in customers if c.get("updated_at")
+            ]
+            cur.execute("""
+                INSERT INTO shopify_customer_source_sync(
+                  store_id,attempted_at,succeeded_at,source_updated_at,
+                  rows_fetched,status,error)
+                VALUES(%s,%s,%s,%s,%s,'ready',NULL)
+                ON CONFLICT(store_id) DO UPDATE SET
+                  attempted_at=EXCLUDED.attempted_at,
+                  succeeded_at=EXCLUDED.succeeded_at,
+                  source_updated_at=COALESCE(
+                    EXCLUDED.source_updated_at,
+                    shopify_customer_source_sync.source_updated_at),
+                  rows_fetched=EXCLUDED.rows_fetched,status='ready',error=NULL
+            """, (
+                store_id, attempted_at, loaded_at,
+                max(source_times) if source_times else None, len(rows),
+            ))
+        conn.commit()
+        return changed
+    except Exception as exc:
+        conn.rollback()
+        with conn.cursor() as cur:
+            ensure_sync_schema(cur)
+            cur.execute("""
+                INSERT INTO shopify_customer_source_sync(
+                  store_id,attempted_at,status,error)
+                VALUES(%s,%s,'failed',%s)
+                ON CONFLICT(store_id) DO UPDATE SET
+                  attempted_at=EXCLUDED.attempted_at,status='failed',
+                  error=EXCLUDED.error
+            """, (store_id, attempted_at, str(exc)[:2000]))
+        conn.commit()
+        raise
+
+
+def sync(conn, selected=None, missing_by_store=None):
+    """Recover selected markets while isolating per-store failures."""
+    results = {}
+    for store in stores(selected):
+        try:
+            results[store["store_id"]] = _sync_recovery_store(
+                conn, store, (missing_by_store or {}).get(store["store_id"])
+            )
+        except Exception as exc:
+            log.error("Shopify customer sync failed for %s: %s", store["store_id"], exc)
+            results[store["store_id"]] = exc
+    return results
 
 
 def verify_coverage(connection_factory=psycopg2.connect):
@@ -469,6 +622,8 @@ def verify_coverage(connection_factory=psycopg2.connect):
 
 
 def main():
+    if not DATABASE_URL:
+        raise RuntimeError("VIVO_DATABASE_URL or DATABASE_URL is required")
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--store",

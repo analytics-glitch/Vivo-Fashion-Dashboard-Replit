@@ -12,7 +12,7 @@ from psycopg2.extras import execute_values
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ.get("VIVO_DATABASE_URL") or os.environ["DATABASE_URL"]
+DATABASE_URL = os.environ.get("VIVO_DATABASE_URL") or os.environ.get("DATABASE_URL")
 
 SHOPIFY_COUNTRIES = {
     "vivo-uganda": "Uganda",
@@ -209,6 +209,7 @@ def _backfill_order_stats(cur):
             END
         FROM (
             SELECT
+                s.store_id,
                 s.customer_id,
                 COUNT(DISTINCT s.order_id) AS order_count,
                 ROUND(SUM(s.total_sales_kes)::numeric, 2) AS total_kes,
@@ -218,9 +219,10 @@ def _backfill_order_stats(cur):
             WHERE s.customer_id IS NOT NULL
               AND s.customer_id NOT IN ('', 'None', 'null')
               AND s.sale_kind IN ('sale', 'order')
-            GROUP BY s.customer_id
+            GROUP BY s.store_id, s.customer_id
         ) agg
-        WHERE ac.customer_id = agg.customer_id
+        WHERE ac.store_id = agg.store_id
+          AND ac.customer_id = agg.customer_id
     """)
     log.info("Updated %d customer stat rows", cur.rowcount)
 

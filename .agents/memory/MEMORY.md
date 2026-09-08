@@ -129,6 +129,7 @@
 - [Python deps in .pythonlibs](python-deps-pythonlibs.md) — pip & installLanguagePackages fail here; add backend pkgs via `uv pip install --target .pythonlibs/lib/python3.11/site-packages`.
 - [Project Reconnect one-off export](project-reconnect-oneoff-export.md) — private cohort constants never alias canonical churn ones; no wholesale/staff flag exists; late restricted-draw tests get starved by earlier unrestricted ones.
 - Canonical identity: [customer matching](canonical-customer-identity.md) uses normalized phone and store-qualified keys; [sales aliases](canonical-sales-identity-aliases.md) preserve person_id until final projections.
+- [Customer identity recovery](customer-identity-recovery.md) — raw-to-canonical handoff needs versioned pending work; readiness can be scoped to recovered sources while legacy gaps stay visible.
 - [Embedded operations access and freshness](embedded-operations-access-freshness.md) — combine page grants with explicit staff rosters; never let shared live work inherit BI caches.
 - [Atelier visual identity](atelier-visual-identity.md) — Atelier uses clay and warm neutrals with Playfair/DM Sans; keep status colors semantic and single-record screens free of BI chrome.
 - [Products Plan stock basis](products-plan-stock-basis.md) — opening stock is Stores + Warehouse Finished Goods; WOC uses 4.28 weeks and stock-to-sales variance is stock share minus unit share.

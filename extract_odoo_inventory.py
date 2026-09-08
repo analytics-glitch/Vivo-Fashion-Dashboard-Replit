@@ -8,7 +8,7 @@ import logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-DATABASE_URL  = os.environ['DATABASE_URL']
+DATABASE_URL = os.environ.get("VIVO_DATABASE_URL") or os.environ.get("DATABASE_URL")
 ODOO_URL      = os.environ['ODOO_URL']
 ODOO_DB       = os.environ['ODOO_DB']
 ODOO_USER     = os.environ['ODOO_USER']

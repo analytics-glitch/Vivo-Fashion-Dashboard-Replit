@@ -13,7 +13,7 @@ def main():
     try:
         subprocess.run([str(Path(binary).parent/"pg_ctl"),"-D",str(data),"-o",f"-h 127.0.0.1 -k {root} -p {p}","-w","start"],check=True,stdout=subprocess.DEVNULL)
         subprocess.run([str(Path(binary).parent/"createdb"),"-h","127.0.0.1","-p",str(p),"-U",user,"identity_test"],check=True)
-        env=os.environ.copy(); env.pop("DATABASE_URL",None); env.pop("VIVO_DATABASE_URL",None); env["TEST_DATABASE_URL"]=f"postgresql://{user}@127.0.0.1:{p}/identity_test?sslmode=disable"; env["IDENTITY_EXPECTED_SOURCES"]="shopify:vivo-uganda"
+        env=os.environ.copy(); env.pop("DATABASE_URL",None); env.pop("VIVO_DATABASE_URL",None); env["TEST_DATABASE_URL"]=f"postgresql://{user}@127.0.0.1:{p}/identity_test?sslmode=disable"; env["IDENTITY_EXPECTED_SOURCES"]="shopify:vivo-uganda"; env["IDENTITY_UNMATCHED_SALES_THRESHOLD"]="0"
         subprocess.run([sys.executable,"-m","unittest","-v","test_customer_identity_pg"],check=True,env=env)
     finally:
         subprocess.run([str(Path(binary).parent/"pg_ctl"),"-D",str(data),"-m","fast","-w","stop"],check=False,stdout=subprocess.DEVNULL)

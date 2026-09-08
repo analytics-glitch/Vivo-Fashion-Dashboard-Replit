@@ -11,7 +11,7 @@ from contextlib import contextmanager
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-DATABASE_URL = os.environ["DATABASE_URL"]
+DATABASE_URL = os.environ.get("VIVO_DATABASE_URL") or os.environ.get("DATABASE_URL")
 
 
 # The watchdog's main-cycle liveness/recovery decision keys off ONLY the
@@ -1664,6 +1664,198 @@ def sync_odoo_customers_incremental(conn):
         raise
 
 
+def sync_shopify_customers_incremental(conn):
+    """Refresh Uganda/Rwanda profiles, repair recent gaps, and republish identity."""
+    from extract_shopify_customers import ensure_sync_schema, sync
+
+    target_stores = ("vivo-uganda", "vivo-rwanda")
+    now_utc = datetime.now(timezone.utc)
+    with conn.cursor() as cur:
+        ensure_sync_schema(cur)
+        cur.execute(
+            """
+            WITH missing AS (
+                SELECT DISTINCT s.store_id, s.customer_id::text customer_id
+                FROM all_sales s
+                WHERE s.store_id = ANY(%s)
+                  AND s.customer_id IS NOT NULL
+                  AND s.customer_id::text NOT IN ('', 'None', 'null')
+                  AND s.sale_date::date >= (now() - interval '180 days')::date
+                  AND (
+                    NOT EXISTS (
+                      SELECT 1 FROM raw_shopify_customers r
+                      WHERE r.store_id=s.store_id AND r.id=s.customer_id::text
+                    )
+                    OR NOT EXISTS (
+                      SELECT 1 FROM all_customers c
+                      WHERE c.store_id=s.store_id AND c.customer_id=s.customer_id::text
+                    )
+                  )
+            )
+            SELECT m.store_id, m.customer_id
+            FROM missing m
+            LEFT JOIN shopify_customer_missing_retry q
+              ON q.store_id=m.store_id AND q.customer_id=m.customer_id
+            WHERE q.next_retry_at IS NULL OR q.next_retry_at <= now()
+            ORDER BY m.store_id, m.customer_id
+            LIMIT 1000
+            """,
+            (list(target_stores),),
+        )
+        missing_by_store = {}
+        for store_id, customer_id in cur.fetchall():
+            missing_by_store.setdefault(store_id, []).append(customer_id)
+    conn.commit()
+
+    results = sync(conn, selected=target_stores, missing_by_store=missing_by_store)
+    successful = {
+        store_id: ids for store_id, ids in results.items()
+        if not isinstance(ids, Exception)
+    }
+    failed = {
+        store_id: error for store_id, error in results.items()
+        if isinstance(error, Exception)
+    }
+
+    with conn.cursor() as cur:
+        for store_id, requested in missing_by_store.items():
+            found = successful.get(store_id, set())
+            unresolved = [
+                customer_id for customer_id in requested
+                if customer_id not in found
+            ]
+            if found:
+                cur.execute(
+                    """DELETE FROM shopify_customer_missing_retry
+                       WHERE store_id=%s AND customer_id=ANY(%s)""",
+                    (store_id, list(found)),
+                )
+            for customer_id in unresolved:
+                error = failed.get(store_id)
+                cur.execute(
+                    """
+                    INSERT INTO shopify_customer_missing_retry(
+                      store_id,customer_id,attempts,last_attempt_at,
+                      next_retry_at,last_error)
+                    VALUES(%s,%s,1,%s,%s,%s)
+                    ON CONFLICT(store_id,customer_id) DO UPDATE SET
+                      attempts=shopify_customer_missing_retry.attempts+1,
+                      last_attempt_at=EXCLUDED.last_attempt_at,
+                      next_retry_at=EXCLUDED.next_retry_at,
+                      last_error=EXCLUDED.last_error
+                    """,
+                    (
+                        store_id, customer_id, now_utc,
+                        now_utc + timedelta(hours=24),
+                        (str(error) if error else
+                         "customer not returned by Shopify")[:2000],
+                    ),
+                )
+        cur.execute(
+            """SELECT store_id,customer_id,queued_at
+               FROM shopify_customer_pending
+               WHERE store_id=ANY(%s)
+               ORDER BY queued_at LIMIT 5000""",
+            (list(target_stores),),
+        )
+        changed_keys = cur.fetchall()
+    conn.commit()
+
+    if changed_keys:
+        with conn.cursor() as cur:
+            cur.execute(
+                "CREATE TEMP TABLE _shopify_customer_changed("
+                "store_id text,customer_id text,queue_token timestamptz) "
+                "ON COMMIT DROP"
+            )
+            execute_values(
+                cur, "INSERT INTO _shopify_customer_changed VALUES %s",
+                changed_keys,
+            )
+            cur.execute(
+                """
+                INSERT INTO all_customers(
+                    customer_id,store_id,first_name,last_name,email,phone,
+                    city,country,customer_type,total_orders,total_spend_kes,
+                    avg_order_value_kes,first_order_date,last_order_date,last_synced
+                )
+                SELECT r.id,r.store_id,r.first_name,r.last_name,
+                       lower(nullif(btrim(r.email),'')),
+                       CASE WHEN length(regexp_replace(
+                         coalesce(r.phone,r.default_address_phone,''),
+                         '[^0-9]','','g'))>=9
+                         THEN (CASE r.store_id
+                           WHEN 'vivo-uganda' THEN '256' ELSE '250' END)
+                           || right(regexp_replace(
+                             coalesce(r.phone,r.default_address_phone,''),
+                             '[^0-9]','','g'),9) END,
+                       r.default_address_city,
+                       CASE r.store_id WHEN 'vivo-uganda' THEN 'Uganda'
+                         ELSE 'Rwanda' END,
+                       CASE WHEN coalesce(r.orders_count,0)>1
+                         THEN 'Returning' ELSE 'New' END,
+                       coalesce(r.orders_count,0),coalesce(r.total_spent,0),
+                       CASE WHEN coalesce(r.orders_count,0)>0
+                         THEN r.total_spent/r.orders_count ELSE 0 END,
+                       left(r.created_at,10),left(r.updated_at,10),%s
+                FROM raw_shopify_customers r
+                JOIN _shopify_customer_changed k
+                  ON k.store_id=r.store_id AND k.customer_id=r.id
+                ON CONFLICT(customer_id,store_id) DO UPDATE SET
+                  first_name=coalesce(EXCLUDED.first_name,all_customers.first_name),
+                  last_name=coalesce(EXCLUDED.last_name,all_customers.last_name),
+                  email=coalesce(EXCLUDED.email,all_customers.email),
+                  phone=coalesce(EXCLUDED.phone,all_customers.phone),
+                  city=coalesce(EXCLUDED.city,all_customers.city),
+                  country=coalesce(EXCLUDED.country,all_customers.country),
+                  last_synced=EXCLUDED.last_synced
+                """,
+                (now_utc,),
+            )
+            cur.execute(
+                """
+                UPDATE all_customers c SET total_orders=a.orders,
+                  total_spend_kes=a.spend,
+                  avg_order_value_kes=a.spend/nullif(a.orders,0),
+                  first_order_date=a.first_date,last_order_date=a.last_date,
+                  customer_type=CASE WHEN a.orders>1 THEN 'Returning' ELSE 'New' END
+                FROM (
+                  SELECT s.store_id,s.customer_id::text customer_id,
+                    count(DISTINCT s.order_id) orders,
+                    sum(s.total_sales_kes) spend,
+                    min(s.sale_date) first_date,max(s.sale_date) last_date
+                  FROM all_sales s JOIN _shopify_customer_changed k
+                    ON k.store_id=s.store_id
+                   AND k.customer_id=s.customer_id::text
+                  WHERE s.sale_kind IN ('sale','order')
+                  GROUP BY s.store_id,s.customer_id
+                ) a WHERE c.store_id=a.store_id
+                    AND c.customer_id=a.customer_id
+                """
+            )
+        conn.commit()
+        from customer_identity import publish as publish_customer_identity
+        publish_customer_identity(conn, ready_stores=target_stores)
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                DELETE FROM shopify_customer_pending p
+                USING (VALUES %s) done(store_id,customer_id,queue_token)
+                WHERE p.store_id=done.store_id
+                  AND p.customer_id=done.customer_id
+                  AND p.queued_at=done.queue_token
+                """,
+                changed_keys,
+            )
+        conn.commit()
+    if failed:
+        raise RuntimeError(
+            "Shopify customer stores failed: %s" % ",".join(sorted(failed))
+        )
+    return len(changed_keys)
+
+
 def sync_shopping_bags(cur, conn):
     """Sync shopping bag stock from Odoo into shopping_bags table."""
     import xmlrpc.client
@@ -2434,6 +2626,11 @@ def shopify_customer_worker_loop(stop_event=None):
                             source,
                             report.get("error") or "unknown customer sync error",
                         )
+                # The recovery pass fetches store-qualified IDs missing from
+                # recent sales, materializes pending profiles, and safely
+                # republishes canonical identity.
+                if any(r.get("identity_recovery_needed") for r in reports):
+                    sync_shopify_customers_incremental(health_conn)
                 write_heartbeat(
                     health_conn,
                     "ok",
