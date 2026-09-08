@@ -241,23 +241,11 @@ def resolve(cur, nodes):
     for n in nodes:
         if not n["pseudo"] and n["phone"]:
             phone_groups[n["phone"]].append(n)
+    # RULE (William): phone = one person. All records sharing a phone merge,
+    # regardless of name differences (most-common name is chosen in build_people).
+    # 'ambiguous' is retained (always empty) only so the method-labelling block
+    # below keeps working; nothing is routed to review on name mismatch anymore.
     ambiguous = set()
-    for phone, group in phone_groups.items():
-        # Different non-empty names are a shared contact, not evidence to merge.
-        if len({n["name"] for n in group if n["name"]}) > 1:
-            ambiguous.update(n["key"] for n in group)
-            for n in group:
-                cur.execute(
-                    """INSERT INTO customer_identity_review(source_key,match_key,key_type,source_ids,names)
-                    VALUES (%s,%s,'phone_ambiguous',%s,%s) ON CONFLICT (source_key,match_key,key_type)
-                    DO UPDATE SET source_ids=EXCLUDED.source_ids,names=EXCLUDED.names""",
-                    (
-                        n["key"],
-                        phone,
-                        [x["key"] for x in group],
-                        sorted({x["display"] for x in group if x["display"]}),
-                    ),
-                )
     # Establish a registry ID for every source before merges. This makes removed
     # records and contact changes stable indefinitely.
     for n in sorted(nodes, key=lambda x: x["key"]):
@@ -267,10 +255,26 @@ def resolve(cur, nodes):
                 "INSERT INTO customer_identity_registry(source_key,person_id) VALUES (%s,%s)",
                 (n["key"], known[n["key"]]),
             )
+    # 1. PHONE primary — merge every record sharing a phone into one person.
     for phone, group in phone_groups.items():
-        eligible = [
-            n for n in group if n["key"] not in ambiguous and n["key"] not in overrides
-        ]
+        eligible = [n for n in group if n["key"] not in overrides]
+        if len(eligible) > 1:
+            winner = min(known[n["key"]] for n in eligible)
+            for n in eligible:
+                known[n["key"]] = winner
+                cur.execute(
+                    "UPDATE customer_identity_registry SET person_id=%s,last_seen_at=now() WHERE source_key=%s",
+                    (winner, n["key"]),
+                )
+    # 2. EMAIL secondary — ONLY for records with NO phone (cannot bridge phones,
+    #    so no cross-person chaining). Records with no phone but a shared email
+    #    merge together.
+    email_groups = defaultdict(list)
+    for n in nodes:
+        if not n["pseudo"] and not n["phone"] and n["email"]:
+            email_groups[n["email"]].append(n)
+    for email, group in email_groups.items():
+        eligible = [n for n in group if n["key"] not in overrides]
         if len(eligible) > 1:
             winner = min(known[n["key"]] for n in eligible)
             for n in eligible:
