@@ -1,6 +1,8 @@
-import React, { useState, useEffect, useMemo, useCallback } from "react";
+import React, { useState, useEffect, useMemo, useCallback, useRef } from "react";
 import { useApi } from "@/lib/useApi";
 import { api } from "@/lib/api";
+import { useFilters } from "@/lib/filters";
+import { DateRangeButton } from "@/components/FilterBar";
 
 // ── Formatters ───────────────────────────────────────────────────────────────
 const fmtKES = (v, compact = true) => {
@@ -14,6 +16,38 @@ const fmtKES = (v, compact = true) => {
 const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString();
 const fmtPct = (v) => v == null ? "—" : `${Number(v).toFixed(1)}%`;
 const fmt    = (f, v) => f === "kes" ? fmtKES(v, false) : f === "kes_c" ? fmtKES(v, true) : f === "kes_whole" ? (v == null ? "—" : `KES ${Number(v).toLocaleString(undefined, {maximumFractionDigits: 0})}`) : f === "pct" ? fmtPct(v) : fmtNum(v);
+
+const csvCell = (value) => {
+  if (value == null) return "";
+  let text = Array.isArray(value) ? value.join("; ") : String(value);
+  // Prevent spreadsheet formula execution in downloaded operational reports.
+  if (/^[=+\-@]/.test(text)) text = `'${text}`;
+  return `"${text.replace(/"/g, '""')}"`;
+};
+const csvSlug = (value) => String(value || "all-stores")
+  .trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+function downloadCsv(filename, headers, rows) {
+  const body = [headers, ...rows]
+    .map(row => row.map(csvCell).join(","))
+    .join("\r\n");
+  const blob = new Blob([`\uFEFF${body}`], { type: "text/csv;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+function CsvButton({ onClick, label = "CSV", title = "Download CSV" }) {
+  return (
+    <button type="button" onClick={onClick} title={title} aria-label={title}
+      style={{ border: "1px solid #d1d5db", background: "#fff", color: "#4b5563", borderRadius: 6, padding: "3px 7px", cursor: "pointer", fontSize: 10, fontWeight: 800, lineHeight: 1.3 }}>
+      ↓ {label}
+    </button>
+  );
+}
 
 // ── Colour tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -373,6 +407,19 @@ function StockToSalesTable({ data }) {
 
   if (!data) return null;
   const rows = data.stock_to_sales?.[dimension] || [];
+  const dimensionLabel = STOCK_DIMENSIONS.find(([key]) => key === dimension)?.[1] || dimension;
+  const periodLabel = data.period?.from && data.period?.to
+    ? `${data.period.from} to ${data.period.to}`
+    : `last ${data.window_days || 30} days`;
+  const exportRows = () => downloadCsv(
+    `store-scorecard-${csvSlug(data.store)}-stock-to-sales-${csvSlug(dimension)}.csv`,
+    ["Store", "Date From", "Date To", "Window Days", "Dimension", "Segment", "Inventory Units", "Units Sold", "Stock Share %", "Sales Share %", "Variance pp", "Weeks Cover", "No Sales"],
+    rows.map(r => [
+      data.store, data.period?.from, data.period?.to, data.window_days, dimensionLabel, r.segment, r.inventory_units,
+      r.units_sold, r.stock_share_pct, r.sales_share_pct, r.share_variance_pp,
+      r.weeks_of_cover, r.no_sales ? "Yes" : "No",
+    ])
+  );
   const sizeInfo = data.size_completeness || {};
   const th = { padding: "9px 11px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#6b7280", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" };
   
@@ -392,8 +439,11 @@ function StockToSalesTable({ data }) {
       {/* Stock to Sales Table */}
       <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
         <div style={{ padding: 14, display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
-          <div><strong>Rolling 30-day stock to sales & weeks of cover</strong><div style={{ color: "#6b7280", fontSize: 12 }}>Current stock, sales mix, and WOC on the same basis for every dimension, including segments with no sales</div></div>
-          <select value={dimension} onChange={e => setDimension(e.target.value)} aria-label="Stock-to-sales dimension" style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: 7, background: "#fff" }}>{STOCK_DIMENSIONS.map(([k,l]) => <option key={k} value={k}>{l}</option>)}</select>
+          <div><strong>Stock to sales & weeks of cover</strong><div style={{ color: "#6b7280", fontSize: 12 }}>Current stock against unit sales for {periodLabel}; WOC uses the same selected window</div></div>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <select value={dimension} onChange={e => setDimension(e.target.value)} aria-label="Stock-to-sales dimension" style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: 7, background: "#fff" }}>{STOCK_DIMENSIONS.map(([k,l]) => <option key={k} value={k}>{l}</option>)}</select>
+            <CsvButton onClick={exportRows} label="Download CSV" title={`Download ${dimensionLabel} stock-to-sales CSV`} />
+          </div>
         </div>
         <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr><th style={{...th,textAlign:"left"}}>Segment</th><th style={th}>Inventory</th><th style={th}>Units sold</th><th style={th}>Stock share</th><th style={th}>Sales share</th><th style={th}>Variance</th><th style={th}>Weeks cover</th></tr></thead><tbody>
           {rows.map(r => <tr key={r.segment} style={{ borderBottom: "1px solid #f3f4f6" }}><td style={{ padding: 10, fontWeight: 700 }}>{r.segment}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtNum(r.inventory_units)}</td><td style={{ padding: 10, textAlign: "right" }}>{r.no_sales ? <Pill c={C.warn}>No sales</Pill> : fmtNum(r.units_sold)}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtPct(r.stock_share_pct)}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtPct(r.sales_share_pct)}</td><td style={{ padding: 10, textAlign: "right", fontWeight: 800, color: Math.abs(r.share_variance_pp) >= 10 ? C.bad.fg : "#374151" }}>{r.share_variance_pp > 0 ? "+" : ""}{r.share_variance_pp}pt</td><td style={{ padding: 10, textAlign: "right" }}>{r.weeks_of_cover == null ? "No sales" : `${r.weeks_of_cover}w`}</td></tr>)}
@@ -629,7 +679,7 @@ function DriverChain({ rpt }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 1 · STORE HEALTH CHECK — issue radar
 // ══════════════════════════════════════════════════════════════════════════════
-function TopKPIs({ rpt, stockData }) {
+function TopKPIs({ rpt, stockData, store }) {
   const { mtd, projected_eom, expected } = rpt || {};
   const perfTiles = useMemo(() => {
     if (!rpt) return [];
@@ -656,17 +706,17 @@ function TopKPIs({ rpt, stockData }) {
     return [
       {
         key: "inv", label: "Inventory", actual: inv.actual, f: "num",
-        note: "Current stock on hand", valSuffix: "units",
+        note: "Current stock on hand", valSuffix: "units", target: inv.target,
         h: inv.status ? { label: formatStatus(inv.status), c: STOCK_STATUS[inv.status] || C.muted, deltaLabel: inv.target ? `${fmtNum(inv.target)} target` : "No target configured" } : null,
       },
       {
         key: "styles", label: "Styles", actual: styles.actual, f: "num",
-        note: "Distinct styles in stock", valSuffix: "styles",
+        note: "Distinct styles in stock", valSuffix: "styles", target: styles.target,
         h: avgUnitsPerStyle ? { label: "avg depth", c: C.blue, deltaLabel: `${avgUnitsPerStyle} units per style` } : null,
       },
       {
         key: "cstyles", label: "Colour Styles", actual: cStyles.actual, f: "num",
-        note: "Distinct colour-styles", valSuffix: "styles",
+        note: "Distinct colour-styles", valSuffix: "styles", target: cStyles.target,
         h: avgUnitsPerCStyle ? { label: "avg depth", c: C.blue, deltaLabel: `${avgUnitsPerCStyle} units per colour style` } : null,
       },
       {
@@ -688,6 +738,18 @@ function TopKPIs({ rpt, stockData }) {
   }, [stockData]);
 
   const counts = perfTiles.reduce((acc, t) => { if (t.h) acc[t.h.status] = (acc[t.h.status] || 0) + 1; return acc; }, {});
+  const exportKpi = (tile, kind) => downloadCsv(
+    `store-scorecard-${csvSlug(store)}-${csvSlug(tile.label)}.csv`,
+    ["Store", "Date From", "Date To", "KPI Type", "Metric", "Actual", "Projected Month End", "Baseline or Target", "Status", "Variance %", "Unit", "Detail"],
+    [[
+      store, rpt?.period?.from || stockData?.period?.from, rpt?.period?.to || stockData?.period?.to,
+      kind, tile.label, tile.actual,
+      kind === "Performance" ? tile.proj : "",
+      kind === "Performance" ? tile.base : tile.target,
+      tile.h?.label || "", kind === "Performance" ? tile.h?.delta : "",
+      tile.unit || tile.valSuffix || "", tile.h?.deltaLabel || tile.note || "",
+    ]]
+  );
 
   return (
     <div>
@@ -707,7 +769,10 @@ function TopKPIs({ rpt, stockData }) {
             <div key={t.key} style={{ background: "#fff", border: `1px solid ${c.bdr}`, borderLeft: `5px solid ${c.fg}`, borderRadius: 10, padding: "12px 16px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.04em" }}>{t.label}</span>
-                {t.h && <Pill c={c}>{t.h.label}</Pill>}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {t.h && <Pill c={c}>{t.h.label}</Pill>}
+                  <CsvButton onClick={() => exportKpi(t, "Performance")} title={`Download ${t.label} KPI CSV`} />
+                </div>
               </div>
               <div style={{ fontSize: 22, fontWeight: 800, color: "#111827" }}>
                 {fmt(t.f, t.actual)}
@@ -718,7 +783,7 @@ function TopKPIs({ rpt, stockData }) {
                   <span style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", marginLeft: 6 }}>· {mtd.returning_customers} of {mtd.customer_count}</span>
                 )}
               </div>
-              <div style={{ fontSize: 11, color: "#9ca3af" }}>MTD{t.note ? ` · ${t.note}` : ""}</div>
+              <div style={{ fontSize: 11, color: "#9ca3af" }}>{rpt?.is_mtd ? "MTD" : "Selected period"}{t.note ? ` · ${t.note}` : ""}</div>
               {t.h && (
                 <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: c.fg }}>
                   {t.h.delta >= 0 ? "▲" : "▼"} {Math.abs(t.h.delta).toFixed(0)}% vs baseline
@@ -734,7 +799,10 @@ function TopKPIs({ rpt, stockData }) {
             <div key={t.key} style={{ background: "#fff", border: `1px solid ${c.bdr}`, borderLeft: `5px solid ${c.fg}`, borderRadius: 10, padding: "12px 16px" }}>
               <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
                 <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.04em" }}>{t.label}</span>
-                {t.h && <Pill c={c}>{t.h.label}</Pill>}
+                <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                  {t.h && <Pill c={c}>{t.h.label}</Pill>}
+                  <CsvButton onClick={() => exportKpi(t, "Product")} title={`Download ${t.label} KPI CSV`} />
+                </div>
               </div>
               <div style={{ fontSize: 22, fontWeight: 800, color: "#111827" }}>
                 {fmt(t.f, t.actual)}
@@ -757,7 +825,7 @@ function TopKPIs({ rpt, stockData }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 2 · AUGUST TARGET TRACKER — revenue headline + compact KPI table
 // ══════════════════════════════════════════════════════════════════════════════
-function RevenueBlock({ mtdRev, target, projected, daysDone, daysIn, daysLeft, reqDaily }) {
+function RevenueBlock({ mtdRev, target, projected, daysDone, daysIn, daysLeft, reqDaily, monthLabel }) {
   const progPct = mtdRev && target ? Math.round(mtdRev / target * 100) : null;
   const projPct = projected && target ? Math.round(projected / target * 100) : null;
   const sc = projPct != null ? scorePct(projPct) : C.muted;
@@ -773,7 +841,7 @@ function RevenueBlock({ mtdRev, target, projected, daysDone, daysIn, daysLeft, r
     <div style={{ background: "#fff", border: `2px solid ${sc.bdr}`, borderRadius: 14, padding: "22px 26px", marginBottom: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: 16, marginBottom: 16 }}>
         <div>
-          <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em" }}>Revenue · August Target</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.07em" }}>Revenue · {monthLabel} Target</div>
           <div style={{ fontSize: 38, fontWeight: 900, color: "#111827", lineHeight: 1.1, marginTop: 2 }}>{fmtKES(target, false)}</div>
         </div>
         {projPct != null && (
@@ -1326,6 +1394,19 @@ function WeekendCategories({ cats }) {
 // ══════════════════════════════════════════════════════════════════════════════
 export default function StoreProfiling() {
   const LS_KEY = "vivo_store_profile_last_store";
+  const filters = useFilters();
+  const dateParams = { date_from: filters.dateFrom, date_to: filters.dateTo };
+  const scorecardRangeInitialised = useRef(false);
+  useEffect(() => {
+    if (scorecardRangeInitialised.current) return;
+    scorecardRangeInitialised.current = true;
+    const query = new URLSearchParams(window.location.search);
+    const hasExplicitRange = ["d", "t", "p", "date_from", "date_to", "period"]
+      .some(key => query.has(key));
+    if (!hasExplicitRange && filters.preset === "today") {
+      filters.setPreset("last_30d");
+    }
+  }, [filters]);
 
   const { data: locsData, isLoading: locsLoading } = useApi("store-profile/locations");
   const stores = locsData?.stores || [];
@@ -1358,10 +1439,10 @@ export default function StoreProfiling() {
 
   const { data: trendData, isLoading: trendLoading } = useApi("store-profile/kpi-trend", { store }, { enabled: !!store });
   const { data: rpt, isLoading: rptLoading, error: rptError } = useApi(
-    "store-profile/performance-report", { store }, { enabled: !!store, staleTime: 5 * 60_000 }
+    "store-profile/performance-report", { store, ...dateParams }, { enabled: !!store, staleTime: 5 * 60_000 }
   );
   const { data: stockData, isLoading: stockLoading, error: stockError } = useApi(
-    "store-profile/stock-diagnosis", { store }, {
+    "store-profile/stock-diagnosis", { store, ...dateParams }, {
       enabled: !!store,
       staleTime: 5 * 60_000,
       retry: 5,
@@ -1409,7 +1490,11 @@ export default function StoreProfiling() {
             />
             <div style={{ marginTop: 8, display: "flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
               {storeCountry && <span style={{ padding: "3px 10px", borderRadius: 5, fontSize: 12, fontWeight: 700, background: cc.bg, color: cc.fg }}>{storeCountry}</span>}
-              <span style={{ fontSize: 13, color: "#d1d5db" }}>August {new Date().getFullYear()} · Day {days_done} of {days_in_month} · {days_remaining} days left</span>
+              <DateRangeButton />
+              <span style={{ fontSize: 13, color: "#d1d5db" }}>
+                {rpt?.period_label || `${filters.dateFrom} – ${filters.dateTo}`}
+                {rpt?.is_mtd ? ` · Day ${days_done} of ${days_in_month} · ${days_remaining} days left` : ""}
+              </span>
               {expected_source && <span style={{ fontSize: 12, color: "#9ca3af" }}>Baseline: {expected_source}</span>}
             </div>
           </div>
@@ -1419,7 +1504,11 @@ export default function StoreProfiling() {
               { label: "Stock on Hand", val: fmtNum(soh), sub: "units" },
               { label: "Weeks of Cover", val: woc != null ? `${woc}w` : "—", sub: stockFlag?.label, subColor: stockFlag?.c?.fg },
               { label: "Months of Stock", val: msi != null ? `${msi}mo` : "—", sub: "MSI" },
-              { label: "MTD Revenue", val: fmtKES(mtd?.revenue), sub: `${target_revenue ? Math.round((mtd?.revenue || 0) / target_revenue * 100) : "—"}% of target` },
+              {
+                label: rpt?.is_mtd ? "MTD Revenue" : "Period Revenue",
+                val: fmtKES(mtd?.revenue),
+                sub: rpt?.is_mtd ? `${target_revenue ? Math.round((mtd?.revenue || 0) / target_revenue * 100) : "—"}% of target` : rpt?.period_label,
+              },
             ].map(({ label, val, sub, subColor }) => (
               <div key={label} style={{ background: "rgba(255,255,255,0.07)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 10, padding: "12px 18px", minWidth: 130 }}>
                 <div style={{ fontSize: 10, fontWeight: 700, color: "#9ca3af", textTransform: "uppercase", letterSpacing: "0.06em" }}>{label}</div>
@@ -1437,7 +1526,7 @@ export default function StoreProfiling() {
           {rptLoading && <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 24 }}><Skeleton rows={6} /></div>}
 
           {/* 1 · Top KPIs — Unified Grid */}
-          {(rpt || stockData) && <TopKPIs rpt={rpt} stockData={stockData} />}
+          {(rpt || stockData) && <TopKPIs rpt={rpt} stockData={stockData} store={store} />}
           {stockError && (
             <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #fde68a", borderRadius: 8, background: "#fffbeb", color: "#92400e", fontSize: 12, fontWeight: 600 }}>
               Product KPI data is temporarily unavailable. The cards will retry automatically; the sales KPIs above remain current.
@@ -1464,19 +1553,20 @@ export default function StoreProfiling() {
             </>
           )}
 
-          {/* 2 · August Target Tracker */}
-          {rpt && (
+          {/* 2 · Monthly Target Tracker — only meaningful for a true MTD range */}
+          {rpt?.is_mtd && (
             <>
-              <SectionTitle icon="🎯" title="August Target Tracker"
+              <SectionTitle icon="🎯" title={`${rpt.month_label} Target Tracker`}
                 subtitle="Where we are · where we need to be · what to do — every KPI against the monthly budget" />
               {!target_revenue && (
                 <div style={{ padding: "14px 18px", background: "#fffbeb", border: "1px solid #fde68a", borderRadius: 10, marginBottom: 14, fontSize: 14, color: "#92400e" }}>
-                  ⚠ No August budget target found for this store — tracking against historical baseline only.
+                  ⚠ No {rpt.month_label} budget target found for this store — tracking against historical baseline only.
                 </div>
               )}
               {target_revenue && (
                 <RevenueBlock mtdRev={mtd?.revenue} target={target_revenue} projected={projected_eom?.revenue}
-                  daysDone={days_done} daysIn={days_in_month} daysLeft={days_remaining} reqDaily={required_daily_revenue} />
+                  daysDone={days_done} daysIn={days_in_month} daysLeft={days_remaining} reqDaily={required_daily_revenue}
+                  monthLabel={rpt.month_label} />
               )}
               <KpiTargetTable rpt={rpt} />
             </>

@@ -165,6 +165,23 @@ class TestStoreStockDiagnosis(unittest.TestCase):
         out = merch_router._fetch_store_stock_diagnosis("All Stores")
         self.assertIsNone(out["inventory"]["target"])
 
+    def test_weeks_cover_uses_selected_window_length(self):
+        rows = [{
+            "style_name": "A", "primary_colour": "Black", "size": "S",
+            "category": "Tops", "subcategory": "Tees", "print_plain": "Plain",
+            "price": 1000, "lifecycle": "Active",
+            "stock_units": 70, "units_sold": 70,
+        }]
+        seven_days = merch_router._build_store_stock_diagnosis(
+            "Vivo Junction", 100, rows, window_days=7,
+            date_from="2026-09-02", date_to="2026-09-08")
+        twenty_eight_days = merch_router._build_store_stock_diagnosis(
+            "Vivo Junction", 100, rows, window_days=28,
+            date_from="2026-08-12", date_to="2026-09-08")
+        self.assertEqual(seven_days["stock_to_sales"]["category"][0]["weeks_of_cover"], 1.0)
+        self.assertEqual(twenty_eight_days["stock_to_sales"]["category"][0]["weeks_of_cover"], 4.0)
+        self.assertEqual(seven_days["period"]["from"], "2026-09-02")
+
 
 if __name__ == "__main__":
     unittest.main()

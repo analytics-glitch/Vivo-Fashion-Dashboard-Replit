@@ -389,7 +389,9 @@ def _stock_diag_metric(actual, target):
     }
 
 
-def _build_store_stock_diagnosis(store, optimal_stock, rows, total_inventory=None):
+def _build_store_stock_diagnosis(
+        store, optimal_stock, rows, total_inventory=None, window_days=30,
+        date_from=None, date_to=None):
     """Build the deterministic response from one canonical SKU-level dataset."""
     normalized_rows = []
     for source in rows:
@@ -494,7 +496,7 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows, total_inventory=Non
                 "sales_share_pct": round(sales_share, 1),
                 "share_variance_pp": round(stock_share - sales_share, 1),
                 "weeks_of_cover": (None if no_sales else
-                    round(g["inventory_units"] / (g["units_sold"] / (30.0 / 7.0)), 1)),
+                    round(g["inventory_units"] / (g["units_sold"] / (window_days / 7.0)), 1)),
                 "no_sales": no_sales,
             })
         breakdowns[dim] = sorted(
@@ -583,7 +585,7 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows, total_inventory=Non
             "source": "product",
             "gap_text": (
                 f"{row['stock_share_pct']}% of stock vs "
-                f"{row['sales_share_pct']}% of 30-day unit sales"
+                f"{row['sales_share_pct']}% of {window_days}-day unit sales"
             ),
             "note": (
                 f"Demand is under-represented by {gap:.1f} share points. "
@@ -633,7 +635,8 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows, total_inventory=Non
                 })
 
     return {
-        "store": store, "window_days": 30,
+        "store": store, "window_days": window_days,
+        "period": {"from": date_from, "to": date_to},
         "inventory": inventory, "styles": style_metric, "colour_styles": colour_metric,
         "classified_inventory_units": total_stock,
         "size_completeness": {
@@ -649,9 +652,21 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows, total_inventory=Non
     }
 
 
-def _fetch_store_stock_diagnosis(store):
+def _fetch_store_stock_diagnosis(store, date_from=None, date_to=None):
     if not store or "," in store:
         raise ValueError("Stock Diagnosis requires one store or All Stores")
+    today = date.today()
+    try:
+        period_end = date.fromisoformat(date_to) if date_to else today
+        period_start = date.fromisoformat(date_from) if date_from else period_end - timedelta(days=29)
+    except (TypeError, ValueError):
+        raise ValueError("date_from and date_to must be YYYY-MM-DD")
+    if period_start > period_end:
+        raise ValueError("date_from must be on or before date_to")
+    period_end = min(period_end, today)
+    window_days = (period_end - period_start).days + 1
+    if window_days > 731:
+        raise ValueError("Stock Diagnosis date range cannot exceed 731 days")
     all_stores = store == "All Stores"
     if all_stores:
         meta = _db_exec("""
@@ -733,7 +748,7 @@ def _fetch_store_stock_diagnosis(store):
                             THEN ordered_item_quantity ELSE 0 END) AS units_sold
             FROM all_sales s
             WHERE {sales_scope}
-              AND s.sale_date::date BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
+              AND s.sale_date::date BETWEEN %(period_start)s::date AND %(period_end)s::date
               AND {_BASE_FILTERS}
             GROUP BY variant_sku
         )
@@ -742,10 +757,15 @@ def _fetch_store_stock_diagnosis(store):
         FROM products p
         LEFT JOIN stock st ON st.sku = p.sku
         LEFT JOIN sales sa ON sa.sku = p.sku
-    """, {"store": store}) or []
+    """, {
+        "store": store,
+        "period_start": str(period_start),
+        "period_end": str(period_end),
+    }) or []
     return _build_store_stock_diagnosis(
         store, optimal_stock, [dict(r) for r in rows],
-        total_inventory=total_inventory)
+        total_inventory=total_inventory, window_days=window_days,
+        date_from=str(period_start), date_to=str(period_end))
 
 
 # ── Style universe query ───────────────────────────────────────────────────────
@@ -7752,6 +7772,8 @@ def register_merch_routes(app, api_pg_module):
     def store_profile_stock_diagnosis(
         request: Request,
         store: Optional[str] = Query(None),
+        date_from: Optional[str] = Query(None),
+        date_to: Optional[str] = Query(None),
     ):
         """Current store or all-store stock, breadth, size, mix and lifecycle evidence."""
         if not store:
@@ -7762,8 +7784,8 @@ def register_merch_routes(app, api_pg_module):
                 status_code=400)
         try:
             result = _cached(
-                f"store_stock_diagnosis_v1|{store}", 300,
-                lambda: _fetch_store_stock_diagnosis(store),
+                f"store_stock_diagnosis_v2|{store}|{date_from}|{date_to}", 300,
+                lambda: _fetch_store_stock_diagnosis(store, date_from, date_to),
                 stale_ttl=3600)
             return JSONResponse(result)
         except ValueError as exc:

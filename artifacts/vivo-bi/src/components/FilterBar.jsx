@@ -57,7 +57,7 @@ const PRESET_GROUPS = [
 
 const MobileFiltersOpenContext = createContext(null);
 
-const DateRangeButton = ({ autoPairToday = false }) => {
+export const DateRangeButton = ({ autoPairToday = false }) => {
   const f = useFilters();
   const mobileFiltersOpen = useContext(MobileFiltersOpenContext);
   const [desktopOpen, setDesktopOpen] = useState(false);
