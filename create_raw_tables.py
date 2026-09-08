@@ -84,10 +84,19 @@ tables = [
     """CREATE TABLE IF NOT EXISTS raw_shopify_customers (
         id TEXT, store_id TEXT, email TEXT, first_name TEXT,
         last_name TEXT, phone TEXT, default_address_phone TEXT,
+        default_address_city TEXT, default_address_province TEXT,
+        default_address_country TEXT,
         state TEXT, total_spent NUMERIC, orders_count INTEGER,
         accepts_sms_marketing BOOLEAN, accepts_email_marketing BOOLEAN,
         created_at TEXT, updated_at TEXT, _loaded_at TIMESTAMP,
         PRIMARY KEY (id, store_id)
+    )""",
+    """CREATE TABLE IF NOT EXISTS shopify_customer_sync_state (
+        store_id TEXT PRIMARY KEY, watermark TIMESTAMPTZ,
+        last_attempt_at TIMESTAMPTZ, last_success_at TIMESTAMPTZ,
+        last_fetched_count INTEGER NOT NULL DEFAULT 0,
+        last_upserted_count INTEGER NOT NULL DEFAULT 0,
+        last_error TEXT
     )""",
     """CREATE TABLE IF NOT EXISTS currency_rates (
         country TEXT, month TEXT, rate NUMERIC,

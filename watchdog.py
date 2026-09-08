@@ -154,6 +154,13 @@ PRODUCTION_SYNC_FRESH_MIN = 120
 PRODUCTION_SYNC_RECOVERY_COOLDOWN_MIN = 30
 PRODUCTION_SYNC_TIMEOUT_SEC = 300
 
+# The Shopify customer-profile worker is a daemon thread inside the supervised
+# sync process. It runs hourly and has its own heartbeat so its death can be
+# detected without letting it mask the main sync heartbeat.
+SHOPIFY_CUSTOMER_FRESH_MIN = int(
+    os.environ.get("SHOPIFY_CUSTOMER_FRESH_MIN", "90")
+)
+
 # One-time full rebuild (correct this environment's historical all_sales).
 REBUILD_ON_BOOT = os.environ.get("REBUILD_ON_BOOT", "0").lower() not in ("0", "", "false")
 REBUILD_REFRESH_RAW = os.environ.get("REBUILD_REFRESH_RAW", "1").lower() not in ("0", "", "false")
@@ -333,7 +340,29 @@ def check_sync():
     minutes = (datetime.now(timezone.utc) - last).total_seconds() / 60.0
     return minutes <= SYNC_FRESH_MIN, last, minutes
 
-
+def check_shopify_customer_worker():
+    """Check the independent Shopify customer worker heartbeat."""
+    try:
+        with _db() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT to_regclass('public.shopify_customer_heartbeat')"
+            )
+            if cur.fetchone()[0] is None:
+                return True, None, None
+            cur.execute(
+                "SELECT last_cycle_at FROM shopify_customer_heartbeat WHERE id = 1"
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        log.error("Shopify customer heartbeat query failed: %s", e)
+        return True, None, None
+    last = row[0] if row else None
+    if last is None:
+        return True, None, None
+    if last.tzinfo is None:
+        last = last.replace(tzinfo=timezone.utc)
+    minutes = (datetime.now(timezone.utc) - last).total_seconds() / 60.0
+    return minutes <= SHOPIFY_CUSTOMER_FRESH_MIN, last, minutes
 def check_fabric():
     """Health of the fabric feed: its heartbeat AND the data timestamp.
 
@@ -780,6 +809,19 @@ def health_loop():
                     f"fabric stale; recovery on cooldown "
                     f"({cooldown_min:.0f}/{cooldown_limit} min)"
                 )
+
+        customer_ok, _, customer_min = check_shopify_customer_worker()
+        if customer_min is not None:
+            notes.append(f"Shopify customers {customer_min:.1f} min since beat")
+        if not customer_ok and "restart:sync" not in actions:
+            log.warning(
+                "Shopify customer worker heartbeat stale (%.1f min); "
+                "restarting sync process",
+                customer_min,
+            )
+            restart_proc("sync")
+            actions.append("restart:sync(shopify_customer_worker)")
+            notes.append("Shopify customer worker stale; sync process restarted")
 
         # Buying-order tracker freshness — independent from the main sync and
         # fabric worker checks above. A targeted, rate-limited recovery closes

@@ -148,3 +148,4 @@
 - [Auth fallback connection budget](auth-fallback-connection-budget.md) — pool-exhaustion recovery must use a small shared reserve; an unbounded direct fallback turns contention into DB exhaustion.
 - [Dashboard snapshot recovery](dashboard-snapshot-recovery.md) — bound both shared-cache waiters and browser requests; section failures must never suppress already-loaded headline data.
 - Product Workspace data: [order cutover](product-order-history-cutover.md) never fuzzy-deduplicates; [fabric links](product-workspace-fabric-linkage.md) use Level 3 bases and barcode Level 4 colours.
+- [Shopify customer sync adoption](shopify-customer-sync-adoption.md) — bootstrap stays incomplete until a successful full read-model reconcile; worker health is monitored separately from main sync.

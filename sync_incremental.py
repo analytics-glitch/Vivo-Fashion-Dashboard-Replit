@@ -20,7 +20,12 @@ DATABASE_URL = os.environ["DATABASE_URL"]
 # would keep `sync_heartbeat` fresh even if the main cycle hangs, and the watchdog
 # would never recover a stalled Main-BI sync. So fabric gets its OWN separate
 # heartbeat table for /fabric observability. Both tables share the same shape.
-_HEARTBEAT_TABLES = ("sync_heartbeat", "fabric_heartbeat", "sales_heartbeat")
+_HEARTBEAT_TABLES = (
+    "sync_heartbeat",
+    "fabric_heartbeat",
+    "sales_heartbeat",
+    "shopify_customer_heartbeat",
+)
 
 
 def ensure_heartbeat_table(conn, table="sync_heartbeat"):
@@ -606,6 +611,16 @@ _LAST_GREVIEWS_SYNC = None
 # raw_odoo_customers) to once per hour. None on boot so the first cycle
 # picks up any customers missed since the last full rebuild immediately.
 _LAST_ODOO_CUSTOMER_SYNC = None
+# Shopify customer profiles have their own supervised worker because the main
+# cycle can take 45-90 minutes. None on boot gives every deployment an
+# immediate catch-up, then the worker holds a bounded hourly cadence.
+_LAST_SHOPIFY_CUSTOMER_SYNC = None
+SHOPIFY_CUSTOMER_SYNC_INTERVAL_SEC = int(
+    os.environ.get("SHOPIFY_CUSTOMER_SYNC_INTERVAL_SEC", "3600")
+)
+SHOPIFY_CUSTOMER_WORKER_TICK_SEC = int(
+    os.environ.get("SHOPIFY_CUSTOMER_WORKER_TICK_SEC", "60")
+)
 # Guards the inventory extracts (Odoo + Shopify + Shop Zetu stock levels feeding
 # all_inventory). Was once-a-day at midnight EAT, which left shelf stock up to
 # ~24h stale — so the replenishment engine could recommend moving a unit that had
@@ -2359,7 +2374,85 @@ def sales_worker_loop(stop_event=None):
         else:
             time.sleep(SALES_WORKER_TICK_SEC)
 
+def shopify_customer_worker_loop(stop_event=None):
+    """Hourly non-Kenya Shopify profile sync, isolated per market.
 
+    Each store is fetched and committed independently by
+    extract_shopify_customers.sync_all_stores. A failed market therefore cannot
+    roll back another market, stop the worker, or affect the sales fast path.
+    """
+    from extract_shopify_customers import sync_all_stores
+
+    global _LAST_SHOPIFY_CUSTOMER_SYNC
+
+    log.info(
+        "Shopify customer worker started (interval=%ss)",
+        SHOPIFY_CUSTOMER_SYNC_INTERVAL_SEC,
+    )
+    health_conn = None
+    while stop_event is None or not stop_event.is_set():
+        try:
+            if health_conn is None or health_conn.closed:
+                health_conn = psycopg2.connect(DATABASE_URL)
+                ensure_heartbeat_table(health_conn, "shopify_customer_heartbeat")
+
+            now = datetime.now(timezone.utc)
+            due = (
+                _LAST_SHOPIFY_CUSTOMER_SYNC is None
+                or (now - _LAST_SHOPIFY_CUSTOMER_SYNC).total_seconds()
+                >= SHOPIFY_CUSTOMER_SYNC_INTERVAL_SEC
+            )
+            if due:
+                _LAST_SHOPIFY_CUSTOMER_SYNC = now
+                write_heartbeat(
+                    health_conn,
+                    "run_start",
+                    table="shopify_customer_heartbeat",
+                )
+                reports = sync_all_stores(
+                    heartbeat=lambda status: write_heartbeat(
+                        health_conn,
+                        status,
+                        table="shopify_customer_heartbeat",
+                    )
+                )
+                for report in reports:
+                    source = f"customer_profile:{report['store_id']}"
+                    if report["success"]:
+                        record_source_success(health_conn, source)
+                        log.info(
+                            "Shopify customer sync %s: fetched=%s upserted=%s "
+                            "watermark=%s",
+                            report["store_id"],
+                            report["fetched"],
+                            report["upserted"],
+                            report["watermark"],
+                        )
+                    else:
+                        record_source_failure(
+                            health_conn,
+                            source,
+                            report.get("error") or "unknown customer sync error",
+                        )
+                write_heartbeat(
+                    health_conn,
+                    "ok",
+                    table="shopify_customer_heartbeat",
+                )
+        except Exception as exc:
+            log.error("Shopify customer worker error: %s", exc)
+            try:
+                if health_conn is not None:
+                    health_conn.close()
+            except Exception:
+                pass
+            health_conn = None
+
+        if stop_event is not None:
+            if stop_event.wait(SHOPIFY_CUSTOMER_WORKER_TICK_SEC):
+                break
+        else:
+            time.sleep(SHOPIFY_CUSTOMER_WORKER_TICK_SEC)
 def main():
     conn = psycopg2.connect(DATABASE_URL)
     cur = conn.cursor()
@@ -3853,6 +3946,16 @@ if __name__ == "__main__":
             _sales_thread.start()
         else:
             log.info("Sales worker disabled (SALES_WORKER_ENABLED=0)")
+
+        # Customer profiles use an independent hourly worker so the long main
+        # cycle cannot stretch their cadence. The extractor excludes Kenya and
+        # commits Uganda, Rwanda and Shop Zetu independently.
+        _shopify_customer_thread = threading.Thread(
+            target=shopify_customer_worker_loop,
+            name="shopify-customer-worker",
+            daemon=True,
+        )
+        _shopify_customer_thread.start()
 
         while True:
             try:
