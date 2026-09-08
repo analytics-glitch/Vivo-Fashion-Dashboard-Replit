@@ -2334,14 +2334,14 @@ function TrackerDetailDrawer({ id, patternMakers, designers, reassignmentReasons
                       <TrackerEventForm item={data} />
                   </div>
 
-                  <div className="tracker-drawer-section">
-                      <TrackerFabricSelection item={data} />
-                  </div>
-
                  <div className="tracker-drawer-section">
                      <h3>Add Note</h3>
                      <TrackerNoteForm item={data} />
                  </div>
+
+                   <div className="tracker-drawer-section">
+                       <TrackerFabricSelection item={data} />
+                   </div>
 
                  <div className="tracker-drawer-section">
                      <h3>History Timeline</h3>
