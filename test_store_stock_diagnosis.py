@@ -98,17 +98,59 @@ class TestStoreStockDiagnosis(unittest.TestCase):
         self.assertEqual(out["inventory"]["actual"], 0)
         self.assertEqual(sum(r["units"] for r in out["lifecycle"]), 0)
 
+    def test_literal_inventory_total_is_not_reduced_by_product_classification(self):
+        rows = [
+            {"style_name": "Active Style", "primary_colour": "Black", "size": "S",
+             "lifecycle": "Active", "stock_units": 80, "units_sold": 10},
+        ]
+        out = merch_router._build_store_stock_diagnosis(
+            "All Stores", 100, rows, total_inventory=100)
+        self.assertEqual(out["inventory"]["actual"], 100)
+        self.assertEqual(out["classified_inventory_units"], 80)
+        self.assertEqual(out["lifecycle"][0]["inventory_share_pct"], 80)
+
+    def test_product_recommendations_surface_breadth_and_demand_mix(self):
+        rows = []
+        for idx in range(20):
+            rows.append({
+                "style_name": f"Style {idx}", "primary_colour": "Black", "size": "M",
+                "category": "Tops", "print_plain": "Plain", "price": 2500,
+                "lifecycle": "Active", "stock_units": 4, "units_sold": 1,
+            })
+        rows.extend([
+            {"style_name": "Demand", "primary_colour": "Print", "size": "F",
+             "category": "Bottoms", "print_plain": "Print", "price": 2500,
+             "lifecycle": "Active", "stock_units": 5, "units_sold": 20},
+            {"style_name": "Demand 2", "primary_colour": "Print", "size": "S/M",
+             "category": "Outerwear", "print_plain": "Print", "price": 2500,
+             "lifecycle": "Active", "stock_units": 5, "units_sold": 20},
+        ])
+        out = merch_router._build_store_stock_diagnosis(
+            "Vivo Capital Centre", 100, rows, total_inventory=100)
+        keys = {r["key"] for r in out["recommendations"]}
+        self.assertIn("reduce_breadth_build_depth", keys)
+        self.assertIn("category_bottoms", keys)
+        self.assertIn("category_outerwear", keys)
+        self.assertIn("print_plain_print", keys)
+        self.assertIn("size_f", keys)
+        self.assertIn("size_combined", keys)
+
     @patch("merch_router._db_exec")
     def test_all_stores_uses_active_store_scope_and_summed_target(self, db_exec):
         db_exec.side_effect = [
             [{"store_count": 2, "configured_count": 2, "optimal_stock": 300}],
+            [{"inventory_units": 280}],
             [],
         ]
         out = merch_router._fetch_store_stock_diagnosis("All Stores")
         self.assertEqual(out["store"], "All Stores")
+        self.assertEqual(out["inventory"]["actual"], 280)
         self.assertEqual(out["inventory"]["target"], 300)
-        sql = db_exec.call_args_list[1].args[0]
-        self.assertIn("i.pos_location_name NOT ILIKE '%%warehouse%%'", sql)
+        total_sql = db_exec.call_args_list[1].args[0]
+        self.assertIn("SUM(i.available)", total_sql)
+        sql = db_exec.call_args_list[2].args[0]
+        self.assertIn("FROM pos_locations sp_pl", sql)
+        self.assertIn("sp_pl.location_name = i.pos_location_name", sql)
         self.assertIn("WHERE TRUE", sql)
         self.assertIn("mode() WITHIN GROUP (ORDER BY rop.primary_color)", sql)
         self.assertNotIn("ORDER BY p.color_print", sql)
@@ -117,6 +159,7 @@ class TestStoreStockDiagnosis(unittest.TestCase):
     def test_all_stores_hides_partial_network_target(self, db_exec):
         db_exec.side_effect = [
             [{"store_count": 2, "configured_count": 1, "optimal_stock": 100}],
+            [{"inventory_units": 90}],
             [],
         ]
         out = merch_router._fetch_store_stock_diagnosis("All Stores")

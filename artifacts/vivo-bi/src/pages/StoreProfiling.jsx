@@ -13,7 +13,7 @@ const fmtKES = (v, compact = true) => {
 };
 const fmtNum = (v) => v == null ? "—" : Number(v).toLocaleString();
 const fmtPct = (v) => v == null ? "—" : `${Number(v).toFixed(1)}%`;
-const fmt    = (f, v) => f === "kes" ? fmtKES(v, false) : f === "kes_c" ? fmtKES(v, true) : f === "pct" ? fmtPct(v) : fmtNum(v);
+const fmt    = (f, v) => f === "kes" ? fmtKES(v, false) : f === "kes_c" ? fmtKES(v, true) : f === "kes_whole" ? (v == null ? "—" : `KES ${Number(v).toLocaleString(undefined, {maximumFractionDigits: 0})}`) : f === "pct" ? fmtPct(v) : fmtNum(v);
 
 // ── Colour tokens ────────────────────────────────────────────────────────────
 const C = {
@@ -367,61 +367,29 @@ const STOCK_STATUS = {
   not_configured: C.muted,
 };
 
-function StockDiagnosis({ store, enabled }) {
+function StockToSalesTable({ data }) {
   const [dimension, setDimension] = useState("category");
   const [showSizes, setShowSizes] = useState(false);
-  const { data, isLoading, error } = useApi(
-    "store-profile/stock-diagnosis", { store },
-    { enabled, staleTime: 5 * 60_000 }
-  );
-  if (!enabled) {
-    return <div style={{ padding: 16, background: C.muted.bg, border: `1px solid ${C.muted.bdr}`, borderRadius: 10, color: C.muted.fg }}>Choose one store or All Stores to view Stock Diagnosis.</div>;
-  }
-  if (isLoading) return <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 20 }}><Skeleton rows={7} /></div>;
-  if (error) return <ErrBox msg={error?.response?.data?.detail || error?.message} />;
+
   if (!data) return null;
-  const metrics = [
-    ["Inventory", data.inventory, "units"],
-    ["Styles", data.styles, "styles"],
-    ["Colour-styles", data.colour_styles, "colour-styles"],
-  ];
   const rows = data.stock_to_sales?.[dimension] || [];
   const sizeInfo = data.size_completeness || {};
   const th = { padding: "9px 11px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#6b7280", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" };
+  
   return (
-    <div data-testid="store-stock-diagnosis" style={{ display: "grid", gap: 10 }}>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 10 }}>
-        {metrics.map(([label, m, unit]) => {
-          const tone = STOCK_STATUS[m?.status] || C.muted;
-          return <div key={label} style={{ background: tone.bg, border: `1px solid ${tone.bdr}`, borderRadius: 10, padding: 14 }}>
-            <div style={{ color: "#6b7280", fontSize: 11, fontWeight: 800, textTransform: "uppercase" }}>{label}</div>
-            <div style={{ color: "#111827", fontSize: 23, fontWeight: 900, marginTop: 3 }}>{fmtNum(m?.actual)} <span style={{ fontSize: 12, fontWeight: 500 }}>{m?.target == null ? unit : `of ${fmtNum(m.target)} ${unit}`}</span></div>
-            <div style={{ marginTop: 5 }}><Pill c={tone}>{m?.attainment_pct == null ? (data.store === "All Stores" ? "Complete network target not configured" : "No target configured") : `${m.attainment_pct}% · ${m.variance_units >= 0 ? "+" : ""}${fmtNum(m.variance_units)} (${m.variance_pct >= 0 ? "+" : ""}${m.variance_pct}%)`}</Pill></div>
-          </div>;
-        })}
-      </div>
-      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
-        <div style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>Evidence summary</div>
-        <div style={{ display: "grid", gap: 3, marginTop: 5 }}>
-          {(data.evidence || []).map((e) => <div key={e.key} style={{ fontSize: 13, color: "#374151" }}><strong>• {e.summary}</strong></div>)}
-        </div>
-        <div style={{ marginTop: 5, color: "#9ca3af", fontSize: 11 }}>Evidence flags describe current stock conditions; they do not automatically label weak sales as a stock problem.</div>
-      </div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 10, alignItems: "start" }}>
+    <div data-testid="store-stock-to-sales" style={{ display: "grid", gap: 14 }}>
+      {/* Evidence summary */}
+      {data.evidence && data.evidence.length > 0 && (
         <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
-          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
-            <div><strong>Size completeness</strong><div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>{fmtNum(sizeInfo.complete_colour_styles)} of {fmtNum(sizeInfo.assessable_colour_styles)} assessable colour-styles complete{sizeInfo.unassessable_colour_styles ? ` · ${fmtNum(sizeInfo.unassessable_colour_styles)} lack size metadata` : ""}</div></div>
-            <button type="button" onClick={() => setShowSizes(v => !v)} style={{ border: "1px solid #d1d5db", background: "#fff", borderRadius: 7, padding: "6px 10px", cursor: "pointer", fontWeight: 700 }}>{showSizes ? "Hide gaps" : `Inspect ${fmtNum(sizeInfo.colour_styles_with_missing_sizes)} gaps`}</button>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>Evidence summary</div>
+          <div style={{ display: "grid", gap: 3, marginTop: 5 }}>
+            {data.evidence.map((e) => <div key={e.key} style={{ fontSize: 13, color: "#374151" }}><strong>• {e.summary}</strong></div>)}
           </div>
-          {showSizes && <div style={{ overflowX: "auto", marginTop: 12, maxHeight: 330, overflowY: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr><th style={{...th,textAlign:"left"}}>Style</th><th style={{...th,textAlign:"left"}}>Primary colour</th><th style={{...th,textAlign:"left"}}>Expected</th><th style={{...th,textAlign:"left"}}>Present</th><th style={{...th,textAlign:"left"}}>Missing</th></tr></thead><tbody>
-            {(sizeInfo.rows || []).map((r) => <tr key={`${r.style}|${r.primary_colour}`} style={{ borderBottom: "1px solid #f3f4f6" }}><td style={{ padding: 9, fontWeight: 700 }}>{r.style}</td><td style={{ padding: 9 }}>{r.primary_colour}</td><td style={{ padding: 9 }}>{r.expected_sizes.join(", ")}</td><td style={{ padding: 9 }}>{r.present_sizes.join(", ") || "None"}</td><td style={{ padding: 9, color: C.bad.fg, fontWeight: 700 }}>{r.missing_sizes.join(", ")}</td></tr>)}
-          </tbody></table></div>}
+          <div style={{ marginTop: 5, color: "#9ca3af", fontSize: 11 }}>Evidence flags describe current stock conditions; they do not automatically label weak sales as a stock problem.</div>
         </div>
-        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
-          <strong>Lifecycle of current inventory</strong>
-          <div style={{ display: "grid", gap: 6, marginTop: 7 }}>{(data.lifecycle || []).map((r) => <div key={r.lifecycle} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: "7px 9px" }}><div style={{ display: "flex", justifyContent: "space-between" }}><b>{r.lifecycle}</b><b>{fmtNum(r.units)} units · {fmtPct(r.inventory_share_pct)}</b></div><div style={{ fontSize: 12, color: "#6b7280", marginTop: 2 }}>{fmtNum(r.styles)} styles · {fmtNum(r.colour_styles)} colour-styles</div></div>)}</div>
-        </div>
-      </div>
+      )}
+
+      {/* Stock to Sales Table */}
       <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
         <div style={{ padding: 14, display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
           <div><strong>Rolling 30-day stock to sales & weeks of cover</strong><div style={{ color: "#6b7280", fontSize: 12 }}>Current stock, sales mix, and WOC on the same basis for every dimension, including segments with no sales</div></div>
@@ -431,6 +399,19 @@ function StockDiagnosis({ store, enabled }) {
           {rows.map(r => <tr key={r.segment} style={{ borderBottom: "1px solid #f3f4f6" }}><td style={{ padding: 10, fontWeight: 700 }}>{r.segment}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtNum(r.inventory_units)}</td><td style={{ padding: 10, textAlign: "right" }}>{r.no_sales ? <Pill c={C.warn}>No sales</Pill> : fmtNum(r.units_sold)}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtPct(r.stock_share_pct)}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtPct(r.sales_share_pct)}</td><td style={{ padding: 10, textAlign: "right", fontWeight: 800, color: Math.abs(r.share_variance_pp) >= 10 ? C.bad.fg : "#374151" }}>{r.share_variance_pp > 0 ? "+" : ""}{r.share_variance_pp}pt</td><td style={{ padding: 10, textAlign: "right" }}>{r.weeks_of_cover == null ? "No sales" : `${r.weeks_of_cover}w`}</td></tr>)}
         </tbody></table></div>
       </div>
+
+      {/* Size Completeness Gaps Table */}
+      {sizeInfo.colour_styles_with_missing_sizes > 0 && (
+        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: "11px 13px" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+            <div><strong>Missing Sizes Details</strong><div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>Inspect the {fmtNum(sizeInfo.colour_styles_with_missing_sizes)} colour-styles that have at least one missing size.</div></div>
+            <button type="button" onClick={() => setShowSizes(v => !v)} style={{ border: "1px solid #d1d5db", background: "#fff", borderRadius: 7, padding: "6px 10px", cursor: "pointer", fontWeight: 700 }}>{showSizes ? "Hide gaps" : `Inspect gaps`}</button>
+          </div>
+          {showSizes && <div style={{ overflowX: "auto", marginTop: 12, maxHeight: 330, overflowY: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr><th style={{...th,textAlign:"left"}}>Style</th><th style={{...th,textAlign:"left"}}>Primary colour</th><th style={{...th,textAlign:"left"}}>Expected</th><th style={{...th,textAlign:"left"}}>Present</th><th style={{...th,textAlign:"left"}}>Missing</th></tr></thead><tbody>
+            {(sizeInfo.rows || []).map((r) => <tr key={`${r.style}|${r.primary_colour}`} style={{ borderBottom: "1px solid #f3f4f6" }}><td style={{ padding: 9, fontWeight: 700 }}>{r.style}</td><td style={{ padding: 9 }}>{r.primary_colour}</td><td style={{ padding: 9 }}>{r.expected_sizes.join(", ")}</td><td style={{ padding: 9 }}>{r.present_sizes.join(", ") || "None"}</td><td style={{ padding: 9, color: C.bad.fg, fontWeight: 700 }}>{r.missing_sizes.join(", ")}</td></tr>)}
+          </tbody></table></div>}
+        </div>
+      )}
     </div>
   );
 }
@@ -440,8 +421,8 @@ const KPI_META = [
   { key: "revenue",                label: "Revenue",         f: "kes_c", vol: true,  unit: "" },
   { key: "units",                  label: "Items Sold",      f: "num",   vol: true,  unit: "items" },
   { key: "transactions",           label: "Transactions",    f: "num",   vol: true,  unit: "txns" },
-  { key: "asp",                    label: "ASP",             f: "kes_c", rate: true, note: "Revenue ÷ Units" },
-  { key: "abv",                    label: "ABV",             f: "kes_c", rate: true, note: "Revenue ÷ Transactions" },
+  { key: "asp",                    label: "ASP",             f: "kes_whole", rate: true, note: "Revenue ÷ Units" },
+  { key: "abv",                    label: "ABV",             f: "kes_whole", rate: true, note: "Revenue ÷ Transactions" },
   { key: "footfall",               label: "Footfall",        f: "num",   vol: true,  unit: "visitors" },
   { key: "conversion",             label: "Conversion",      f: "pct",   rate: true },
   { key: "customer_count",         label: "Customers",       f: "num",   vol: true,  unit: "customers" },
@@ -473,10 +454,17 @@ const LEVER_C = {
   "margin guardrail":  C.warn,
   "quality guardrail": C.warn,
   "pipeline":          C.muted,
+  "assortment":        C.blue,
+  "product mix":       C.ok,
 };
 
-function PriorityFocus({ rpt }) {
-  const drivers = rpt?.priority_drivers || [];
+function PriorityFocus({ rpt, stockData }) {
+  const performanceDrivers = rpt?.priority_drivers || [];
+  const productDrivers = (stockData?.recommendations || []).map((d, i) => ({
+    ...d,
+    rank: performanceDrivers.length + i + 1,
+  }));
+  const drivers = [...performanceDrivers, ...productDrivers];
   if (!drivers.length) {
     return (
       <div style={{ padding: "14px 18px", background: C.good.bg, border: `1px solid ${C.good.bdr}`, borderRadius: 10, fontSize: 14, color: C.good.fg }}>
@@ -516,7 +504,9 @@ function PriorityFocus({ rpt }) {
                   </div>
                 </>
               ) : (
-                <div style={{ fontSize: 12, color: "#6b7280", fontStyle: "italic" }}>Future-month impact</div>
+                <div style={{ fontSize: 12, color: d.source === "product" ? C.ok.fg : "#6b7280", fontWeight: d.source === "product" ? 800 : 400, fontStyle: d.source === "product" ? "normal" : "italic" }}>
+                  {d.source === "product" ? "Product action" : "Future-month impact"}
+                </div>
               )}
             </div>
           </div>
@@ -639,9 +629,9 @@ function DriverChain({ rpt }) {
 // ══════════════════════════════════════════════════════════════════════════════
 // 1 · STORE HEALTH CHECK — issue radar
 // ══════════════════════════════════════════════════════════════════════════════
-function HealthCheck({ rpt }) {
+function TopKPIs({ rpt, stockData }) {
   const { mtd, projected_eom, expected } = rpt || {};
-  const tiles = useMemo(() => {
+  const perfTiles = useMemo(() => {
     if (!rpt) return [];
     const sevRank = { issue: 0, watch: 1, steady: 2, strong: 3 };
     return KPI_META.map(m => {
@@ -650,21 +640,69 @@ function HealthCheck({ rpt }) {
     }).sort((a, b) => (a.h ? sevRank[a.h.status] : 9) - (b.h ? sevRank[b.h.status] : 9));
   }, [rpt]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const counts = tiles.reduce((acc, t) => { if (t.h) acc[t.h.status] = (acc[t.h.status] || 0) + 1; return acc; }, {});
+  const stockTiles = useMemo(() => {
+    if (!stockData) return [];
+    const inv = stockData.inventory || {};
+    const styles = stockData.styles || {};
+    const cStyles = stockData.colour_styles || {};
+    const sc = stockData.size_completeness || {};
+    const active = (stockData.lifecycle || []).find(l => l.lifecycle === "Active") || {};
+    const retired = (stockData.lifecycle || []).find(l => l.lifecycle === "Retired") || {};
+
+    const avgUnitsPerStyle = inv.actual && styles.actual ? Math.round(inv.actual / styles.actual) : null;
+    const avgUnitsPerCStyle = inv.actual && cStyles.actual ? Math.round(inv.actual / cStyles.actual) : null;
+    const missingPct = sc.assessable_colour_styles ? (sc.colour_styles_with_missing_sizes / sc.assessable_colour_styles * 100) : null;
+    const formatStatus = (s) => s ? s.replace(/_/g, " ") : "";
+
+    return [
+      {
+        key: "inv", label: "Inventory", actual: inv.actual, f: "num",
+        note: "Current stock on hand", valSuffix: "units",
+        h: inv.status ? { label: formatStatus(inv.status), c: STOCK_STATUS[inv.status] || C.muted, deltaLabel: inv.target ? `${fmtNum(inv.target)} target` : "No target configured" } : null,
+      },
+      {
+        key: "styles", label: "Styles", actual: styles.actual, f: "num",
+        note: "Distinct styles in stock", valSuffix: "styles",
+        h: avgUnitsPerStyle ? { label: "avg depth", c: C.blue, deltaLabel: `${avgUnitsPerStyle} units per style` } : null,
+      },
+      {
+        key: "cstyles", label: "Colour Styles", actual: cStyles.actual, f: "num",
+        note: "Distinct colour-styles", valSuffix: "styles",
+        h: avgUnitsPerCStyle ? { label: "avg depth", c: C.blue, deltaLabel: `${avgUnitsPerCStyle} units per colour style` } : null,
+      },
+      {
+        key: "sizecomp", label: "Size Completeness", actual: sc.complete_colour_styles, f: "num",
+        note: `of ${fmtNum(sc.assessable_colour_styles)} assessable`, valSuffix: "complete",
+        h: missingPct != null ? { label: "gaps", c: missingPct >= 20 ? C.warn : C.good, deltaLabel: `${missingPct.toFixed(1)}% have ≥1 missing size` } : null,
+      },
+      {
+        key: "active", label: "Active", actual: active.units, f: "num",
+        note: "Current lifecycle", valSuffix: "units",
+        h: active.inventory_share_pct != null ? { label: "mix", c: C.blue, deltaLabel: `${active.inventory_share_pct.toFixed(1)}% of total units` } : null,
+      },
+      {
+        key: "retired", label: "Retired", actual: retired.units, f: "num",
+        note: "Current lifecycle", valSuffix: "units",
+        h: retired.inventory_share_pct != null ? { label: "mix", c: retired.inventory_share_pct >= 15 ? C.warn : C.good, deltaLabel: `${retired.inventory_share_pct.toFixed(1)}% of total units` } : null,
+      }
+    ];
+  }, [stockData]);
+
+  const counts = perfTiles.reduce((acc, t) => { if (t.h) acc[t.h.status] = (acc[t.h.status] || 0) + 1; return acc; }, {});
 
   return (
     <div>
-      <SectionTitle icon="🩺" title="Store Health Check"
-        subtitle="Each KPI's projected month vs its historical baseline — issues first, so problems surface immediately"
+      <SectionTitle icon={null} title="Store Scorecard KPIs"
+        subtitle="Performance vs baseline alongside key product metrics"
         right={
           <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-            {counts.issue  > 0 && <Pill c={C.bad}>🔴 {counts.issue} issue{counts.issue > 1 ? "s" : ""}</Pill>}
-            {counts.watch  > 0 && <Pill c={C.warn}>🟡 {counts.watch} watch</Pill>}
-            {(counts.steady || 0) + (counts.strong || 0) > 0 && <Pill c={C.good}>🟢 {(counts.steady || 0) + (counts.strong || 0)} healthy</Pill>}
+            {counts.issue  > 0 && <Pill c={C.bad}>{counts.issue} issue{counts.issue > 1 ? "s" : ""}</Pill>}
+            {counts.watch  > 0 && <Pill c={C.warn}>{counts.watch} watch</Pill>}
+            {(counts.steady || 0) + (counts.strong || 0) > 0 && <Pill c={C.good}>{(counts.steady || 0) + (counts.strong || 0)} healthy</Pill>}
           </div>
         } />
       <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
-        {tiles.map(t => {
+        {perfTiles.map(t => {
           const c = t.h?.c || C.muted;
           return (
             <div key={t.key} style={{ background: "#fff", border: `1px solid ${c.bdr}`, borderLeft: `5px solid ${c.fg}`, borderRadius: 10, padding: "12px 16px" }}>
@@ -686,6 +724,27 @@ function HealthCheck({ rpt }) {
                 <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: c.fg }}>
                   {t.h.delta >= 0 ? "▲" : "▼"} {Math.abs(t.h.delta).toFixed(0)}% vs baseline
                   <span style={{ fontWeight: 400, color: "#9ca3af" }}> ({fmt(t.f, t.base)})</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
+        {stockTiles.map(t => {
+          const c = t.h?.c || C.muted;
+          return (
+            <div key={t.key} style={{ background: "#fff", border: `1px solid ${c.bdr}`, borderLeft: `5px solid ${c.fg}`, borderRadius: 10, padding: "12px 16px" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, fontWeight: 700, color: "#6b7280", textTransform: "uppercase", letterSpacing: "0.04em" }}>{t.label}</span>
+                {t.h && <Pill c={c}>{t.h.label}</Pill>}
+              </div>
+              <div style={{ fontSize: 22, fontWeight: 800, color: "#111827" }}>
+                {fmt(t.f, t.actual)}
+                {t.valSuffix && <span style={{ fontSize: 13, fontWeight: 700, color: "#6b7280", marginLeft: 6 }}>{t.valSuffix}</span>}
+              </div>
+              <div style={{ fontSize: 11, color: "#9ca3af" }}>{t.note}</div>
+              {t.h && (
+                <div style={{ fontSize: 12, fontWeight: 700, marginTop: 6, color: c.fg }}>
+                  {t.h.deltaLabel}
                 </div>
               )}
             </div>
@@ -1006,7 +1065,7 @@ function CategoryTargets({ store, rpt }) {
                       ) : "—"}
                     </td>
                     <td style={{ textAlign: "right", padding: "12px 14px", fontSize: 14, fontWeight: 600, color: "#374151" }}>
-                      {fmtKES(row.asp)}
+                      {row.asp == null ? "—" : `KES ${Number(row.asp).toLocaleString(undefined, {maximumFractionDigits: 0})}`}
                       {aspDelta != null && Math.abs(aspDelta) >= 3 && (
                         <div style={{ fontSize: 10, color: aspDelta > 0 ? C.good.fg : C.bad.fg }}>{aspDelta > 0 ? "▲" : "▼"}{Math.abs(aspDelta).toFixed(0)}% vs norm</div>
                       )}
@@ -1124,10 +1183,10 @@ const WKND_META = [
   { key: "units_day",    label: "Items sold / day",   f: "num" },
   { key: "footfall_day", label: "Footfall / day",     f: "num" },
   { key: "conversion",   label: "Conversion",         f: "pct" },
-  { key: "abv",          label: "Basket value (ABV)", f: "kes" },
-  { key: "asp",          label: "Item price (ASP)",   f: "kes" },
+  { key: "abv",          label: "Basket value (ABV)", f: "kes_whole" },
+  { key: "asp",          label: "Item price (ASP)",   f: "kes_whole" },
 ];
-const wkndFmt = (f, v) => v == null ? "—" : f === "kes" ? fmtKES(v) : f === "pct" ? `${v}%` : fmtNum(v);
+const wkndFmt = (f, v) => v == null ? "—" : f === "kes" ? fmtKES(v) : f === "kes_whole" ? `KES ${Number(v).toLocaleString(undefined, {maximumFractionDigits: 0})}` : f === "pct" ? `${v}%` : fmtNum(v);
 
 function WeekendProfile({ store }) {
   const { data, isLoading } = useApi("store-profile/weekday-weekend", { store }, { enabled: !!store, staleTime: 10 * 60_000 });
@@ -1302,6 +1361,9 @@ export default function StoreProfiling() {
   const { data: rpt, isLoading: rptLoading, error: rptError } = useApi(
     "store-profile/performance-report", { store }, { enabled: !!store, staleTime: 5 * 60_000 }
   );
+  const { data: stockData, isLoading: stockLoading, error: stockError } = useApi(
+    "store-profile/stock-diagnosis", { store }, { enabled: !!store, staleTime: 5 * 60_000 }
+  );
 
   const storeCountry = useMemo(
     () => selectedStores?.length === 1 ? stores.find(s => s.store === selectedStores[0])?.country || "" : "",
@@ -1369,25 +1431,28 @@ export default function StoreProfiling() {
           {rptError && <ErrBox msg={rptError?.message} />}
           {rptLoading && <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 24 }}><Skeleton rows={6} /></div>}
 
-          {/* 1 · Health Check — where the issues are */}
-          {rpt && <HealthCheck rpt={rpt} />}
+          {/* 1 · Top KPIs — Unified Grid */}
+          {(rpt || stockData) && <TopKPIs rpt={rpt} stockData={stockData} />}
 
-          {/* 1b · Priority Focus — impact-ranked levers to hit target */}
+          {/* 1b · Stock-to-Sales Table */}
+          {stockData && (
+            <div style={{ marginTop: 28 }}>
+              <StockToSalesTable data={stockData} />
+            </div>
+          )}
+
+          {/* 1c · Priority Focus — impact-ranked levers to hit target */}
           {rpt && (
             <>
-              <SectionTitle icon="🎯" title="Priority Focus"
+              <SectionTitle icon={null} title="Priority Focus"
                 subtitle="Ranked by revenue impact — fix the top item first, it recovers the most of the gap to target" />
-              <PriorityFocus rpt={rpt} />
+              <PriorityFocus rpt={rpt} stockData={stockData} />
               <AiDiagnosis store={store} />
-              <SectionTitle icon="🔗" title="How the Metrics Interlink"
+              <SectionTitle icon={null} title="How the Metrics Interlink"
                 subtitle="One metric leads to a change in the next — the revenue equation this store runs on" />
               <DriverChain rpt={rpt} />
             </>
           )}
-
-          <SectionTitle icon="📦" title="Stock Diagnosis"
-            subtitle="Test whether total stock, assortment breadth, missing sizes, mix, or retired inventory could explain performance" />
-          <StockDiagnosis store={store} enabled={selectedStores?.length === 0 || selectedStores?.length === 1} />
 
           {/* 2 · August Target Tracker */}
           {rpt && (

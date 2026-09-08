@@ -380,7 +380,7 @@ def _stock_diag_metric(actual, target):
     }
 
 
-def _build_store_stock_diagnosis(store, optimal_stock, rows):
+def _build_store_stock_diagnosis(store, optimal_stock, rows, total_inventory=None):
     """Build the deterministic response from one canonical SKU-level dataset."""
     normalized_rows = []
     for source in rows:
@@ -408,6 +408,14 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows):
     ]
     stock_rows = [r for r in rows if r["stock_units"] > 0]
     total_stock = round(sum(float(r.get("stock_units") or 0) for r in stock_rows))
+    # The headline Inventory KPI is the literal store-shelf total. Product
+    # classification can legitimately omit unmapped/third-party SKUs, but that
+    # must not make the All Stores inventory total smaller than the sum of the
+    # active retail locations.
+    inventory_total = (
+        round(float(total_inventory))
+        if total_inventory is not None else total_stock
+    )
     target_colours = round(optimal_stock / 8) if optimal_stock is not None else None
     target_styles = round(target_colours / 2) if target_colours is not None else None
     styles = {r.get("style_name") for r in stock_rows if r.get("style_name")}
@@ -496,11 +504,11 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows):
         g = lifecycle.get(status, {"units": 0, "styles": set(), "colour_styles": set()})
         lifecycle_rows.append({
             "lifecycle": status, "units": round(g["units"]),
-            "inventory_share_pct": round(g["units"] * 100.0 / total_stock, 1) if total_stock else 0,
+            "inventory_share_pct": round(g["units"] * 100.0 / inventory_total, 1) if inventory_total else 0,
             "styles": len(g["styles"]), "colour_styles": len(g["colour_styles"]),
         })
 
-    inventory = _stock_diag_metric(total_stock, optimal_stock)
+    inventory = _stock_diag_metric(inventory_total, optimal_stock)
     style_metric = _stock_diag_metric(len(styles), target_styles)
     colour_metric = _stock_diag_metric(len(colour_styles), target_colours)
     assessable = max(0, len(colour_styles) - unassessable)
@@ -530,9 +538,95 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows):
     if not flags:
         flags.append({"key": "no_clear_stock_explanation", "supported": True,
                       "summary": "The current stock evidence does not clearly explain weak sales performance."})
+
+    recommendations = []
+    if (style_metric["target"] and style_metric["actual"] > style_metric["target"] * 1.10) or (
+            colour_metric["target"] and colour_metric["actual"] > colour_metric["target"] * 1.10):
+        actual_depth = round(inventory_total / len(styles), 1) if styles else 0
+        planned_depth = (
+            round(float(optimal_stock) / target_styles, 1)
+            if optimal_stock and target_styles else None
+        )
+        recommendations.append({
+            "key": "reduce_breadth_build_depth",
+            "label": "Reduce breadth; build depth",
+            "lever": "assortment",
+            "source": "product",
+            "gap_text": (
+                f"{len(styles)} styles vs {target_styles} plan · "
+                f"{len(colour_styles)} colour styles vs {target_colours} plan"
+            ),
+            "note": (
+                f"Average depth is {actual_depth} units per style"
+                + (f" versus about {planned_depth} at the configured stock plan. " if planned_depth else ". ")
+                + "Concentrate inventory in fewer proven styles and colourways rather than widening the assortment."
+            ),
+            "linked": ["inventory", "styles", "colour_styles"],
+        })
+
+    def _add_mix_recommendation(key, label, row):
+        gap = abs(float(row["share_variance_pp"]))
+        rebalance_units = round(total_stock * gap / 100.0)
+        recommendations.append({
+            "key": key,
+            "label": f"Increase {label}",
+            "lever": "product mix",
+            "source": "product",
+            "gap_text": (
+                f"{row['stock_share_pct']}% of stock vs "
+                f"{row['sales_share_pct']}% of 30-day unit sales"
+            ),
+            "note": (
+                f"Demand is under-represented by {gap:.1f} share points. "
+                f"Rebalance roughly {rebalance_units} units toward {label} "
+                "as stock is refreshed; this is a mix shift, not extra total stock."
+            ),
+            "linked": ["inventory", "units"],
+        })
+
+    # Product mix recommendations are evidence-based only when the store has a
+    # useful sales sample. A negative variance means demand share exceeds stock
+    # share; recommend a reallocation, never an unsupported increase in total SOH.
+    if total_sales >= 30 and total_stock > 0:
+        for row in sorted(
+                breakdowns.get("category", []),
+                key=lambda x: x["share_variance_pp"]):
+            if (row["share_variance_pp"] <= -3 and row["units_sold"] >= 10
+                    and row["sales_share_pct"] >= 3):
+                _add_mix_recommendation(
+                    f"category_{str(row['segment']).lower().replace(' ', '_')}",
+                    row["segment"], row)
+
+        for row in breakdowns.get("print_plain", []):
+            if row["share_variance_pp"] <= -3 and row["units_sold"] >= 10:
+                _add_mix_recommendation(
+                    f"print_plain_{str(row['segment']).lower()}",
+                    row["segment"], row)
+
+        size_rows = breakdowns.get("size", [])
+        for row in size_rows:
+            if (str(row["segment"]).strip().upper() == "F"
+                    and row["share_variance_pp"] <= -3 and row["units_sold"] >= 10):
+                _add_mix_recommendation("size_f", "F size", row)
+
+        combined_rows = [r for r in size_rows if "/" in str(r["segment"])]
+        combined_stock = sum(float(r["inventory_units"]) for r in combined_rows)
+        combined_sales = sum(float(r["units_sold"]) for r in combined_rows)
+        if combined_sales >= 10:
+            combined_stock_share = combined_stock * 100.0 / total_stock
+            combined_sales_share = combined_sales * 100.0 / total_sales
+            combined_variance = combined_stock_share - combined_sales_share
+            if combined_variance <= -3:
+                _add_mix_recommendation("size_combined", "combined sizes", {
+                    "stock_share_pct": round(combined_stock_share, 1),
+                    "sales_share_pct": round(combined_sales_share, 1),
+                    "share_variance_pp": round(combined_variance, 1),
+                })
+
     return {
         "store": store, "window_days": 30,
         "inventory": inventory, "styles": style_metric, "colour_styles": colour_metric,
+        "classified_inventory_units": total_stock,
         "size_completeness": {
             "stocked_colour_styles": len(colour_styles),
             "assessable_colour_styles": assessable,
@@ -542,7 +636,7 @@ def _build_store_stock_diagnosis(store, optimal_stock, rows):
             "missing_colour_style_pct": missing_pct, "rows": missing_rows,
         },
         "stock_to_sales": breakdowns, "lifecycle": lifecycle_rows,
-        "evidence": flags,
+        "evidence": flags, "recommendations": recommendations,
     }
 
 
@@ -590,6 +684,15 @@ def _fetch_store_stock_diagnosis(store):
         optimal_stock = meta[0].get("optimal_stock")
         stock_scope = "i.pos_location_name = %(store)s"
         sales_scope = "s.pos_location_name = %(store)s"
+    total_rows = _db_exec(f"""
+        SELECT COALESCE(SUM(i.available), 0) AS inventory_units
+        FROM all_inventory i
+        WHERE {stock_scope}
+    """, {"store": store}) or []
+    total_inventory = (
+        total_rows[0].get("inventory_units")
+        if total_rows else 0
+    )
     rows = _db_exec(f"""
         WITH products AS (
             SELECT p.sku,
@@ -630,7 +733,8 @@ def _fetch_store_stock_diagnosis(store):
         LEFT JOIN sales sa ON sa.sku = p.sku
     """, {"store": store}) or []
     return _build_store_stock_diagnosis(
-        store, optimal_stock, [dict(r) for r in rows])
+        store, optimal_stock, [dict(r) for r in rows],
+        total_inventory=total_inventory)
 
 
 # ── Style universe query ───────────────────────────────────────────────────────

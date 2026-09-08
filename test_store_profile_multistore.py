@@ -31,6 +31,9 @@ class TestStoreProfileScopes(unittest.TestCase):
             api_pg._SP_ALL_INV_PRED,
         )
         self.assertTrue(api_pg._sp_is_aggregate("All Stores"))
+        self.assertIn("FROM pos_locations sp_pl", api_pg._SP_ALL_INV_PRED)
+        self.assertIn("sp_pl.location_name = i.pos_location_name", api_pg._SP_ALL_INV_PRED)
+        self.assertIn("sp_pl.active IS TRUE", api_pg._SP_ALL_INV_PRED)
 
     def test_store_names_are_sql_escaped(self):
         self.assertEqual(

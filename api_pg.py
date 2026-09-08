@@ -46997,12 +46997,17 @@ def _sp_is_aggregate(store: str) -> bool:
     """Whether footfall row-count quality gates must use total observed rows."""
     return _sp_all_stores(store) or len(_sp_store_values(store)) > 1
 
-# Shelf stock across every store (excludes warehouse/holding/transit locations).
+# Shelf stock across every active physical store. This is intentionally a
+# positive metadata scope: internal locations such as FINPR/Stock do not contain
+# words like "production" or "warehouse" and can carry seven-figure WIP balances,
+# so an exclusion list is not safe for Store Scorecard totals.
 _SP_ALL_INV_PRED = (
-    "i.pos_location_name NOT ILIKE '%%warehouse%%' "
-    "AND i.pos_location_name NOT ILIKE '%%holding%%' "
-    "AND i.pos_location_name NOT ILIKE '%%transit%%' "
-    "AND i.pos_location_name NOT ILIKE '%%receiving%%'"
+    "EXISTS ("
+    "SELECT 1 FROM pos_locations sp_pl "
+    "WHERE sp_pl.location_name = i.pos_location_name "
+    "AND sp_pl.active IS TRUE "
+    "AND LOWER(COALESCE(sp_pl.store_type,'')) = 'store'"
+    ")"
 )
 
 
