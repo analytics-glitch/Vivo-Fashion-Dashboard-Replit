@@ -357,6 +357,84 @@ function SectionTitle({ icon, title, subtitle, right }) {
   );
 }
 
+const STOCK_DIMENSIONS = [
+  ["category", "Category"], ["subcategory", "Sub-category"], ["size", "Size"],
+  ["primary_colour", "Primary colour"], ["print_plain", "Print / Plain"],
+  ["price_band", "KES price bracket"],
+];
+const STOCK_STATUS = {
+  well_below: C.bad, below: C.warn, on_target: C.good, above: C.blue,
+  not_configured: C.muted,
+};
+
+function StockDiagnosis({ store, enabled }) {
+  const [dimension, setDimension] = useState("category");
+  const [showSizes, setShowSizes] = useState(false);
+  const { data, isLoading, error } = useApi(
+    "store-profile/stock-diagnosis", { store },
+    { enabled, staleTime: 5 * 60_000 }
+  );
+  if (!enabled) {
+    return <div style={{ padding: 16, background: C.muted.bg, border: `1px solid ${C.muted.bdr}`, borderRadius: 10, color: C.muted.fg }}>Choose one store to view Stock Diagnosis.</div>;
+  }
+  if (isLoading) return <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 20 }}><Skeleton rows={7} /></div>;
+  if (error) return <ErrBox msg={error?.response?.data?.detail || error?.message} />;
+  if (!data) return null;
+  const metrics = [
+    ["Inventory", data.inventory, "units"],
+    ["Styles", data.styles, "styles"],
+    ["Colour-styles", data.colour_styles, "colour-styles"],
+  ];
+  const rows = data.stock_to_sales?.[dimension] || [];
+  const sizeInfo = data.size_completeness || {};
+  const th = { padding: "9px 11px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb", color: "#6b7280", fontSize: 11, fontWeight: 800, whiteSpace: "nowrap" };
+  return (
+    <div data-testid="store-stock-diagnosis" style={{ display: "grid", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(210px,1fr))", gap: 10 }}>
+        {metrics.map(([label, m, unit]) => {
+          const tone = STOCK_STATUS[m?.status] || C.muted;
+          return <div key={label} style={{ background: tone.bg, border: `1px solid ${tone.bdr}`, borderRadius: 10, padding: 14 }}>
+            <div style={{ color: "#6b7280", fontSize: 11, fontWeight: 800, textTransform: "uppercase" }}>{label}</div>
+            <div style={{ color: "#111827", fontSize: 23, fontWeight: 900, marginTop: 3 }}>{fmtNum(m?.actual)} <span style={{ fontSize: 12, fontWeight: 500 }}>of {fmtNum(m?.target)} {unit}</span></div>
+            <div style={{ marginTop: 5 }}><Pill c={tone}>{m?.attainment_pct == null ? "No target configured" : `${m.attainment_pct}% · ${m.variance_units >= 0 ? "+" : ""}${fmtNum(m.variance_units)} (${m.variance_pct >= 0 ? "+" : ""}${m.variance_pct}%)`}</Pill></div>
+          </div>;
+        })}
+      </div>
+      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+        <div style={{ fontSize: 14, fontWeight: 800, color: "#111827" }}>Evidence summary</div>
+        <div style={{ display: "grid", gap: 7, marginTop: 9 }}>
+          {(data.evidence || []).map((e) => <div key={e.key} style={{ fontSize: 13, color: "#374151" }}><strong>• {e.summary}</strong></div>)}
+        </div>
+        <div style={{ marginTop: 8, color: "#9ca3af", fontSize: 11 }}>Evidence flags describe current stock conditions; they do not automatically label weak sales as a stock problem.</div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit,minmax(320px,1fr))", gap: 12 }}>
+        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 10, alignItems: "center" }}>
+            <div><strong>Size completeness</strong><div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>{fmtNum(sizeInfo.complete_colour_styles)} of {fmtNum(sizeInfo.assessable_colour_styles)} assessable colour-styles complete{sizeInfo.unassessable_colour_styles ? ` · ${fmtNum(sizeInfo.unassessable_colour_styles)} lack size metadata` : ""}</div></div>
+            <button type="button" onClick={() => setShowSizes(v => !v)} style={{ border: "1px solid #d1d5db", background: "#fff", borderRadius: 7, padding: "6px 10px", cursor: "pointer", fontWeight: 700 }}>{showSizes ? "Hide gaps" : `Inspect ${fmtNum(sizeInfo.colour_styles_with_missing_sizes)} gaps`}</button>
+          </div>
+          {showSizes && <div style={{ overflowX: "auto", marginTop: 12, maxHeight: 330, overflowY: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr><th style={{...th,textAlign:"left"}}>Style</th><th style={{...th,textAlign:"left"}}>Primary colour</th><th style={{...th,textAlign:"left"}}>Expected</th><th style={{...th,textAlign:"left"}}>Present</th><th style={{...th,textAlign:"left"}}>Missing</th></tr></thead><tbody>
+            {(sizeInfo.rows || []).map((r) => <tr key={`${r.style}|${r.primary_colour}`} style={{ borderBottom: "1px solid #f3f4f6" }}><td style={{ padding: 9, fontWeight: 700 }}>{r.style}</td><td style={{ padding: 9 }}>{r.primary_colour}</td><td style={{ padding: 9 }}>{r.expected_sizes.join(", ")}</td><td style={{ padding: 9 }}>{r.present_sizes.join(", ") || "None"}</td><td style={{ padding: 9, color: C.bad.fg, fontWeight: 700 }}>{r.missing_sizes.join(", ")}</td></tr>)}
+          </tbody></table></div>}
+        </div>
+        <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, padding: 16 }}>
+          <strong>Lifecycle of current inventory</strong>
+          <div style={{ display: "grid", gap: 9, marginTop: 12 }}>{(data.lifecycle || []).map((r) => <div key={r.lifecycle} style={{ border: "1px solid #e5e7eb", borderRadius: 8, padding: 10 }}><div style={{ display: "flex", justifyContent: "space-between" }}><b>{r.lifecycle}</b><b>{fmtNum(r.units)} units · {fmtPct(r.inventory_share_pct)}</b></div><div style={{ fontSize: 12, color: "#6b7280", marginTop: 3 }}>{fmtNum(r.styles)} styles · {fmtNum(r.colour_styles)} colour-styles</div></div>)}</div>
+        </div>
+      </div>
+      <div style={{ background: "#fff", border: "1px solid #e5e7eb", borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ padding: 14, display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "space-between", alignItems: "center" }}>
+          <div><strong>Rolling 30-day stock to sales & weeks of cover</strong><div style={{ color: "#6b7280", fontSize: 12 }}>Current stock, sales mix, and WOC on the same basis for every dimension, including segments with no sales</div></div>
+          <select value={dimension} onChange={e => setDimension(e.target.value)} aria-label="Stock-to-sales dimension" style={{ padding: "7px 10px", border: "1px solid #d1d5db", borderRadius: 7, background: "#fff" }}>{STOCK_DIMENSIONS.map(([k,l]) => <option key={k} value={k}>{l}</option>)}</select>
+        </div>
+        <div style={{ overflowX: "auto" }}><table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}><thead><tr><th style={{...th,textAlign:"left"}}>Segment</th><th style={th}>Inventory</th><th style={th}>Units sold</th><th style={th}>Stock share</th><th style={th}>Sales share</th><th style={th}>Variance</th><th style={th}>Weeks cover</th></tr></thead><tbody>
+          {rows.map(r => <tr key={r.segment} style={{ borderBottom: "1px solid #f3f4f6" }}><td style={{ padding: 10, fontWeight: 700 }}>{r.segment}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtNum(r.inventory_units)}</td><td style={{ padding: 10, textAlign: "right" }}>{r.no_sales ? <Pill c={C.warn}>No sales</Pill> : fmtNum(r.units_sold)}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtPct(r.stock_share_pct)}</td><td style={{ padding: 10, textAlign: "right" }}>{fmtPct(r.sales_share_pct)}</td><td style={{ padding: 10, textAlign: "right", fontWeight: 800, color: Math.abs(r.share_variance_pp) >= 10 ? C.bad.fg : "#374151" }}>{r.share_variance_pp > 0 ? "+" : ""}{r.share_variance_pp}pt</td><td style={{ padding: 10, textAlign: "right" }}>{r.weeks_of_cover == null ? "No sales" : `${r.weeks_of_cover}w`}</td></tr>)}
+        </tbody></table></div>
+      </div>
+    </div>
+  );
+}
+
 // ── KPI metadata ─────────────────────────────────────────────────────────────
 const KPI_META = [
   { key: "revenue",                label: "Revenue",         f: "kes_c", vol: true,  unit: "" },
@@ -1334,6 +1412,10 @@ export default function StoreProfiling() {
           <SectionTitle icon="👗" title="Product Profile"
             subtitle="Category & sub-category performance — MTD progress vs targets, plus mix shifts vs the store's 6-month norm" />
           <CategoryTargets store={store} rpt={rpt} />
+
+          <SectionTitle icon="📦" title="Stock Diagnosis"
+            subtitle="Test whether total stock, assortment breadth, missing sizes, mix, or retired inventory could explain performance" />
+          <StockDiagnosis store={store} enabled={selectedStores?.length === 1} />
 
           {/* 4 · Priority Actions */}
           {rpt && actions.length > 0 && (

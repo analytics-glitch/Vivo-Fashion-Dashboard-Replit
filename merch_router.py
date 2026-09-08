@@ -335,6 +335,269 @@ def _cover_availability(first_sale_date, units_6m, today):
     return True, None
 
 
+_STOCK_DIAG_PRICE_BANDS = (
+    ("< KES 1,000", 0, 1000),
+    ("KES 1,000–1,999", 1000, 2000),
+    ("KES 2,000–2,999", 2000, 3000),
+    ("KES 3,000–3,999", 3000, 4000),
+    ("KES 4,000–4,999", 4000, 5000),
+    ("KES 5,000+", 5000, None),
+)
+
+
+def _stock_diag_price_band(value):
+    """Return the approved fixed KES price bracket (lower inclusive)."""
+    try:
+        price = float(value or 0)
+    except (TypeError, ValueError):
+        price = 0
+    for label, low, high in _STOCK_DIAG_PRICE_BANDS:
+        if price >= low and (high is None or price < high):
+            return label
+    return _STOCK_DIAG_PRICE_BANDS[0][0]
+
+
+def _stock_diag_metric(actual, target):
+    target = int(target) if target is not None else None
+    actual = int(actual or 0)
+    variance = actual - target if target is not None else None
+    attainment = round(actual * 100.0 / target, 1) if target else None
+    variance_pct = round(variance * 100.0 / target, 1) if target else None
+    if attainment is None:
+        status = "not_configured"
+    elif attainment < 80:
+        status = "well_below"
+    elif attainment < 95:
+        status = "below"
+    elif attainment <= 110:
+        status = "on_target"
+    else:
+        status = "above"
+    return {
+        "actual": actual, "target": target, "variance_units": variance,
+        "variance_pct": variance_pct, "attainment_pct": attainment,
+        "status": status,
+    }
+
+
+def _build_store_stock_diagnosis(store, optimal_stock, rows):
+    """Build the deterministic response from one canonical SKU-level dataset."""
+    normalized_rows = []
+    for source in rows:
+        r = dict(source)
+        r["stock_units"] = max(0.0, float(r.get("stock_units") or 0))
+        normalized_rows.append(r)
+    style_states = {}
+    for r in normalized_rows:
+        style = r.get("style_name")
+        if style:
+            style_states.setdefault(style, set()).add(r.get("lifecycle") or "Excluded")
+    style_lifecycle = {}
+    for style, states in style_states.items():
+        style_lifecycle[style] = (
+            "Active" if "Active" in states
+            else "Retired" if states == {"Retired"}
+            else "Excluded"
+        )
+    # Match the canonical range universe: Active wins at style grain; Retired
+    # requires every SKU to be Retired; unknown/Archived-only styles are not
+    # silently relabelled into either group.
+    rows = [
+        r for r in normalized_rows
+        if style_lifecycle.get(r.get("style_name")) in ("Active", "Retired")
+    ]
+    stock_rows = [r for r in rows if r["stock_units"] > 0]
+    total_stock = round(sum(float(r.get("stock_units") or 0) for r in stock_rows))
+    target_colours = round(optimal_stock / 8) if optimal_stock is not None else None
+    target_styles = round(target_colours / 2) if target_colours is not None else None
+    styles = {r.get("style_name") for r in stock_rows if r.get("style_name")}
+    colour_styles = {
+        (r.get("style_name"), r.get("primary_colour") or "Unspecified")
+        for r in stock_rows if r.get("style_name")
+    }
+
+    by_colour = {}
+    for r in rows:
+        style = r.get("style_name")
+        colour = r.get("primary_colour") or "Unspecified"
+        size = (r.get("size") or "").strip()
+        if not style or not size:
+            continue
+        key = (style, colour)
+        entry = by_colour.setdefault(key, {"expected": set(), "present": set()})
+        entry["expected"].add(size)
+        if float(r.get("stock_units") or 0) > 0:
+            entry["present"].add(size)
+    missing_rows = []
+    unassessable = 0
+    stocked_keys = colour_styles
+    for style, colour in sorted(stocked_keys):
+        sets = by_colour.get((style, colour), {"expected": set(), "present": set()})
+        if not sets["expected"]:
+            unassessable += 1
+            continue
+        missing = sorted(sets["expected"] - sets["present"])
+        if missing:
+            missing_rows.append({
+                "style": style, "primary_colour": colour,
+                "expected_sizes": sorted(sets["expected"]),
+                "present_sizes": sorted(sets["present"]),
+                "missing_sizes": missing,
+            })
+
+    dimensions = {
+        "category": "category", "subcategory": "subcategory", "size": "size",
+        "primary_colour": "primary_colour", "print_plain": "print_plain",
+        "price_band": "price_band",
+    }
+    breakdowns = {}
+    total_sales = sum(float(r.get("units_sold") or 0) for r in rows)
+    for dim, field in dimensions.items():
+        grouped = {}
+        for r in rows:
+            stock = float(r.get("stock_units") or 0)
+            sales = float(r.get("units_sold") or 0)
+            if stock <= 0 and sales == 0:
+                continue
+            label = (_stock_diag_price_band(r.get("price")) if dim == "price_band"
+                     else (r.get(field) or "Unspecified"))
+            g = grouped.setdefault(str(label), {"inventory_units": 0.0, "units_sold": 0.0})
+            g["inventory_units"] += stock
+            g["units_sold"] += sales
+        output = []
+        for label, g in grouped.items():
+            stock_share = g["inventory_units"] * 100.0 / total_stock if total_stock else 0
+            sales_share = g["units_sold"] * 100.0 / total_sales if total_sales else 0
+            no_sales = g["units_sold"] <= 0
+            output.append({
+                "segment": label,
+                "inventory_units": round(g["inventory_units"]),
+                "units_sold": round(g["units_sold"]),
+                "stock_share_pct": round(stock_share, 1),
+                "sales_share_pct": round(sales_share, 1),
+                "share_variance_pp": round(stock_share - sales_share, 1),
+                "weeks_of_cover": (None if no_sales else
+                    round(g["inventory_units"] / (g["units_sold"] / (30.0 / 7.0)), 1)),
+                "no_sales": no_sales,
+            })
+        breakdowns[dim] = sorted(
+            output, key=lambda x: (-x["inventory_units"], x["segment"]))
+
+    lifecycle = {}
+    for r in stock_rows:
+        status = style_lifecycle[r.get("style_name")]
+        g = lifecycle.setdefault(status, {"units": 0.0, "styles": set(), "colour_styles": set()})
+        g["units"] += float(r.get("stock_units") or 0)
+        if r.get("style_name"):
+            g["styles"].add(r["style_name"])
+            g["colour_styles"].add((r["style_name"], r.get("primary_colour") or "Unspecified"))
+    lifecycle_rows = []
+    for status in ("Active", "Retired"):
+        g = lifecycle.get(status, {"units": 0, "styles": set(), "colour_styles": set()})
+        lifecycle_rows.append({
+            "lifecycle": status, "units": round(g["units"]),
+            "inventory_share_pct": round(g["units"] * 100.0 / total_stock, 1) if total_stock else 0,
+            "styles": len(g["styles"]), "colour_styles": len(g["colour_styles"]),
+        })
+
+    inventory = _stock_diag_metric(total_stock, optimal_stock)
+    style_metric = _stock_diag_metric(len(styles), target_styles)
+    colour_metric = _stock_diag_metric(len(colour_styles), target_colours)
+    assessable = max(0, len(colour_styles) - unassessable)
+    missing_pct = round(len(missing_rows) * 100.0 / assessable, 1) if assessable else 0
+    max_mix_gap = max(
+        (abs(x["share_variance_pp"]) for values in breakdowns.values() for x in values),
+        default=0) if total_sales > 0 else 0
+    retired_share = next(x["inventory_share_pct"] for x in lifecycle_rows
+                         if x["lifecycle"] == "Retired")
+    flags = []
+    if inventory["attainment_pct"] is not None and inventory["attainment_pct"] < 90:
+        flags.append({"key": "total_understocking", "supported": True,
+                      "summary": "Total sellable stock is materially below the configured optimum."})
+    if ((style_metric["attainment_pct"] is not None and style_metric["attainment_pct"] < 90) or
+            (colour_metric["attainment_pct"] is not None and colour_metric["attainment_pct"] < 90)):
+        flags.append({"key": "narrow_assortment", "supported": True,
+                      "summary": "Style or colour-style breadth is materially below its calculated target."})
+    if missing_pct >= 20:
+        flags.append({"key": "size_gaps", "supported": True,
+                      "summary": f"{missing_pct}% of stocked colour-styles have at least one missing size."})
+    if max_mix_gap >= 10:
+        flags.append({"key": "mix_imbalance", "supported": True,
+                      "summary": "At least one stock segment differs from its sales share by 10 points or more."})
+    if retired_share >= 15:
+        flags.append({"key": "retired_stock_concentration", "supported": True,
+                      "summary": f"Retired inventory is {retired_share}% of current store stock."})
+    if not flags:
+        flags.append({"key": "no_clear_stock_explanation", "supported": True,
+                      "summary": "The current stock evidence does not clearly explain weak sales performance."})
+    return {
+        "store": store, "window_days": 30,
+        "inventory": inventory, "styles": style_metric, "colour_styles": colour_metric,
+        "size_completeness": {
+            "stocked_colour_styles": len(colour_styles),
+            "assessable_colour_styles": assessable,
+            "complete_colour_styles": assessable - len(missing_rows),
+            "colour_styles_with_missing_sizes": len(missing_rows),
+            "unassessable_colour_styles": unassessable,
+            "missing_colour_style_pct": missing_pct, "rows": missing_rows,
+        },
+        "stock_to_sales": breakdowns, "lifecycle": lifecycle_rows,
+        "evidence": flags,
+    }
+
+
+def _fetch_store_stock_diagnosis(store):
+    if not store or store == "All Stores" or "," in store:
+        raise ValueError("Stock Diagnosis requires one store")
+    meta = _db_exec("""
+        SELECT location_name, optimal_stock FROM pos_locations
+        WHERE location_name = %(store)s AND active = TRUE
+          AND LOWER(COALESCE(store_type,'')) = 'store'
+    """, {"store": store})
+    if not meta:
+        raise ValueError("Store not found")
+    rows = _db_exec(f"""
+        WITH products AS (
+            SELECT sku,
+                   mode() WITHIN GROUP (ORDER BY style_name) AS style_name,
+                   mode() WITHIN GROUP (ORDER BY category) AS category,
+                   mode() WITHIN GROUP (ORDER BY product_type) AS subcategory,
+                   mode() WITHIN GROUP (ORDER BY color_print) AS primary_colour,
+                   mode() WITHIN GROUP (ORDER BY size) AS size,
+                   mode() WITHIN GROUP (ORDER BY print_plain) AS print_plain,
+                   mode() WITHIN GROUP (ORDER BY price) FILTER (WHERE price > 0) AS price,
+                   CASE WHEN BOOL_OR(LOWER(COALESCE(status,'')) = 'active')
+                        THEN 'Active'
+                        WHEN BOOL_AND(LOWER(COALESCE(status,'')) = 'retired')
+                        THEN 'Retired' ELSE 'Excluded' END AS lifecycle
+            FROM all_products_clean
+            WHERE {_PROD_BASE.replace('p.', '')}
+            GROUP BY sku
+        ), stock AS (
+            SELECT sku, SUM(available) AS stock_units
+            FROM all_inventory
+            WHERE pos_location_name = %(store)s
+            GROUP BY sku
+        ), sales AS (
+            SELECT variant_sku AS sku,
+                   SUM(CASE WHEN sale_kind IN ('sale','order')
+                            THEN ordered_item_quantity ELSE 0 END) AS units_sold
+            FROM all_sales s
+            WHERE s.pos_location_name = %(store)s
+              AND s.sale_date::date BETWEEN CURRENT_DATE - INTERVAL '29 days' AND CURRENT_DATE
+              AND {_BASE_FILTERS}
+            GROUP BY variant_sku
+        )
+        SELECT p.*, COALESCE(st.stock_units,0) AS stock_units,
+               COALESCE(sa.units_sold,0) AS units_sold
+        FROM products p
+        LEFT JOIN stock st ON st.sku = p.sku
+        LEFT JOIN sales sa ON sa.sku = p.sku
+    """, {"store": store}) or []
+    return _build_store_stock_diagnosis(
+        store, meta[0].get("optimal_stock"), [dict(r) for r in rows])
+
+
 # ── Style universe query ───────────────────────────────────────────────────────
 
 _SIX_MONTHS_DAYS = 182
@@ -7334,6 +7597,26 @@ def register_merch_routes(app, api_pg_module):
             store=store, from_date=from_date, to_date=to_date,
             country=country, brand=brand, subcategory=subcategory))
         return JSONResponse(result)
+
+    @app.get("/api/store-profile/stock-diagnosis")
+    def store_profile_stock_diagnosis(
+        request: Request,
+        store: Optional[str] = Query(None),
+    ):
+        """Current store stock, breadth, size, mix and lifecycle evidence."""
+        if not store:
+            return JSONResponse({"detail": "store is required"}, status_code=400)
+        if store == "All Stores" or "," in store:
+            return JSONResponse(
+                {"detail": "Choose one store to view Stock Diagnosis"},
+                status_code=400)
+        try:
+            result = _cached(
+                f"store_stock_diagnosis_v1|{store}", 300,
+                lambda: _fetch_store_stock_diagnosis(store))
+            return JSONResponse(result)
+        except ValueError as exc:
+            return JSONResponse({"detail": str(exc)}, status_code=404)
 
     @app.get("/api/admin/store-profiles")
     def admin_store_profiles_list(request: Request):
