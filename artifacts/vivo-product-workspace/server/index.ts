@@ -11353,7 +11353,7 @@ router.get("/plm/meta", async (_req, res, next) => {
 });
 
 async function workspaceHomeFocus() {
-  const [weekResult, gapResult, waitingResult, cogsResult, scorecardRows] = await Promise.all([
+  const [weekResult, gapResult, waitingResult, cogsResult, scorecardRows, weeklyTargetMonths] = await Promise.all([
     pool.query<{
       isoYear: number; isoWeek: number; startDate: string; endDate: string;
        planStyles: number; planUnits: number; planNewUnits: number; planNewStyles: number;
@@ -11534,13 +11534,49 @@ async function workspaceHomeFocus() {
           'no. of samples per approved style'
         ])
     `),
+    pool.query<{ monthStart: string; monthLabel: string; unitTarget: number; newnessTarget: number }>(`
+      WITH bounds AS (
+        SELECT date_trunc('week',CURRENT_DATE)::date AS start_date,
+          (date_trunc('week',CURRENT_DATE)::date + 6) AS end_date
+      )
+      SELECT TO_DATE(s.season_name,'FMMonth YYYY')::text AS "monthStart",
+        s.season_name AS "monthLabel",
+        COALESCE(s.factory_capacity_units,0)::float AS "unitTarget",
+        COALESCE(s.newness_target_units,0)::float AS "newnessTarget"
+      FROM ${schema}.range_plan_seasons s,bounds b
+      WHERE LOWER(s.season_name) IN (
+        LOWER(TO_CHAR(b.start_date,'FMMonth YYYY')),
+        LOWER(TO_CHAR(b.end_date,'FMMonth YYYY'))
+      )
+      ORDER BY TO_DATE(s.season_name,'FMMonth YYYY'),s.id DESC
+    `),
   ]);
 
   const week = weekResult.rows[0];
   const waiting = waitingResult.rows[0];
   const unitsCommitted = Number(week.planUnits);
   const stylesCommitted = Number(week.planStyles);
-  const weeklyPaceUnits = Number(week.monthlyPlanUnits) / 4;
+  const uniqueTargetMonths = Array.from(new Map(
+    weeklyTargetMonths.rows.map((row) => [row.monthStart.slice(0, 10), row]),
+  ).values());
+  const weeklyUnitTarget = weeklyNewnessTarget(
+    week.startDate,
+    week.endDate,
+    uniqueTargetMonths.map((row) => ({
+      monthStart: row.monthStart,
+      monthLabel: row.monthLabel,
+      targetUnits: Number(row.unitTarget),
+    })),
+  );
+  const weeklyNewnessTargetResult = weeklyNewnessTarget(
+    week.startDate,
+    week.endDate,
+    uniqueTargetMonths.map((row) => ({
+      monthStart: row.monthStart,
+      monthLabel: row.monthLabel,
+      targetUnits: Number(row.newnessTarget),
+    })),
+  );
   const monthlyNewness = calculateNewnessCommitment({
     targetUnits: Number(week.monthlyNewnessTargetUnits),
     plannedNewUnits: Number(week.planNewUnits),
@@ -11582,9 +11618,24 @@ async function workspaceHomeFocus() {
       isoYear: Number(week.isoYear), isoWeek: Number(week.isoWeek),
       startDate: week.startDate, endDate: week.endDate,
       planStyles: Number(week.planStyles), stylesCommitted, unitsCommitted,
-      weeklyPaceUnits, monthlyPlanUnits: Number(week.monthlyPlanUnits),
-      monthLabel: week.monthLabel, varianceUnits: unitsCommitted - weeklyPaceUnits,
-      status: unitsCommitted >= weeklyPaceUnits ? "on_track" : "off_track",
+      targetUnits: weeklyUnitTarget.targetUnits,
+      targetComponents: weeklyUnitTarget.components,
+      monthLabel: week.monthLabel,
+      varianceUnits: unitsCommitted - weeklyUnitTarget.targetUnits,
+      status: unitsCommitted >= weeklyUnitTarget.targetUnits ? "on_track" : "off_track",
+      newUnits: Number(week.planNewUnits),
+      newnessTargetUnits: weeklyNewnessTargetResult.targetUnits,
+      newnessTargetComponents: weeklyNewnessTargetResult.components,
+      newnessVarianceUnits: Number(week.planNewUnits) - weeklyNewnessTargetResult.targetUnits,
+    },
+    month: {
+      label: week.monthLabel,
+      units: Number(week.monthlyPlannedTotalUnits),
+      targetUnits: Number(week.monthlyPlanUnits),
+      varianceUnits: Number(week.monthlyPlannedTotalUnits) - Number(week.monthlyPlanUnits),
+      newUnits: Number(week.monthlyPlannedNewUnits),
+      newnessTargetUnits: Number(week.monthlyNewnessTargetUnits),
+      newnessVarianceUnits: Number(week.monthlyPlannedNewUnits) - Number(week.monthlyNewnessTargetUnits),
     },
     newness: {
       ...monthlyNewness,
