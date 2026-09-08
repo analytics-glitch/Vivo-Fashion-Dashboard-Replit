@@ -44,8 +44,8 @@ const BUCKET_META = [
   { key: "ahead_of_pace", label: "Ahead of Pace",   icon: "🚀", tone: { fg: "#1d4ed8", bg: "#eff6ff", bdr: "#bfdbfe" }, desc: "Revenue attainment >15% above day pace" },
   { key: "high_discount", label: "High Discount",   icon: "⚠️", tone: { fg: "#b45309", bg: "#fffbeb", bdr: "#fde68a" }, desc: "Discount rate >13% of gross revenue" },
   { key: "high_returns",  label: "High Returns",    icon: "↩️", tone: { fg: "#7f1d1d", bg: "#fff1f2", bdr: "#fca5a5" }, desc: "Return rate >5% of units sold" },
-  { key: "low_stock",     label: "Low Stock Cover", icon: "📦", tone: { fg: "#78350f", bg: "#fff7ed", bdr: "#fed7aa" }, desc: "Weeks of cover < 6 — replenish risk" },
-  { key: "heavy_stock",   label: "Heavy Stock",     icon: "🏭", tone: { fg: "#374151", bg: "#f3f4f6", bdr: "#d1d5db" }, desc: "Weeks of cover > 20 — overstock risk" },
+  { key: "low_stock",     label: "Low Stock",       icon: "📦", tone: { fg: "#78350f", bg: "#fff7ed", bdr: "#fed7aa" }, desc: "More than 5% below optimal stock" },
+  { key: "overstocked",   label: "Overstocked",     icon: "🏭", tone: { fg: "#374151", bg: "#f3f4f6", bdr: "#d1d5db" }, desc: "More than 5% above optimal stock" },
   { key: "no_target",     label: "No Target Set",   icon: "❓", tone: { fg: "#6b7280", bg: "#f9fafb", bdr: "#e5e7eb" }, desc: "No monthly revenue target configured" },
 ];
 
@@ -166,8 +166,8 @@ function StoreBucketSummary({ onSelectStore }) {
                                 {bm.key === "high_returns" && sd?.return_rate != null && (
                                   <span style={{ fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>{sd.return_rate}%</span>
                                 )}
-                                {(bm.key === "low_stock" || bm.key === "heavy_stock") && sd?.woc != null && (
-                                  <span style={{ fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>{sd.woc}w</span>
+                                {(bm.key === "low_stock" || bm.key === "overstocked") && sd?.stock_variance_pct != null && (
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: bm.tone.fg }}>{sd.stock_variance_pct > 0 ? "+" : ""}{sd.stock_variance_pct}% vs optimal</span>
                                 )}
                               </button>
                             );
@@ -1385,6 +1385,10 @@ export default function StoreProfiling() {
             </>
           )}
 
+          <SectionTitle icon="📦" title="Stock Diagnosis"
+            subtitle="Test whether total stock, assortment breadth, missing sizes, mix, or retired inventory could explain performance" />
+          <StockDiagnosis store={store} enabled={selectedStores?.length === 0 || selectedStores?.length === 1} />
+
           {/* 2 · August Target Tracker */}
           {rpt && (
             <>
@@ -1412,10 +1416,6 @@ export default function StoreProfiling() {
           <SectionTitle icon="👗" title="Product Profile"
             subtitle="Category & sub-category performance — MTD progress vs targets, plus mix shifts vs the store's 6-month norm" />
           <CategoryTargets store={store} rpt={rpt} />
-
-          <SectionTitle icon="📦" title="Stock Diagnosis"
-            subtitle="Test whether total stock, assortment breadth, missing sizes, mix, or retired inventory could explain performance" />
-          <StockDiagnosis store={store} enabled={selectedStores?.length === 0 || selectedStores?.length === 1} />
 
           {/* 4 · Priority Actions */}
           {rpt && actions.length > 0 && (

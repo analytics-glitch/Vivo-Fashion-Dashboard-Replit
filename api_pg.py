@@ -47077,9 +47077,20 @@ def _build_store_profile_network_summary(today):
     ) or []
     tgt_map = {r["store"]: float(r.get("tgt") or 0) for r in tgt_rows}
 
+    stock_target_rows = run_query(
+        "SELECT location_name AS store, optimal_stock "
+        "FROM pos_locations "
+        "WHERE active IS TRUE AND LOWER(COALESCE(store_type,'')) = 'store'"
+    ) or []
+    stock_target_map = {
+        r["store"]: float(r["optimal_stock"])
+        for r in stock_target_rows
+        if r.get("optimal_stock") is not None and float(r["optimal_stock"]) > 0
+    }
+
     buckets = {
         "behind_pace": [], "on_pace": [], "ahead_of_pace": [], "no_target": [],
-        "high_discount": [], "high_returns": [], "low_stock": [], "heavy_stock": [],
+        "high_discount": [], "high_returns": [], "low_stock": [], "overstocked": [],
     }
     stores_out = []
 
@@ -47094,6 +47105,11 @@ def _build_store_profile_network_summary(today):
         wkly = vel_map.get(st, 0)
         s_soh = soh_map.get(st, 0)
         woc = round(s_soh / wkly, 1) if wkly > 0 else None
+        optimal_stock = stock_target_map.get(st)
+        stock_variance_pct = (
+            round((s_soh - optimal_stock) * 100.0 / optimal_stock, 1)
+            if optimal_stock else None
+        )
 
         attainment_pct = None
         if tgt_rev and tgt_rev > 0:
@@ -47111,10 +47127,10 @@ def _build_store_profile_network_summary(today):
             buckets["high_discount"].append(st)
         if ret_rate > 5:
             buckets["high_returns"].append(st)
-        if woc is not None and woc < 6:
+        if stock_variance_pct is not None and stock_variance_pct < -5:
             buckets["low_stock"].append(st)
-        if woc is not None and woc > 20:
-            buckets["heavy_stock"].append(st)
+        if stock_variance_pct is not None and stock_variance_pct > 5:
+            buckets["overstocked"].append(st)
 
         stores_out.append({
             "store": st, "country": country,
@@ -47123,6 +47139,8 @@ def _build_store_profile_network_summary(today):
             "day_pace_pct": day_pace_pct,
             "discount_rate": discount, "return_rate": ret_rate,
             "soh": s_soh, "woc": woc,
+            "optimal_stock": optimal_stock,
+            "stock_variance_pct": stock_variance_pct,
         })
 
     return {
