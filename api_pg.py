@@ -8175,7 +8175,7 @@ CUSTOMER_IDENTITY_SALES_JOIN = (
 # successful atomic identity publish (rather than serving a prior person map for
 # its normal sales-cache TTL).
 _identity_snapshot_memo = ("identity-unavailable", 0.0)
-_IDENTITY_SNAPSHOT_MEMO_SEC = 5
+_IDENTITY_SNAPSHOT_MEMO_SEC = 300
 
 
 def _customer_identity_snapshot_version() -> str:
