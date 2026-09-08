@@ -1,0 +1,59 @@
+PHASE 1 — Reconcile with GitHub, keeping the GitHub auth flow
+
+Our commits are on the remote named `github`
+(analytics-glitch/Vivo-Fashion-Dashboard-Replit). This branch tracks a Replit
+sub-Repl remote, so always name the remote explicitly. Do NOT re-point main's
+tracking branch — Replit's task system uses those sub-Repl remotes.
+
+  git stash push -u
+  git fetch github main
+  git merge github/main
+  git stash pop
+
+Merge, never rebase.
+
+DECISION ALREADY MADE — the authentication flow on GitHub wins.
+
+Commit 739735d2 ("Implement authentication flow and add unit tests") is being
+discarded. The GitHub version signs in by PHONE with a one-time code against
+the Vivo loyalty backend (Fastify) at community.vivofashiongroup.com, which is
+the backend that is actually live. Do not merge the two, do not keep both
+paths, and do not adapt the GitHub flow to community_app.py.
+
+For any conflict in these five files, take the GitHub version WHOLE. Use the
+explicit form, not --ours/--theirs, which are inverted during a merge and are
+the easiest thing in git to get backwards:
+
+  git checkout github/main -- artifacts/vivo-community/src/screens/AuthFlow.jsx
+  git checkout github/main -- artifacts/vivo-community/src/lib/api.js
+  git checkout github/main -- artifacts/vivo-community/src/screens/CommunityShell.jsx
+  git checkout github/main -- artifacts/vivo-community/public/sw.js
+  git checkout github/main -- artifacts/vivo-community/index.html
+
+Then DELETE any test file that tests the discarded auth flow — it tests code
+that no longer exists and will fail. Say which files you deleted; replacement
+tests will be written against the flow that was kept.
+
+For api.js and CommunityShell.jsx only, check what taking the GitHub version
+discarded, and re-apply anything unrelated to auth or the mobile nav on top:
+
+  git diff github/main main -- artifacts/vivo-community/src/lib/api.js
+  git diff github/main main -- artifacts/vivo-community/src/screens/CommunityShell.jsx
+
+Then verify the merge actually kept our work — all four must succeed:
+
+  ls artifacts/vivo-community/src/components/community/MobileMenu.jsx
+  ls artifacts/vivo-community/src/lib/push.js
+  grep -c mobile-menu-open artifacts/vivo-community/src/screens/CommunityShell.jsx
+  grep -c check-notify artifacts/vivo-community/src/screens/AuthFlow.jsx
+
+Read artifacts/vivo-community/API.md. It is generated from the running backend
+and is the authoritative endpoint list. Every call in src/lib/api.js must match
+it. Never edit API.md by hand.
+
+Run the community typecheck, tests and build. Then:
+
+  git log --oneline github/main..main      # review what the push will carry
+  git push github main
+
+STOP after this push and report. Do not begin Phase 2 until it is confirmed.

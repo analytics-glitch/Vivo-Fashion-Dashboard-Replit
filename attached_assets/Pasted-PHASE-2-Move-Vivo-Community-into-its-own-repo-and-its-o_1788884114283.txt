@@ -1,0 +1,65 @@
+PHASE 2 — Move Vivo Community into its own repo and its own Repl
+
+Only after Phase 1 has been pushed and confirmed.
+
+Target repository:  git@github.com:analytics-glitch/vivo-replit-web.git
+                    (https://github.com/analytics-glitch/vivo-replit-web)
+Branch:             main
+
+Reason for the move: artifacts/vivo-community shares a repo with the BI
+dashboard and the Python backend, so a push can never carry only community
+changes. That is why an automatic push is unsafe today. Separating them removes
+the problem rather than working around it.
+
+1. Split the app out WITH its history — do not copy files:
+
+     git subtree split --prefix=artifacts/vivo-community -b community-only
+     git remote add vivo-replit-web git@github.com:analytics-glitch/vivo-replit-web.git
+     git push vivo-replit-web community-only:main
+
+   The app lands at the repo root. There is no artifacts/ prefix any more.
+
+2. Work in a fresh clone of vivo-replit-web and untangle the monorepo coupling.
+   These root files will not exist there:
+
+   - package.json: rename the package from "@workspace/vivo-community" to
+     "vivo-replit-web". There is no workspace and no `pnpm --filter` now.
+   - package.json: replace every "catalog:" version with the concrete version
+     from the monorepo's pnpm-workspace.yaml — react 19.1.0, react-dom 19.1.0,
+     vite ^7.3.6, lucide-react 0.545.0, tailwindcss ^4.1.14, @tailwindcss/vite
+     ^4.1.14, zod ^3.25.76, @vitejs/plugin-react ^5.0.4, @tanstack/react-query
+     ^5.90.21, framer-motion ^12.23.24, clsx ^2.1.1, tailwind-merge ^3.3.1,
+     class-variance-authority ^0.7.1, wouter ^3.3.5, @types/node ^25.3.3,
+     @types/react ^19.2.0, @types/react-dom ^19.2.0, and the three
+     @replit/vite-plugin-* at ^0.5.1 / ^0.1.1 / ^0.0.6.
+   - package.json: DELETE "@workspace/api-client-react": "workspace:*". It is
+     declared but never imported anywhere in src/ — verified, it is dead weight.
+   - package.json: add
+       "pnpm": { "onlyBuiltDependencies": ["esbuild"] }
+     Without it pnpm 10+ blocks esbuild's postinstall and the build fails.
+   - tsconfig.json: it extends ../../tsconfig.base.json — inline what it needs,
+     and delete the "references" entry pointing at ../../lib/api-client-react.
+   - vite.config.ts: cartographer's root is path.resolve(import.meta.dirname,
+     '..'), which pointed at the monorepo. Point it at the repo root.
+   - Do NOT carry patches/image-size@1.2.1.patch. It patches metro>image-size,
+     which belongs to the Expo mobile artifact, not this app.
+
+3. Prove it standalone before anything else depends on it:
+
+     pnpm install
+     pnpm run typecheck
+     pnpm run test
+     PORT=5173 BASE_PATH=/ pnpm run build
+
+   All four must pass in a clean clone with no monorepo present.
+
+4. Create a NEW Repl by importing analytics-glitch/vivo-replit-web. Give it its
+   own instruction file — the BI replit.md does not apply to it. Set the dev
+   command and BASE_PATH for that Repl.
+
+5. Do NOT delete artifacts/vivo-community from the BI monorepo yet, and do not
+   change the /app deployment. Leave both until the new repo is serving
+   community.vivofashiongroup.com and verified. Then remove the directory in
+   one commit.
+
+Report when step 3 passes and the new repo has content.
