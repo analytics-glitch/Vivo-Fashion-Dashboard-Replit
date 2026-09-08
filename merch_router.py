@@ -59,7 +59,7 @@ _SF_LOCKS = {}
 _SF_LOCKS_GUARD = _threading.Lock()
 
 
-def _cached(key, ttl, fn):
+def _cached(key, ttl, fn, stale_ttl=None):
     now = _time.monotonic()
     entry = _cache_store.get(key)
     if entry and (now - entry[0]) < ttl:
@@ -73,7 +73,16 @@ def _cached(key, ttl, fn):
         entry = _cache_store.get(key)
         if entry and (now - entry[0]) < ttl:
             return entry[1]
-        result = fn()
+        try:
+            result = fn()
+        except Exception:
+            # Operational pages should retain their last-known evidence during
+            # short pool-pressure incidents rather than dropping whole sections.
+            # Callers opt in and bound how old that fallback may be.
+            if entry and stale_ttl is not None and (now - entry[0]) < stale_ttl:
+                log.warning("Serving stale cache for %s after refresh failure", key)
+                return entry[1]
+            raise
         _cache_store[key] = (_time.monotonic(), result)
         return result
 
@@ -673,10 +682,12 @@ def _fetch_store_stock_diagnosis(store):
         stock_scope = (
             A._SP_ALL_INV_PRED if A is not None
             else (
-                "i.pos_location_name NOT ILIKE '%%warehouse%%' "
-                "AND i.pos_location_name NOT ILIKE '%%holding%%' "
-                "AND i.pos_location_name NOT ILIKE '%%transit%%' "
-                "AND i.pos_location_name NOT ILIKE '%%receiving%%'"
+                "EXISTS ("
+                "SELECT 1 FROM pos_locations sp_pl "
+                "WHERE sp_pl.location_name = i.pos_location_name "
+                "AND sp_pl.active IS TRUE "
+                "AND LOWER(COALESCE(sp_pl.store_type,'')) = 'store'"
+                ")"
             )
         )
         sales_scope = "TRUE"
@@ -7752,10 +7763,20 @@ def register_merch_routes(app, api_pg_module):
         try:
             result = _cached(
                 f"store_stock_diagnosis_v1|{store}", 300,
-                lambda: _fetch_store_stock_diagnosis(store))
+                lambda: _fetch_store_stock_diagnosis(store),
+                stale_ttl=3600)
             return JSONResponse(result)
         except ValueError as exc:
             return JSONResponse({"detail": str(exc)}, status_code=404)
+        except Exception as exc:
+            status_code = getattr(exc, "status_code", 503)
+            detail = getattr(exc, "detail", None)
+            if isinstance(detail, dict):
+                detail = detail.get("error") or detail.get("detail")
+            log.warning("Store Stock Diagnosis unavailable for %s: %s", store, exc)
+            return JSONResponse(
+                {"detail": detail or "Product KPI data is temporarily unavailable"},
+                status_code=status_code if isinstance(status_code, int) else 503)
 
     @app.get("/api/admin/store-profiles")
     def admin_store_profiles_list(request: Request):

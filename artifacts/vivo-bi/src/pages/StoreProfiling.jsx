@@ -641,13 +641,12 @@ function TopKPIs({ rpt, stockData }) {
   }, [rpt]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const stockTiles = useMemo(() => {
-    if (!stockData) return [];
-    const inv = stockData.inventory || {};
-    const styles = stockData.styles || {};
-    const cStyles = stockData.colour_styles || {};
-    const sc = stockData.size_completeness || {};
-    const active = (stockData.lifecycle || []).find(l => l.lifecycle === "Active") || {};
-    const retired = (stockData.lifecycle || []).find(l => l.lifecycle === "Retired") || {};
+    const inv = stockData?.inventory || {};
+    const styles = stockData?.styles || {};
+    const cStyles = stockData?.colour_styles || {};
+    const sc = stockData?.size_completeness || {};
+    const active = (stockData?.lifecycle || []).find(l => l.lifecycle === "Active") || {};
+    const retired = (stockData?.lifecycle || []).find(l => l.lifecycle === "Retired") || {};
 
     const avgUnitsPerStyle = inv.actual && styles.actual ? Math.round(inv.actual / styles.actual) : null;
     const avgUnitsPerCStyle = inv.actual && cStyles.actual ? Math.round(inv.actual / cStyles.actual) : null;
@@ -1362,7 +1361,13 @@ export default function StoreProfiling() {
     "store-profile/performance-report", { store }, { enabled: !!store, staleTime: 5 * 60_000 }
   );
   const { data: stockData, isLoading: stockLoading, error: stockError } = useApi(
-    "store-profile/stock-diagnosis", { store }, { enabled: !!store, staleTime: 5 * 60_000 }
+    "store-profile/stock-diagnosis", { store }, {
+      enabled: !!store,
+      staleTime: 5 * 60_000,
+      retry: 5,
+      retryDelay: (attempt) => Math.min(1500 * 2 ** attempt, 12_000),
+      refetchInterval: (query) => query.state.status === "error" ? 15_000 : false,
+    }
   );
 
   const storeCountry = useMemo(
@@ -1433,6 +1438,11 @@ export default function StoreProfiling() {
 
           {/* 1 · Top KPIs — Unified Grid */}
           {(rpt || stockData) && <TopKPIs rpt={rpt} stockData={stockData} />}
+          {stockError && (
+            <div style={{ marginTop: 10, padding: "10px 12px", border: "1px solid #fde68a", borderRadius: 8, background: "#fffbeb", color: "#92400e", fontSize: 12, fontWeight: 600 }}>
+              Product KPI data is temporarily unavailable. The cards will retry automatically; the sales KPIs above remain current.
+            </div>
+          )}
 
           {/* 1b · Stock-to-Sales Table */}
           {stockData && (
