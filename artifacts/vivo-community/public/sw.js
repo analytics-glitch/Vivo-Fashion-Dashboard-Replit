@@ -16,7 +16,9 @@
  * Bump VERSION to purge whatever an older worker was holding.
  */
 const VERSION = "johari-community-v2";
-const SHELL = "/";
+const APP_BASE = new URL(self.registration.scope).pathname;
+const SHELL = APP_BASE;
+const appUrl = (path = "") => new URL(path, self.registration.scope).pathname;
 
 self.addEventListener("install", (event) => {
   event.waitUntil(
@@ -72,12 +74,12 @@ self.addEventListener("push", (event) => {
   event.waitUntil(
     self.registration.showNotification(data.title || "Vivo Johari", {
       body: data.body || "",
-      icon: "/icons/icon-192.png",
-      badge: "/icons/icon-192.png",
+      icon: appUrl("icons/icon-192.png"),
+      badge: appUrl("icons/icon-192.png"),
       // Same tag replaces an earlier notification instead of stacking three
       // "you earned points" alerts from one shopping trip.
       tag: data.tag || "vivo",
-      data: { url: data.url || "/" },
+      data: { url: data.url || APP_BASE },
     }),
   );
 });
@@ -88,8 +90,15 @@ self.addEventListener("notificationclick", (event) => {
   // /messages) mean nothing here — this app lives entirely at "/" with a ?tab=
   // query. Anything else opens home rather than a path the router cannot show
   // and the member cannot get out of.
-  const raw = (event.notification.data && event.notification.data.url) || "/";
-  const url = raw === "/" || raw.startsWith("/?") ? raw : "/";
+  const raw = (event.notification.data && event.notification.data.url) || APP_BASE;
+  const url =
+    raw === "/" || raw === APP_BASE
+      ? APP_BASE
+      : raw.startsWith("/?")
+        ? appUrl(raw.slice(1))
+        : raw.startsWith(APP_BASE + "?")
+          ? raw
+          : APP_BASE;
 
   event.waitUntil(
     // Focus an open tab rather than opening a second copy of the app.
