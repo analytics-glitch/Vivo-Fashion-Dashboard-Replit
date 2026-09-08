@@ -79,6 +79,14 @@ export const api = {
   logout: () => req("/auth/logout", { method: "POST", auth: true }),
   usernameCheck: (u) => req("/auth/username-check?u=" + encodeURIComponent(u), { auth: true }),
   updateSettings: (payload) => req("/me/settings", { method: "PUT", body: payload, auth: true }),
+
+  // Web push. These are the LOYALTY backend's push routes, mounted a second
+  // time under this prefix — a subscription belongs to the account, so a
+  // device registered here also receives the points and message notifications
+  // the loyalty app already sends.
+  pushKey: () => req("/push/key"),
+  pushSubscribe: (sub) => req("/push/subscribe", { method: "POST", body: sub, auth: true }),
+  pushUnsubscribe: (endpoint) => req("/push/unsubscribe", { method: "POST", body: { endpoint }, auth: true }),
   products: (opts = {}) => {
     // personalize needs the Bearer token so the server can find her Style DNA;
     // without it (or without a finished quiz) the server just returns the

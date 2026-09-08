@@ -15,7 +15,7 @@
  *
  * Bump VERSION to purge whatever an older worker was holding.
  */
-const VERSION = "johari-community-v1";
+const VERSION = "johari-community-v2";
 const SHELL = "/";
 
 self.addEventListener("install", (event) => {
@@ -52,4 +52,55 @@ self.addEventListener("fetch", (event) => {
 
   // Everything else — assets, images, /api/community/* — goes straight to the
   // network. Not intercepting is the point.
+});
+
+// ── Web push ──────────────────────────────────────────────────────────────
+// A member should learn what they earned while they are still in the shop.
+// The payload is written by the loyalty backend (lib/push.ts) — the same
+// sender that notifies the loyalty app, because a subscription belongs to the
+// account rather than to one face of it.
+
+self.addEventListener("push", (event) => {
+  let data = {};
+  try {
+    data = event.data ? event.data.json() : {};
+  } catch {
+    // A malformed payload must still show something rather than nothing.
+    data = { title: "Vivo Johari", body: event.data ? event.data.text() : "" };
+  }
+
+  event.waitUntil(
+    self.registration.showNotification(data.title || "Vivo Johari", {
+      body: data.body || "",
+      icon: "/icons/icon-192.png",
+      badge: "/icons/icon-192.png",
+      // Same tag replaces an earlier notification instead of stacking three
+      // "you earned points" alerts from one shopping trip.
+      tag: data.tag || "vivo",
+      data: { url: data.url || "/" },
+    }),
+  );
+});
+
+self.addEventListener("notificationclick", (event) => {
+  event.notification.close();
+  // The same backend notifies the loyalty app, and its URLs (/dashboard,
+  // /messages) mean nothing here — this app lives entirely at "/" with a ?tab=
+  // query. Anything else opens home rather than a path the router cannot show
+  // and the member cannot get out of.
+  const raw = (event.notification.data && event.notification.data.url) || "/";
+  const url = raw === "/" || raw.startsWith("/?") ? raw : "/";
+
+  event.waitUntil(
+    // Focus an open tab rather than opening a second copy of the app.
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((list) => {
+      for (const c of list) {
+        if ("focus" in c) {
+          c.navigate(url);
+          return c.focus();
+        }
+      }
+      return self.clients.openWindow(url);
+    }),
+  );
 });
