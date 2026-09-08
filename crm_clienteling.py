@@ -872,7 +872,20 @@ def _ensure_cl_tables():
             "SELECT 1 FROM crm_identity_link_audit a WHERE a.table_name='" + table +
             "' AND a.record_id=o.ctid::text AND a.status='backfilled')",
         ])
+    import re as _re
     for s in stmts:
+        # Guard ALTER ... ADD COLUMN IF NOT EXISTS: it takes an ACCESS EXCLUSIVE
+        # lock even when the column already exists (no-op). At every app restart
+        # this jammed reads/writes on customer_identity and the crm_* tables.
+        # Skip the ALTER when the column is already present — no lock taken.
+        _m = _re.match(r"ALTER TABLE (\w+) ADD COLUMN IF NOT EXISTS (\w+)", s)
+        if _m:
+            _exists = _ex(
+                "SELECT 1 FROM information_schema.columns "
+                "WHERE table_name=%s AND column_name=%s",
+                (_m.group(1), _m.group(2)), fetch=True)
+            if _exists:
+                continue
         try:
             _ex(s)
         except Exception as e:  # pragma: no cover - best effort DDL
