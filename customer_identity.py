@@ -230,96 +230,117 @@ def read_nodes(cur):
 
 
 def resolve(cur, nodes):
+    # RULE (William): phone = one person (merge ALL same-phone; most-common name
+    # is chosen in build_people). Email is secondary ONLY for records with no
+    # phone (cannot bridge phones, so no cross-person chaining). Never merge on
+    # name. Overrides win. Pseudo excluded. Batched for speed: union-find in
+    # memory, bulk-mint new person_ids, one bulk upsert (no per-row UPDATE loop).
+    from collections import defaultdict as _dd
+    from psycopg2.extras import execute_values
+
     cur.execute("SELECT source_key, person_id FROM customer_identity_registry")
     known = dict(cur.fetchall())
-    # A legacy bare-ID override is intentionally inert until migrated with an
-    # explicit source_key: applying it to every Shopify store would be unsafe.
     cur.execute("""SELECT source_key, force_person_id, reason, created_by
                    FROM customer_identity_override WHERE source_key IS NOT NULL""")
     overrides = {r[0]: r[1:] for r in cur.fetchall()}
-    phone_groups = defaultdict(list)
+
+    parent = {}
+    def find(x):
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:
+            parent[x], x = root, parent[x]
+        return root
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for n in nodes:
+        find(n["key"])
+
+    # 1. PHONE primary — all records sharing a phone merge into one person.
+    pg = _dd(list)
     for n in nodes:
         if not n["pseudo"] and n["phone"]:
-            phone_groups[n["phone"]].append(n)
-    # RULE (William): phone = one person. All records sharing a phone merge,
-    # regardless of name differences (most-common name is chosen in build_people).
-    # 'ambiguous' is retained (always empty) only so the method-labelling block
-    # below keeps working; nothing is routed to review on name mismatch anymore.
-    ambiguous = set()
-    # Establish a registry ID for every source before merges. This makes removed
-    # records and contact changes stable indefinitely.
-    for n in sorted(nodes, key=lambda x: x["key"]):
-        if n["key"] not in known:
-            known[n["key"]] = _new_person(cur)
-            cur.execute(
-                "INSERT INTO customer_identity_registry(source_key,person_id) VALUES (%s,%s)",
-                (n["key"], known[n["key"]]),
-            )
-    # 1. PHONE primary — merge every record sharing a phone into one person.
-    for phone, group in phone_groups.items():
-        eligible = [n for n in group if n["key"] not in overrides]
-        if len(eligible) > 1:
-            winner = min(known[n["key"]] for n in eligible)
-            for n in eligible:
-                known[n["key"]] = winner
-                cur.execute(
-                    "UPDATE customer_identity_registry SET person_id=%s,last_seen_at=now() WHERE source_key=%s",
-                    (winner, n["key"]),
-                )
-    # 2. EMAIL secondary — ONLY for records with NO phone (cannot bridge phones,
-    #    so no cross-person chaining). Records with no phone but a shared email
-    #    merge together.
-    email_groups = defaultdict(list)
+            pg[n["phone"]].append(n["key"])
+    for keys in pg.values():
+        for k in keys[1:]:
+            union(keys[0], k)
+
+    # 2. EMAIL secondary — ONLY for records with NO phone.
+    eg = _dd(list)
     for n in nodes:
         if not n["pseudo"] and not n["phone"] and n["email"]:
-            email_groups[n["email"]].append(n)
-    for email, group in email_groups.items():
-        eligible = [n for n in group if n["key"] not in overrides]
-        if len(eligible) > 1:
-            winner = min(known[n["key"]] for n in eligible)
-            for n in eligible:
-                known[n["key"]] = winner
-                cur.execute(
-                    "UPDATE customer_identity_registry SET person_id=%s,last_seen_at=now() WHERE source_key=%s",
-                    (winner, n["key"]),
-                )
+            eg[n["email"]].append(n["key"])
+    for keys in eg.values():
+        for k in keys[1:]:
+            union(keys[0], k)
+
+    # Assign one person_id per cluster: reuse an existing registry id if any
+    # member has one (lowest, for stability); otherwise bulk-mint new ones.
+    clusters = _dd(list)
+    for n in nodes:
+        clusters[find(n["key"])].append(n["key"])
+    root_pid = {}
+    roots_needing_new = []
+    for root, keys in clusters.items():
+        existing = [known[k] for k in keys if k in known]
+        if existing:
+            root_pid[root] = min(existing)
+        else:
+            roots_needing_new.append(root)
+    if roots_needing_new:
+        cur.execute(
+            "INSERT INTO customer_person_registry (person_id) "
+            "SELECT nextval('customer_person_registry_person_id_seq') "
+            "FROM generate_series(1, %s) RETURNING person_id",
+            (len(roots_needing_new),))
+        new_ids = [r[0] for r in cur.fetchall()]
+        for root, pid in zip(roots_needing_new, new_ids):
+            root_pid[root] = pid
+
+    # Final source_key -> person_id (overrides win).
+    final = {}
+    for n in nodes:
+        k = n["key"]
+        final[k] = overrides[k][0] if k in overrides else root_pid[find(k)]
+
+    # One bulk upsert of the whole map.
+    execute_values(
+        cur,
+        "INSERT INTO customer_identity_registry (source_key, person_id, last_seen_at) "
+        "VALUES %s ON CONFLICT (source_key) DO UPDATE SET "
+        "person_id=EXCLUDED.person_id, last_seen_at=now()",
+        [(k, final[k]) for k in final],
+        template="(%s, %s, now())")
+
+    # Override audit (unchanged behaviour).
+    for k in overrides:
+        if k not in final:
+            continue
+        pid, reason, actor = overrides[k]
+        cur.execute(
+            """INSERT INTO customer_identity_override_audit(source_key,force_person_id,reason,created_by)
+          SELECT %s,%s,%s,%s WHERE NOT EXISTS (
+            SELECT 1 FROM customer_identity_override_audit
+            WHERE source_key=%s AND force_person_id=%s AND reason IS NOT DISTINCT FROM %s
+              AND created_by IS NOT DISTINCT FROM %s)""",
+            (k, pid, reason, actor, k, pid, reason, actor))
+
     out = []
     for n in nodes:
-        method = (
-            "pseudo"
-            if n["pseudo"]
-            else ("ambiguous_phone" if n["key"] in ambiguous else "phone")
-        )
-        pid = known[n["key"]]
-        if n["key"] in overrides:
-            pid, reason, actor = overrides[n["key"]]
+        if n["pseudo"]:
+            method = "pseudo"
+        elif n["key"] in overrides:
             method = "override"
-            cur.execute(
-                """INSERT INTO customer_identity_override_audit(source_key,force_person_id,reason,created_by)
-              SELECT %s,%s,%s,%s WHERE NOT EXISTS (
-                SELECT 1 FROM customer_identity_override_audit
-                WHERE source_key=%s AND force_person_id=%s AND reason IS NOT DISTINCT FROM %s
-                  AND created_by IS NOT DISTINCT FROM %s)""",
-                (n["key"], pid, reason, actor, n["key"], pid, reason, actor),
-            )
-        out.append(
-            (
-                pid,
-                n["key"],
-                n["system"],
-                n["customer_id"],
-                n["store"],
-                n["display"],
-                n["email"],
-                n["phone"],
-                n["name"],
-                method,
-            )
-        )
-        cur.execute(
-            "UPDATE customer_identity_registry SET last_seen_at=now() WHERE source_key=%s",
-            (n["key"],),
-        )
+        else:
+            method = "phone"
+        out.append((
+            final[n["key"]], n["key"], n["system"], n["customer_id"],
+            n["store"], n["display"], n["email"], n["phone"], n["name"], method))
     return out
 
 
